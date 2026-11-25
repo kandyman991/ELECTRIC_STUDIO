@@ -112,6 +112,10 @@ pub enum Command {
         id: DeviceId,
         tag: String,
     },
+    SetDescription {
+        id: DeviceId,
+        description: String,
+    },
     Place(Function),
     /// Removes a function and every connection to it.
     Unplace(FunctionId),
@@ -125,6 +129,11 @@ pub enum Command {
     },
     Connect(Connection),
     Disconnect(ConnectionId),
+    /// Set or clear a wire's number. Numbers are unique in the project.
+    SetWireNumber {
+        id: ConnectionId,
+        number: Option<String>,
+    },
     /// Several commands applied together: all of them or none.
     Batch(Vec<Command>),
 }
@@ -155,6 +164,8 @@ pub enum ModelError {
     EmptyTag,
     #[error("device `{0}` is still drawn on a page")]
     DeviceInUse(String),
+    #[error("wire number `{0}` is already used")]
+    DuplicateWireNumber(String),
     #[error("id {0} is already used")]
     DuplicateId(Uuid),
 }
@@ -259,6 +270,11 @@ impl Project {
                 let old = std::mem::replace(&mut d.tag, tag);
                 Ok(Command::RenameDevice { id, tag: old })
             }
+            Command::SetDescription { id, description } => {
+                let d = self.devices.get_mut(&id).ok_or(ModelError::NoDevice(id))?;
+                let old = std::mem::replace(&mut d.description, description);
+                Ok(Command::SetDescription { id, description: old })
+            }
             Command::Place(f) => {
                 if self.functions.contains_key(&f.id) {
                     return Err(ModelError::DuplicateId(f.id.0));
@@ -311,6 +327,16 @@ impl Project {
                 let c = self.connections.remove(&id).ok_or(ModelError::NoConnection(id))?;
                 Ok(Command::Connect(c))
             }
+            Command::SetWireNumber { id, number } => {
+                let number = number.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty());
+                self.connection(id)?;
+                if let Some(n) = &number {
+                    self.check_wire_number(n, Some(id))?;
+                }
+                let c = self.connections.get_mut(&id).ok_or(ModelError::NoConnection(id))?;
+                let old = std::mem::replace(&mut c.wire_number, number);
+                Ok(Command::SetWireNumber { id, number: old })
+            }
             Command::Batch(cmds) => {
                 let mut undo = Vec::with_capacity(cmds.len());
                 for cmd in cmds {
@@ -341,9 +367,19 @@ impl Project {
         }
     }
 
+    fn check_wire_number(&self, number: &str, except: Option<ConnectionId>) -> Result<()> {
+        match self.connections.values().find(|c| c.wire_number.as_deref() == Some(number)) {
+            Some(c) if Some(c.id) != except => Err(ModelError::DuplicateWireNumber(number.to_owned())),
+            _ => Ok(()),
+        }
+    }
+
     fn check_connection(&self, c: &Connection) -> Result<()> {
         if c.from == c.to {
             return Err(ModelError::SelfConnection);
+        }
+        if let Some(n) = &c.wire_number {
+            self.check_wire_number(n, None)?;
         }
         self.connection_point(&c.from)?;
         self.connection_point(&c.to)?;
@@ -387,6 +423,20 @@ impl Project {
             .connection_point(&r.point)
             .ok_or_else(|| ModelError::NoConnectionPoint { symbol: s.id.0.clone(), point: r.point.clone() })?;
         Ok((f.to_page(cp.at), f.rotation.apply_dir(cp.leaves)))
+    }
+
+    /// A function's box on its page (`min`, `max`): its symbol's geometry and connection points,
+    /// rotated and placed.
+    pub fn function_bounds(&self, id: FunctionId) -> Result<Option<(Point, Point)>> {
+        let f = self.function(id)?;
+        let Some((lo, hi)) = self.symbol(&f.symbol)?.bounds() else { return Ok(None) };
+        let corners = [lo, hi, Point::new(lo.x, hi.y), Point::new(hi.x, lo.y)].map(|c| f.to_page(c));
+        let (mut min, mut max) = (corners[0], corners[0]);
+        for c in &corners[1..] {
+            min = Point::new(min.x.min(c.x), min.y.min(c.y));
+            max = Point::new(max.x.max(c.x), max.y.max(c.y));
+        }
+        Ok(Some((min, max)))
     }
 
     /// Orthogonal route from one end to the other. Straight when the ends face each other on one

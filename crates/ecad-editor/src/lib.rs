@@ -11,7 +11,7 @@ use ecad_model::{
     ModelError, PageId, Point, Project, Rotation, SymbolId, route_between,
 };
 pub use ecad_view::{Primitive, Shape};
-pub use session::{Button, Frame, KeyName, PaletteItem, Session, UiEvent};
+pub use session::{Button, Choice, Frame, KeyName, PaletteItem, SelectionInfo, Session, UiEvent};
 pub use view::Viewport;
 
 pub mod session;
@@ -256,6 +256,22 @@ impl Editor {
         self.execute(&label, Command::RenameDevice { id: device, tag: tag.to_owned() })
     }
 
+    /// Set the selected symbol's device description.
+    pub fn describe_selected(&mut self, description: &str) -> Result<(), ModelError> {
+        let Some(Selected::Function(f)) = self.selection else { return Ok(()) };
+        let device = self.project.function(f)?.device;
+        let label = format!("Describe {}", self.tag_of(f));
+        self.execute(&label, Command::SetDescription { id: device, description: description.trim().to_owned() })
+    }
+
+    /// Set (or, when blank, clear) the selected wire's number.
+    pub fn number_selected_wire(&mut self, number: &str) -> Result<(), ModelError> {
+        let Some(Selected::Connection(c)) = self.selection else { return Ok(()) };
+        let old = self.wire_name(c);
+        let label = format!("Renumber wire {old} to {}", number.trim());
+        self.execute(&label, Command::SetWireNumber { id: c, number: Some(number.to_owned()) })
+    }
+
     pub fn pointer_move(&mut self, p: Point) {
         self.cursor = p;
         if let Some(mut drag) = self.drag {
@@ -463,14 +479,9 @@ impl Editor {
         None
     }
 
-    /// A function's box on the page, without its connection-point stubs' ends.
+    /// A function's box on the page.
     fn function_box(&self, id: FunctionId) -> Option<(Point, Point)> {
-        let f = self.project.function(id).ok()?;
-        let (lo, hi) = self.project.symbol(&f.symbol).ok()?.bounds()?;
-        let corners = [lo, hi, Point::new(lo.x, hi.y), Point::new(hi.x, lo.y)].map(|c| f.to_page(c));
-        let (min_x, max_x) = corners.iter().fold((f64::MAX, f64::MIN), |(a, b), c| (a.min(c.x), b.max(c.x)));
-        let (min_y, max_y) = corners.iter().fold((f64::MAX, f64::MIN), |(a, b), c| (a.min(c.y), b.max(c.y)));
-        Some((Point::new(min_x, min_y), Point::new(max_x, max_y)))
+        self.project.function_bounds(id).ok().flatten()
     }
 
     fn wire_points(&self, id: ConnectionId) -> Option<Vec<Point>> {

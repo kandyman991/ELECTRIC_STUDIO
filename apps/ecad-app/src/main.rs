@@ -8,7 +8,9 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use ecad_editor::{Button, Frame, KeyName, Marker, Overlay, Primitive, Session, Shape, UiEvent, Viewport};
+use ecad_editor::{
+    Button, Choice, Frame, KeyName, Marker, Overlay, Primitive, SelectionInfo, Session, Shape, UiEvent, Viewport,
+};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use std::path::PathBuf;
 
@@ -28,9 +30,24 @@ struct App {
     base: Vec<Primitive>,
     revision: Option<u64>,
     size: Vec2,
-    rename: String,
-    renaming_for: Option<String>,
+    /// Side-panel edit buffers, reset when the selection changes.
+    fields: Fields,
     title: String,
+    close_sent: bool,
+}
+
+#[derive(Default)]
+struct Fields {
+    /// Which selection these buffers belong to.
+    key: Option<String>,
+    tag: String,
+    description: String,
+    number: String,
+}
+
+/// Ask for a project folder with the system's folder picker.
+fn pick_folder(title: &str) -> Option<PathBuf> {
+    rfd::FileDialog::new().set_title(title).pick_folder()
 }
 
 impl App {
@@ -70,13 +87,49 @@ impl App {
                 events.push(UiEvent::Save);
             }
         });
+        let (open, new) = ctx.input(|i| {
+            (i.modifiers.command && i.key_pressed(egui::Key::O), i.modifiers.command && i.key_pressed(egui::Key::N))
+        });
+        if open {
+            self.open_dialog();
+        }
+        if new {
+            self.new_dialog();
+        }
         for ev in events {
             self.send(ev);
         }
     }
 
+    fn open_dialog(&mut self) {
+        if let Some(path) = pick_folder("Open a project folder") {
+            self.send(UiEvent::Open { path });
+        }
+    }
+
+    fn new_dialog(&mut self) {
+        if let Some(path) = pick_folder("Choose an empty folder for the new project") {
+            self.send(UiEvent::New { path });
+        }
+    }
+
     fn toolbar(&mut self, ui: &mut egui::Ui, frame: &Frame) {
         ui.horizontal(|ui| {
+            ui.menu_button("File", |ui| {
+                if ui.button("New project… (Ctrl+N)").clicked() {
+                    ui.close();
+                    self.new_dialog();
+                }
+                if ui.button("Open project… (Ctrl+O)").clicked() {
+                    ui.close();
+                    self.open_dialog();
+                }
+                if ui.add_enabled(frame.dirty, egui::Button::new("Save (Ctrl+S)")).clicked() {
+                    ui.close();
+                    self.send(UiEvent::Save);
+                }
+            });
+            ui.separator();
             let mut tool = |ui: &mut egui::Ui, label: &str, id: &str, tip: &str| {
                 if ui.selectable_label(frame.tool == id, label).on_hover_text(tip).clicked() {
                     self.session.handle(UiEvent::Tool { tool: id.to_owned() });
@@ -108,30 +161,86 @@ impl App {
 
     fn inspector(&mut self, ui: &mut egui::Ui, frame: &Frame) {
         ui.heading("Selection");
-        match &frame.selected_tag {
-            Some(tag) => {
-                if self.renaming_for.as_ref() != Some(tag) {
-                    self.rename = tag.clone();
-                    self.renaming_for = Some(tag.clone());
+        let key = frame.selection.as_ref().map(|sel| match sel {
+            SelectionInfo::Device { tag, description, .. } => format!("device {tag} {description}"),
+            SelectionInfo::Wire { number, from, to } => format!("wire {from} {to} {number:?}"),
+        });
+        if key != self.fields.key {
+            self.fields = Fields { key, ..Fields::default() };
+            match &frame.selection {
+                Some(SelectionInfo::Device { tag, description, .. }) => {
+                    self.fields.tag = tag.clone();
+                    self.fields.description = description.clone();
                 }
+                Some(SelectionInfo::Wire { number, .. }) => self.fields.number = number.clone().unwrap_or_default(),
+                None => {}
+            }
+        }
+        // A field is applied when it loses focus (Tab, Enter or a click elsewhere) with a change.
+        let mut events = Vec::new();
+        match &frame.selection {
+            Some(SelectionInfo::Device { tag, description, symbol }) => {
                 ui.label("Device tag");
-                let edit = ui.text_edit_singleline(&mut self.rename);
-                let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if (enter || ui.button("Rename").clicked()) && self.rename.trim() != tag {
-                    self.session.handle(UiEvent::Rename { tag: self.rename.clone() });
+                if ui.text_edit_singleline(&mut self.fields.tag).lost_focus() && self.fields.tag.trim() != tag {
+                    events.push(UiEvent::Rename { tag: self.fields.tag.clone() });
                 }
+                ui.label("Description");
+                let edit = ui.text_edit_singleline(&mut self.fields.description);
+                if edit.lost_focus() && self.fields.description.trim() != description {
+                    events.push(UiEvent::Describe { text: self.fields.description.clone() });
+                }
+                ui.add_space(4.0);
+                ui.small(format!("Symbol: {symbol}"));
                 ui.add_space(8.0);
                 ui.label("R rotates, Delete removes.");
             }
+            Some(SelectionInfo::Wire { number, from, to }) => {
+                ui.label("Wire number");
+                let edit = ui.text_edit_singleline(&mut self.fields.number);
+                if edit.lost_focus() && self.fields.number.trim() != number.as_deref().unwrap_or("") {
+                    events.push(UiEvent::NumberWire { number: self.fields.number.clone() });
+                }
+                ui.add_space(4.0);
+                ui.label(format!("From {from}"));
+                ui.label(format!("To {to}"));
+                ui.add_space(8.0);
+                ui.label("Delete removes the wire.");
+            }
             None => {
-                self.renaming_for = None;
                 ui.label("Nothing selected.");
             }
         }
+        for ev in events {
+            self.send(ev);
+        }
         ui.add_space(16.0);
         ui.separator();
-        ui.small("Middle-drag to pan, wheel to zoom.");
-        ui.small(format!("Project: {}", self.session.dir().display()));
+        ui.small("Middle-drag to pan, wheel to zoom, F to fit.");
+        ui.small(format!("Project: {}", frame.project_dir));
+    }
+
+    fn prompt(&mut self, ctx: &egui::Context, question: &str) {
+        let mut answer = None;
+        egui::Modal::new(egui::Id::unique("unsaved-changes")).show(ctx, |ui| {
+            ui.set_max_width(360.0);
+            ui.heading("Unsaved changes");
+            ui.label(question);
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("Save").clicked() {
+                    answer = Some(Choice::Save);
+                }
+                if ui.button("Don't save").clicked() {
+                    answer = Some(Choice::Discard);
+                }
+                if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    answer = Some(Choice::Cancel);
+                }
+            });
+        });
+        if let Some(choice) = answer {
+            self.send(UiEvent::Confirm { choice });
+        }
     }
 
     fn canvas(&mut self, ui: &mut egui::Ui) -> Rect {
@@ -236,7 +345,14 @@ fn paint(painter: &egui::Painter, rect: Rect, view: &Viewport, base: &[Primitive
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        self.keys(&ctx);
+        // Closing the window with unsaved changes asks first; the session decides.
+        if ctx.input(|i| i.viewport().close_requested()) && !self.session.can_close() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.send(UiEvent::CloseRequested);
+        }
+        if self.session.frame(self.revision, BG).prompt.is_none() {
+            self.keys(&ctx);
+        }
         // The first frame computed only feeds the toolbars; the canvas uses a fresh one after
         // this frame's pointer events.
         let before = self.session.frame(self.revision, BG);
@@ -253,6 +369,13 @@ impl eframe::App for App {
                 self.revision = Some(frame.revision);
             }
             paint(ui.painter(), rect, &frame.view, &self.base, &frame.overlays);
+            if let Some(question) = &frame.prompt {
+                self.prompt(&ctx, question);
+            }
+            if frame.close && !self.close_sent {
+                self.close_sent = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
             if frame.title != self.title {
                 self.title = frame.title.clone();
                 ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!("{} - Electric Studio", frame.title)));
@@ -283,9 +406,9 @@ fn main() -> eframe::Result {
                 base: Vec::new(),
                 revision: None,
                 size: Vec2::ZERO,
-                rename: String::new(),
-                renaming_for: None,
+                fields: Fields::default(),
                 title: String::new(),
+                close_sent: false,
             }))
         }),
     )

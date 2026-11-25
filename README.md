@@ -6,8 +6,8 @@ truth; schematics, panel layouts and manufacturing reports are generated from it
 Drawing, DXF/DWG/PDF output and rendering come from the Rust crates of
 [CADCraft](https://github.com/storytold/cadcraft) (MIT OR Apache-2.0), used as libraries.
 
-> Status: **M1b done**: a first editor window (egui), chosen over Tauri in M1b (see
-> docs/UI-DECISION.md). Early development: no Open dialog or multi-page projects yet.
+> Status: **M1 done**: a one-page editor (egui) that opens, creates, edits and saves projects.
+> Early development: one page per project, a three-symbol placeholder library.
 
 ## Try it
 
@@ -55,7 +55,7 @@ Planned: `ecad-rules`, `ecad-symbols`, `ecad-parts`, `ecad-mcp`. See [docs/ARCHI
 | Milestone | Scope |
 | --- | --- |
 | M0 Foundation | Workspace, crates, CI, golden-file tests, feasibility test |
-| **M1 One-page editor** | M1a editing core · M1b UI chosen: egui · M1c finished editor |
+| M1 One-page editor | M1a editing core · M1b UI chosen: egui · M1c Open/New, unsaved-changes prompt, readable labels, side-panel edits |
 | M2 Multi-page projects | Pages, title blocks, cross-references, potentials, interruption points |
 | M3 Parts and reports | Parts catalogue, BOM, wire list, terminal diagram, PLC I/O list |
 | M4 Checks and output | Live checks, PDF/DXF/DWG export, headless CLI |

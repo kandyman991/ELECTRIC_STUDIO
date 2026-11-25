@@ -1,11 +1,11 @@
-//! A whole editing session as a shell sees it: the editor, the viewport, the project folder,
-//! and input in screen pixels. Both UI shells drive this same type, so pan, zoom, key bindings
-//! and saving behave identically in each; a shell only forwards [`UiEvent`]s and paints the
-//! [`Frame`] it gets back. Both types are serialisable for shells that talk over IPC (Tauri).
+//! A whole editing session as the UI sees it: the editor, the viewport, the project folder,
+//! input in screen pixels, and the decisions around it (open, new, close, unsaved changes).
+//! The UI only forwards [`UiEvent`]s, paints the [`Frame`] it gets back, and shows the
+//! [`Frame::prompt`] when there is one. Both types are serialisable, for a future MCP server.
 
 use crate::view::Viewport;
 use crate::{Editor, Key, Overlay, Primitive, Selected, Tool};
-use ecad_model::{Point, SymbolId};
+use ecad_model::{Page, PageId, Point, Project, SymbolId};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -22,7 +22,16 @@ pub enum Button {
     Middle,
 }
 
-/// Input from a shell, in screen pixels relative to the canvas's top-left corner.
+/// The answer to an unsaved-changes prompt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Choice {
+    Save,
+    Discard,
+    Cancel,
+}
+
+/// Input from the UI, in screen pixels relative to the canvas's top-left corner.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum UiEvent {
@@ -57,14 +66,37 @@ pub enum UiEvent {
     Tool {
         tool: String,
     },
+    /// New tag for the selected symbol's device.
     Rename {
         tag: String,
     },
+    /// New description for the selected symbol's device.
+    Describe {
+        text: String,
+    },
+    /// New number for the selected wire; blank clears it.
+    NumberWire {
+        number: String,
+    },
     Save,
     Fit,
+    /// Open the project in this folder (asks first when there are unsaved changes).
+    Open {
+        path: PathBuf,
+    },
+    /// Create an empty project in this folder and open it.
+    New {
+        path: PathBuf,
+    },
+    /// The window wants to close (asks first when there are unsaved changes).
+    CloseRequested,
+    /// The answer to [`Frame::prompt`].
+    Confirm {
+        choice: Choice,
+    },
 }
 
-/// Keys a shell maps from its own key events.
+/// Keys the UI maps from its own key events.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum KeyName {
@@ -81,24 +113,45 @@ pub struct PaletteItem {
     pub description: String,
 }
 
-/// Everything a shell needs to paint one frame.
+/// What is selected, with the fields the side panel shows and edits.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum SelectionInfo {
+    Device { tag: String, description: String, symbol: String },
+    Wire { number: Option<String>, from: String, to: String },
+}
+
+/// Everything the UI needs to paint one frame.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Frame {
     pub revision: u64,
-    /// The page in page millimetres; `None` when the shell already has this revision.
+    /// The page in page millimetres; `None` when the UI already has this revision.
     pub base: Option<Vec<Primitive>>,
     pub overlays: Vec<Overlay>,
     pub view: Viewport,
     pub status: String,
     /// `select`, `wire`, or the symbol id being placed.
     pub tool: String,
-    pub selected_tag: Option<String>,
+    pub selection: Option<SelectionInfo>,
     pub undo: Option<String>,
     pub redo: Option<String>,
     pub dirty: bool,
     pub title: String,
+    pub project_dir: String,
     pub palette: Vec<PaletteItem>,
+    /// An unsaved-changes question waiting for [`UiEvent::Confirm`].
+    pub prompt: Option<String>,
+    /// The window may close now.
+    pub close: bool,
+}
+
+/// An action waiting for the unsaved-changes answer.
+#[derive(Clone, Debug, PartialEq)]
+enum Pending {
+    Open(PathBuf),
+    New(PathBuf),
+    Close,
 }
 
 #[derive(Debug)]
@@ -109,20 +162,40 @@ pub struct Session {
     panning: Option<(f64, f64)>,
     fitted: bool,
     message: Option<String>,
+    pending: Option<Pending>,
+    closing: bool,
+}
+
+fn first_page_editor(project: Project) -> Result<Editor, String> {
+    let page = *project.pages.keys().next().ok_or("the project has no pages")?;
+    Editor::new(project, page).map_err(|e| e.to_string())
+}
+
+fn load_editor(dir: &Path) -> Result<Editor, String> {
+    first_page_editor(ecad_project::load(dir).map_err(|e| e.to_string())?)
+}
+
+/// An empty project with one page and the starter symbols, named after its folder.
+fn blank_project(dir: &Path) -> Project {
+    let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("New project");
+    let mut p = Project::new(name);
+    for s in ecad_model::sample::symbols() {
+        p.add_symbol(s);
+    }
+    p.add_page(Page { id: PageId::new(), name: "1".into() });
+    p
 }
 
 impl Session {
     /// Open the project in `dir`, or create the sample project there when the folder has none.
     pub fn open(dir: &Path) -> Result<Self, String> {
-        let project = if dir.join("project.json").exists() {
-            ecad_project::load(dir).map_err(|e| e.to_string())?
+        let editor = if dir.join("project.json").exists() {
+            load_editor(dir)?
         } else {
             let p = ecad_model::sample::start_circuit().map_err(|e| e.to_string())?;
             ecad_project::save(&p, dir).map_err(|e| e.to_string())?;
-            p
+            first_page_editor(p)?
         };
-        let page = *project.pages.keys().next().ok_or("the project has no pages")?;
-        let editor = Editor::new(project, page).map_err(|e| e.to_string())?;
         Ok(Session {
             editor,
             view: Viewport::default(),
@@ -130,6 +203,8 @@ impl Session {
             panning: None,
             fitted: false,
             message: None,
+            pending: None,
+            closing: false,
         })
     }
 
@@ -142,6 +217,10 @@ impl Session {
     pub fn dir(&self) -> &Path {
         &self.dir
     }
+    /// Whether the window may close without asking.
+    pub fn can_close(&self) -> bool {
+        self.closing || !self.editor.is_dirty()
+    }
 
     fn page_point(&mut self, x: f64, y: f64) -> Point {
         self.editor.hit_tolerance = HIT_PX / self.view.scale;
@@ -149,13 +228,26 @@ impl Session {
     }
 
     fn fit(&mut self) {
-        if let Some((lo, hi)) = self.editor.extents() {
-            self.view.fit(lo, hi, FIT_MARGIN_PX);
+        match self.editor.extents() {
+            Some((lo, hi)) => self.view.fit(lo, hi, FIT_MARGIN_PX),
+            None => self.view.center = Point::ZERO,
+        }
+    }
+
+    fn report<E: std::fmt::Display>(&mut self, r: Result<(), E>) {
+        if let Err(e) = r {
+            self.message = Some(e.to_string());
         }
     }
 
     pub fn handle(&mut self, ev: UiEvent) {
         self.message = None;
+        // While a question is open, only the answer and view changes are accepted.
+        if self.pending.is_some()
+            && !matches!(ev, UiEvent::Confirm { .. } | UiEvent::Resize { .. } | UiEvent::CloseRequested)
+        {
+            return;
+        }
         match ev {
             UiEvent::Resize { width, height } => {
                 self.view.width = width.max(1.0);
@@ -198,13 +290,79 @@ impl Session {
                 symbol => Tool::Place(SymbolId::new(symbol)),
             }),
             UiEvent::Rename { tag } => {
-                if let Err(e) = self.editor.rename_selected(tag.trim()) {
-                    self.message = Some(e.to_string());
-                }
+                let r = self.editor.rename_selected(tag.trim());
+                self.report(r);
+            }
+            UiEvent::Describe { text } => {
+                let r = self.editor.describe_selected(&text);
+                self.report(r);
+            }
+            UiEvent::NumberWire { number } => {
+                let r = self.editor.number_selected_wire(&number);
+                self.report(r);
             }
             UiEvent::Save => self.save(),
             UiEvent::Fit => self.fit(),
+            UiEvent::Open { path } => self.request(Pending::Open(path)),
+            UiEvent::New { path } => self.request(Pending::New(path)),
+            UiEvent::CloseRequested => {
+                if self.pending.is_none() {
+                    self.request(Pending::Close);
+                }
+            }
+            UiEvent::Confirm { choice } => {
+                let Some(action) = self.pending.take() else { return };
+                match choice {
+                    Choice::Cancel => {}
+                    Choice::Discard => self.perform(action),
+                    Choice::Save => {
+                        self.save();
+                        // A failed save leaves the changes in place: don't throw them away.
+                        if !self.editor.is_dirty() {
+                            self.perform(action);
+                        }
+                    }
+                }
+            }
         }
+    }
+
+    fn request(&mut self, action: Pending) {
+        if self.editor.is_dirty() {
+            self.pending = Some(action);
+        } else {
+            self.perform(action);
+        }
+    }
+
+    fn perform(&mut self, action: Pending) {
+        let result = match action {
+            Pending::Close => {
+                self.closing = true;
+                Ok(())
+            }
+            Pending::Open(path) => load_editor(&path).map(|e| self.replace(e, path)),
+            Pending::New(path) => {
+                if path.join("project.json").exists() {
+                    Err(format!("{} already contains a project; use Open", path.display()))
+                } else {
+                    let p = blank_project(&path);
+                    ecad_project::save(&p, &path)
+                        .map_err(|e| e.to_string())
+                        .and_then(|()| first_page_editor(p))
+                        .map(|e| self.replace(e, path))
+                }
+            }
+        };
+        self.report(result);
+    }
+
+    fn replace(&mut self, editor: Editor, dir: PathBuf) {
+        self.message = Some(format!("Opened {}", dir.display()));
+        self.editor = editor;
+        self.dir = dir;
+        self.panning = None;
+        self.fit();
     }
 
     pub fn save(&mut self) {
@@ -217,7 +375,27 @@ impl Session {
         });
     }
 
-    /// The frame to paint. `known_revision` is the revision whose base the shell already holds.
+    fn selection_info(&self) -> Option<SelectionInfo> {
+        let project = self.editor.project();
+        match self.editor.selection()? {
+            Selected::Function(f) => {
+                let f = project.function(f).ok()?;
+                let d = project.device(f.device).ok()?;
+                Some(SelectionInfo::Device {
+                    tag: d.tag.clone(),
+                    description: d.description.clone(),
+                    symbol: f.symbol.0.clone(),
+                })
+            }
+            Selected::Connection(c) => {
+                let c = project.connection(c).ok()?;
+                let end = |r| project.describe(r).map(|(t, p)| format!("{t}:{p}")).unwrap_or_default();
+                Some(SelectionInfo::Wire { number: c.wire_number.clone(), from: end(&c.from), to: end(&c.to) })
+            }
+        }
+    }
+
+    /// The frame to paint. `known_revision` is the revision whose base the UI already holds.
     pub fn frame(&self, known_revision: Option<u64>, background: [u8; 3]) -> Frame {
         let editor = &self.editor;
         let revision = editor.revision();
@@ -230,13 +408,13 @@ impl Session {
             }
         };
         let project = editor.project();
-        let selected_tag = match editor.selection() {
-            Some(Selected::Function(f)) => {
-                project.function(f).and_then(|f| project.device(f.device)).map(|d| d.tag.clone()).ok()
-            }
-            _ => None,
-        };
         let status = base_error.or_else(|| self.message.clone()).unwrap_or_else(|| editor.status().to_owned());
+        let prompt = self.pending.as_ref().map(|p| match p {
+            Pending::Close => format!("Save changes to {} before closing?", project.name),
+            Pending::Open(_) | Pending::New(_) => {
+                format!("Save changes to {} before opening another project?", project.name)
+            }
+        });
         Frame {
             revision,
             base,
@@ -248,16 +426,19 @@ impl Session {
                 Tool::Wire => "wire".into(),
                 Tool::Place(s) => s.0.clone(),
             },
-            selected_tag,
+            selection: self.selection_info(),
             undo: editor.undo_label().map(str::to_owned),
             redo: editor.redo_label().map(str::to_owned),
             dirty: editor.is_dirty(),
             title: format!("{}{}", project.name, if editor.is_dirty() { " *" } else { "" }),
+            project_dir: self.dir.display().to_string(),
             palette: project
                 .symbols
                 .values()
                 .map(|s| PaletteItem { id: s.id.0.clone(), description: s.description.clone() })
                 .collect(),
+            prompt,
+            close: self.closing,
         }
     }
 }
@@ -271,6 +452,13 @@ mod tests {
         let mut s = Session::open(dir.path()).unwrap();
         s.handle(UiEvent::Resize { width: 800.0, height: 600.0 });
         (dir, s)
+    }
+
+    fn place_coil(s: &mut Session) {
+        s.handle(UiEvent::Tool { tool: "iec.coil".into() });
+        let (x, y) = s.view().to_screen(Point::new(40.0, 40.0));
+        s.handle(UiEvent::PointerDown { x, y, button: Button::Primary });
+        s.handle(UiEvent::PointerUp { x, y, button: Button::Primary });
     }
 
     #[test]
@@ -289,21 +477,16 @@ mod tests {
         let f = s.frame(None, [0, 0, 0]);
         assert!(f.base.as_ref().is_some_and(|b| !b.is_empty()));
         assert!(s.frame(Some(f.revision), [0, 0, 0]).base.is_none());
-        s.handle(UiEvent::Tool { tool: "iec.coil".into() });
-        let (x, y) = s.view().to_screen(Point::new(40.0, 40.0));
-        s.handle(UiEvent::PointerDown { x, y, button: Button::Primary });
-        s.handle(UiEvent::PointerUp { x, y, button: Button::Primary });
+        place_coil(&mut s);
         let g = s.frame(Some(f.revision), [0, 0, 0]);
         assert!(g.base.is_some() && g.dirty && g.title.ends_with('*'));
-        assert_eq!(g.selected_tag.as_deref(), Some("-K2"));
+        assert!(matches!(&g.selection, Some(SelectionInfo::Device { tag, .. }) if tag == "-K2"));
     }
 
     #[test]
     fn save_writes_the_folder_and_clears_dirty() {
         let (dir, mut s) = session();
-        s.handle(UiEvent::Tool { tool: "iec.coil".into() });
-        let (x, y) = s.view().to_screen(Point::new(40.0, 40.0));
-        s.handle(UiEvent::PointerDown { x, y, button: Button::Primary });
+        place_coil(&mut s);
         s.handle(UiEvent::Save);
         assert!(!s.frame(None, [0, 0, 0]).dirty);
         assert!(ecad_project::load(dir.path()).unwrap().device_by_tag("-K2").is_some());
@@ -323,11 +506,106 @@ mod tests {
     }
 
     #[test]
-    fn events_round_trip_as_json_for_ipc_shells() {
+    fn closing_a_clean_project_needs_no_question() {
+        let (_dir, mut s) = session();
+        assert!(s.can_close());
+        s.handle(UiEvent::CloseRequested);
+        assert!(s.frame(None, [0, 0, 0]).close);
+    }
+
+    #[test]
+    fn closing_with_changes_asks_and_each_answer_does_what_it_says() {
+        let (dir, mut s) = session();
+        place_coil(&mut s);
+        assert!(!s.can_close());
+
+        s.handle(UiEvent::CloseRequested);
+        let f = s.frame(None, [0, 0, 0]);
+        assert_eq!(f.prompt.as_deref(), Some("Save changes to Sample: start circuit before closing?"));
+        assert!(!f.close);
+        // Other input is ignored while the question is open.
+        s.handle(UiEvent::Key { key: KeyName::Undo });
+        assert!(s.editor().is_dirty());
+
+        s.handle(UiEvent::Confirm { choice: Choice::Cancel });
+        let f = s.frame(None, [0, 0, 0]);
+        assert!(f.prompt.is_none() && !f.close && f.dirty);
+
+        s.handle(UiEvent::CloseRequested);
+        s.handle(UiEvent::Confirm { choice: Choice::Save });
+        assert!(s.frame(None, [0, 0, 0]).close);
+        assert!(ecad_project::load(dir.path()).unwrap().device_by_tag("-K2").is_some());
+    }
+
+    #[test]
+    fn discarding_on_close_leaves_the_folder_as_it_was() {
+        let (dir, mut s) = session();
+        place_coil(&mut s);
+        s.handle(UiEvent::CloseRequested);
+        s.handle(UiEvent::Confirm { choice: Choice::Discard });
+        assert!(s.can_close() && s.frame(None, [0, 0, 0]).close);
+        assert!(ecad_project::load(dir.path()).unwrap().device_by_tag("-K2").is_none());
+    }
+
+    #[test]
+    fn new_creates_an_empty_project_and_open_switches_back() {
+        let (first, mut s) = session();
+        let other = tempfile::tempdir().unwrap();
+        let path = other.path().join("Panel A");
+        s.handle(UiEvent::New { path: path.clone() });
+        let f = s.frame(None, [0, 0, 0]);
+        assert_eq!(f.title, "Panel A");
+        assert_eq!(s.editor().project().functions.len(), 0);
+        assert_eq!(f.palette.len(), 3, "starter symbols are available");
+        assert!(path.join("project.json").exists());
+
+        // New into a folder that already has a project is refused.
+        s.handle(UiEvent::New { path: first.path().to_owned() });
+        assert!(s.frame(None, [0, 0, 0]).status.contains("already contains a project"));
+
+        s.handle(UiEvent::Open { path: first.path().to_owned() });
+        assert_eq!(s.editor().project().name, "Sample: start circuit");
+        assert_eq!(s.dir(), first.path());
+    }
+
+    #[test]
+    fn opening_with_unsaved_changes_asks_first() {
+        let (_first, mut s) = session();
+        let other = tempfile::tempdir().unwrap();
+        s.handle(UiEvent::New { path: other.path().join("B") });
+        place_coil(&mut s);
+        s.handle(UiEvent::Open { path: other.path().join("missing") });
+        assert!(s.frame(None, [0, 0, 0]).prompt.is_some());
+        s.handle(UiEvent::Confirm { choice: Choice::Discard });
+        let f = s.frame(None, [0, 0, 0]);
+        assert!(f.status.contains("project.json"), "a failed open says why: {}", f.status);
+        assert_eq!(s.editor().project().name, "B", "and keeps the current project open");
+    }
+
+    #[test]
+    fn the_side_panel_shows_and_edits_the_selection() {
+        let (_dir, mut s) = session();
+        let (x, y) = s.view().to_screen(Point::new(0.2, 26.0));
+        s.handle(UiEvent::PointerDown { x, y, button: Button::Primary });
+        s.handle(UiEvent::PointerUp { x, y, button: Button::Primary });
+        assert_eq!(
+            s.frame(None, [0, 0, 0]).selection,
+            Some(SelectionInfo::Wire { number: Some("W2".into()), from: "-S1:14".into(), to: "-K1:A1".into() })
+        );
+        s.handle(UiEvent::NumberWire { number: "W1".into() });
+        assert_eq!(s.frame(None, [0, 0, 0]).status, "wire number `W1` is already used");
+        s.handle(UiEvent::NumberWire { number: "102".into() });
+        assert!(
+            matches!(s.frame(None, [0, 0, 0]).selection, Some(SelectionInfo::Wire { number: Some(n), .. }) if n == "102")
+        );
+    }
+
+    #[test]
+    fn events_round_trip_as_json() {
         let ev: UiEvent = serde_json::from_str(r#"{"type":"pointerDown","x":1,"y":2,"button":"primary"}"#).unwrap();
         assert_eq!(ev, UiEvent::PointerDown { x: 1.0, y: 2.0, button: Button::Primary });
-        let key: UiEvent = serde_json::from_str(r#"{"type":"key","key":"undo"}"#).unwrap();
-        assert_eq!(key, UiEvent::Key { key: KeyName::Undo });
+        let ev: UiEvent = serde_json::from_str(r#"{"type":"confirm","choice":"discard"}"#).unwrap();
+        assert_eq!(ev, UiEvent::Confirm { choice: Choice::Discard });
         let (_dir, s) = session();
         let json = serde_json::to_value(s.frame(None, [0, 0, 0])).unwrap();
         assert!(json["base"].as_array().is_some_and(|b| !b.is_empty()));

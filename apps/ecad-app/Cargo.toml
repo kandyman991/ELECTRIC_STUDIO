@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 ecad-editor = { workspace = true }
 eframe = { workspace = true }
+rfd = { workspace = true }
 
 [lints]
 workspace = true

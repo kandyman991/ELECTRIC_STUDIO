@@ -8,7 +8,7 @@ use cadcraft_doc::{
     Attrib, Block, Circle, Common, Drawing, Entity, EntityKind, HAlign, Insert, Line, Space, Text, VAlign,
     color::Color, geom::Vec3,
 };
-use ecad_model::{Graphic, PageId, Point, Project};
+use ecad_model::{Direction, Graphic, PageId, Point, Project};
 use std::sync::Arc;
 
 pub const LAYER_SYMBOLS: &str = "SYMBOLS";
@@ -44,6 +44,64 @@ fn text(at: Point, height: f64, value: &str) -> Text {
     }
 }
 
+/// Text anchored at `at` by the given justification (left/baseline uses the start point).
+fn justified(at: Point, height: f64, value: &str, halign: HAlign, valign: VAlign) -> Text {
+    let mut t = text(at, height, value);
+    if (halign, valign) != (HAlign::Left, VAlign::Baseline) {
+        t.align_pt = Some(v(at));
+    }
+    t.halign = halign;
+    t.valign = valign;
+    t
+}
+
+/// Gap between a connection point and its designation, in mm.
+const LABEL_GAP: f64 = 1.0;
+/// Gap between a symbol's box and its device tag, in mm.
+const TAG_GAP: f64 = 2.5;
+pub const LABEL_HEIGHT: f64 = 1.8;
+pub const TAG_HEIGHT: f64 = 2.5;
+
+/// A connection point's designation, upright whatever the symbol's rotation: inside the symbol
+/// beside the point, never on the wire leaving it.
+fn point_label(at: Point, leaves: Direction, name: &str) -> Text {
+    let g = LABEL_GAP;
+    match leaves {
+        Direction::Up => justified(Point::new(at.x + g, at.y - g), LABEL_HEIGHT, name, HAlign::Left, VAlign::Top),
+        Direction::Down => justified(Point::new(at.x + g, at.y + g), LABEL_HEIGHT, name, HAlign::Left, VAlign::Bottom),
+        Direction::Left => justified(Point::new(at.x + g, at.y + g), LABEL_HEIGHT, name, HAlign::Left, VAlign::Bottom),
+        Direction::Right => {
+            justified(Point::new(at.x - g, at.y + g), LABEL_HEIGHT, name, HAlign::Right, VAlign::Bottom)
+        }
+    }
+}
+
+/// Where a device tag goes: right of a symbol whose wires leave up/down, above one whose wires
+/// leave sideways, so it never sits on a wire.
+fn tag_text(min: Point, max: Point, sideways: bool, tag: &str) -> Text {
+    if sideways {
+        let at = Point::new((min.x + max.x) / 2.0, max.y + TAG_GAP);
+        justified(at, TAG_HEIGHT, tag, HAlign::Center, VAlign::Bottom)
+    } else {
+        let at = Point::new(max.x + TAG_GAP, (min.y + max.y) / 2.0);
+        justified(at, TAG_HEIGHT, tag, HAlign::Left, VAlign::Middle)
+    }
+}
+
+/// A wire number at the middle of the wire's longest segment: beside a vertical run, above a
+/// horizontal one.
+fn wire_label(route: &[Point], number: &str) -> Text {
+    let len = |s: &[Point]| (s[1].x - s[0].x).abs() + (s[1].y - s[0].y).abs();
+    let longest = route.windows(2).max_by(|a, b| len(a).total_cmp(&len(b)));
+    let Some(seg) = longest else { return text(route.first().copied().unwrap_or(Point::ZERO), LABEL_HEIGHT, number) };
+    let mid = Point::new((seg[0].x + seg[1].x) / 2.0, (seg[0].y + seg[1].y) / 2.0);
+    if seg[0].x == seg[1].x {
+        justified(Point::new(mid.x + LABEL_GAP, mid.y), LABEL_HEIGHT, number, HAlign::Left, VAlign::Middle)
+    } else {
+        justified(Point::new(mid.x, mid.y + LABEL_GAP), LABEL_HEIGHT, number, HAlign::Center, VAlign::Bottom)
+    }
+}
+
 fn on(layer: &str) -> Common {
     Common { layer: layer.to_owned(), ..Common::default() }
 }
@@ -74,19 +132,25 @@ pub fn page_drawing(project: &Project, page: PageId) -> Result<Drawing> {
             let h = d.new_handle();
             b.entities.push(Entity::new(h, kind));
         }
-        for cp in &sym.connection_points {
-            let h = d.new_handle();
-            let label = text(Point::new(cp.at.x + 1.0, cp.at.y - 2.5), 1.8, &cp.name);
-            b.entities.push(Entity::new(h, EntityKind::Text(label)));
-        }
         d.blocks.insert(id.0.clone(), Arc::new(b));
     }
 
     for f in project.functions_on(page) {
         let device = project.device(f.device)?;
+        let sym = project.symbol(&f.symbol)?;
+        // Labels are placed in page coordinates, not inside the block, so they stay upright
+        // and readable whatever the symbol's rotation.
+        let mut sideways = false;
+        for cp in &sym.connection_points {
+            let (at, leaves) = project.connection_point(&ecad_model::ConnectionRef::new(f.id, &cp.name))?;
+            sideways |= !leaves.is_vertical();
+            let label = point_label(at, leaves, &cp.name);
+            d.add(&Space::Model, on(LAYER_TAGS), EntityKind::Text(label)).map_err(err)?;
+        }
+        let (min, max) = project.function_bounds(f.id)?.unwrap_or((f.position, f.position));
         let tag = Attrib {
             tag: "TAG".into(),
-            text: text(Point::new(f.position.x + 7.0, f.position.y), 2.5, &device.tag),
+            text: tag_text(min, max, sideways, &device.tag),
             invisible: false,
             constant: false,
             prompt: "Device tag".into(),
@@ -112,9 +176,7 @@ pub fn page_drawing(project: &Project, page: PageId) -> Result<Drawing> {
             d.add(&Space::Model, wire.clone(), EntityKind::Line(Line { a: v(seg[0]), b: v(seg[1]) })).map_err(err)?;
         }
         if let Some(n) = &c.wire_number {
-            let mid = route[route.len() / 2];
-            let label = text(Point::new(mid.x + 1.0, mid.y + 1.0), 1.8, n);
-            d.add(&Space::Model, on(LAYER_TAGS), EntityKind::Text(label)).map_err(err)?;
+            d.add(&Space::Model, on(LAYER_TAGS), EntityKind::Text(wire_label(&route, n))).map_err(err)?;
         }
     }
     Ok(d)

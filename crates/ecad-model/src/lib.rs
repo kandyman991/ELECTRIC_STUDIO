@@ -139,6 +139,36 @@ mod tests {
     }
 
     #[test]
+    fn wire_numbers_are_unique_and_descriptions_undo() {
+        let mut p = start_circuit().unwrap();
+        let w2 = wire(&p, "W2").id;
+        assert_eq!(
+            p.apply(Command::SetWireNumber { id: w2, number: Some("W1".into()) }).unwrap_err(),
+            ModelError::DuplicateWireNumber("W1".into())
+        );
+        let undo = p.apply(Command::SetWireNumber { id: w2, number: Some(" 102 ".into()) }).unwrap();
+        assert_eq!(p.connection(w2).unwrap().wire_number.as_deref(), Some("102"), "trimmed");
+        p.apply(undo).unwrap();
+        assert_eq!(p.connection(w2).unwrap().wire_number.as_deref(), Some("W2"));
+        p.apply(Command::SetWireNumber { id: w2, number: Some("  ".into()) }).unwrap();
+        assert_eq!(p.connection(w2).unwrap().wire_number, None, "blank clears it");
+
+        let k1 = DeviceId::from_u128(0x103);
+        let undo = p.apply(Command::SetDescription { id: k1, description: "Pump contactor".into() }).unwrap();
+        assert_eq!(p.device(k1).unwrap().description, "Pump contactor");
+        p.apply(undo).unwrap();
+        assert_eq!(p.device(k1).unwrap().description, "Motor contactor");
+    }
+
+    #[test]
+    fn function_bounds_follow_rotation() {
+        let mut p = start_circuit().unwrap();
+        assert_eq!(p.function_bounds(K1_COIL).unwrap(), Some((Point::new(-5.0, 4.0), Point::new(5.0, 20.0))));
+        p.apply(Command::Rotate { id: K1_COIL, to: Rotation::R90 }).unwrap();
+        assert_eq!(p.function_bounds(K1_COIL).unwrap(), Some((Point::new(-8.0, 7.0), Point::new(8.0, 17.0))));
+    }
+
+    #[test]
     fn devices_in_use_cannot_be_removed_and_tags_are_numbered() {
         let mut p = start_circuit().unwrap();
         let k1 = DeviceId::from_u128(0x103);
