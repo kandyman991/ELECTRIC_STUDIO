@@ -165,3 +165,21 @@ fn the_side_panel_edits_descriptions_and_wire_numbers() {
     e.key(Key::Undo);
     assert_eq!(e.project(), &start_circuit().unwrap());
 }
+
+#[test]
+fn undoing_back_to_the_saved_state_is_clean_and_a_new_branch_is_not() {
+    let mut e = editor();
+    e.mark_saved();
+    click(&mut e, 2.0, 12.0);
+    e.key(Key::Rotate);
+    assert!(e.is_dirty());
+    e.key(Key::Undo);
+    assert!(!e.is_dirty(), "back at the saved state");
+    e.key(Key::Redo);
+    e.mark_saved();
+    e.key(Key::Undo);
+    assert!(e.is_dirty());
+    e.key(Key::Delete); // a different change: the saved state (rotated) can't be reached any more
+    e.key(Key::Undo);
+    assert!(e.is_dirty(), "unrotated is not what was saved");
+}

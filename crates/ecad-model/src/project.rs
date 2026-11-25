@@ -5,6 +5,7 @@
 //! Every change goes through [`Project::apply`], which returns the command that undoes it.
 
 use crate::geometry::{Direction, Point, Rotation};
+use crate::sheet::Sheet;
 use crate::symbol::{SymbolDef, SymbolId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -50,7 +51,20 @@ id_type!(ConnectionId);
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Page {
     pub id: PageId,
+    /// Page number as printed, e.g. `1`, `2`, `3a`. Unique in the project.
     pub name: String,
+    /// What the page shows, e.g. "Motor starter". Printed in the title block.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// Position in the project; pages are shown sorted by it.
+    #[serde(default)]
+    pub order: u32,
+}
+
+impl Page {
+    pub fn new(name: &str, order: u32) -> Self {
+        Page { id: PageId::new(), name: name.to_owned(), description: String::new(), order }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -134,6 +148,19 @@ pub enum Command {
         id: ConnectionId,
         number: Option<String>,
     },
+    AddPage(Page),
+    /// Only an empty page can be removed (remove its symbols first, in the same batch).
+    RemovePage(PageId),
+    RenamePage {
+        id: PageId,
+        name: String,
+    },
+    DescribePage {
+        id: PageId,
+        description: String,
+    },
+    /// Put the pages in this order (every page, once).
+    ReorderPages(Vec<PageId>),
     /// Several commands applied together: all of them or none.
     Batch(Vec<Command>),
 }
@@ -166,6 +193,14 @@ pub enum ModelError {
     DeviceInUse(String),
     #[error("wire number `{0}` is already used")]
     DuplicateWireNumber(String),
+    #[error("page `{0}` already exists")]
+    DuplicatePageName(String),
+    #[error("page name must not be empty")]
+    EmptyPageName,
+    #[error("page `{0}` still has symbols on it")]
+    PageNotEmpty(String),
+    #[error("the new page order must list every page once")]
+    BadPageOrder,
     #[error("id {0} is already used")]
     DuplicateId(Uuid),
 }
@@ -180,6 +215,9 @@ pub struct Project {
     pub devices: BTreeMap<DeviceId, Device>,
     pub functions: BTreeMap<FunctionId, Function>,
     pub connections: BTreeMap<ConnectionId, Connection>,
+    /// The sheet every page is drawn on.
+    #[serde(default)]
+    pub sheet: Sheet,
 }
 
 impl Project {
@@ -206,6 +244,16 @@ impl Project {
     }
     pub fn symbol(&self, id: &SymbolId) -> Result<&SymbolDef> {
         self.symbols.get(id).ok_or_else(|| ModelError::NoSymbol(id.clone()))
+    }
+    /// Pages in project order.
+    pub fn pages_in_order(&self) -> Vec<&Page> {
+        let mut v: Vec<&Page> = self.pages.values().collect();
+        v.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.name.cmp(&b.name)));
+        v
+    }
+    /// The address of a point on a page: `<page>.<column>`, e.g. `2.4`.
+    pub fn location(&self, page: PageId, p: Point) -> Result<String> {
+        Ok(format!("{}.{}", self.page(page)?.name, self.sheet.column_of(p)))
     }
     pub fn functions_on(&self, page: PageId) -> impl Iterator<Item = &Function> {
         self.functions.values().filter(move |f| f.page == page)
@@ -337,6 +385,50 @@ impl Project {
                 let old = std::mem::replace(&mut c.wire_number, number);
                 Ok(Command::SetWireNumber { id, number: old })
             }
+            Command::AddPage(page) => {
+                if self.pages.contains_key(&page.id) {
+                    return Err(ModelError::DuplicateId(page.id.0));
+                }
+                self.check_page_name(&page.name, None)?;
+                let id = page.id;
+                self.pages.insert(id, page);
+                Ok(Command::RemovePage(id))
+            }
+            Command::RemovePage(id) => {
+                let name = self.page(id)?.name.clone();
+                if self.functions.values().any(|f| f.page == id) {
+                    return Err(ModelError::PageNotEmpty(name));
+                }
+                let page = self.pages.remove(&id).ok_or(ModelError::NoPage(id))?;
+                Ok(Command::AddPage(page))
+            }
+            Command::RenamePage { id, name } => {
+                let name = name.trim().to_owned();
+                self.check_page_name(&name, Some(id))?;
+                let page = self.pages.get_mut(&id).ok_or(ModelError::NoPage(id))?;
+                let old = std::mem::replace(&mut page.name, name);
+                Ok(Command::RenamePage { id, name: old })
+            }
+            Command::DescribePage { id, description } => {
+                let page = self.pages.get_mut(&id).ok_or(ModelError::NoPage(id))?;
+                let old = std::mem::replace(&mut page.description, description.trim().to_owned());
+                Ok(Command::DescribePage { id, description: old })
+            }
+            Command::ReorderPages(order) => {
+                let mut sorted = order.clone();
+                sorted.sort();
+                sorted.dedup();
+                if sorted.len() != order.len() || sorted != self.pages.keys().copied().collect::<Vec<_>>() {
+                    return Err(ModelError::BadPageOrder);
+                }
+                let old: Vec<PageId> = self.pages_in_order().iter().map(|p| p.id).collect();
+                for (i, id) in order.iter().enumerate() {
+                    if let Some(p) = self.pages.get_mut(id) {
+                        p.order = i as u32;
+                    }
+                }
+                Ok(Command::ReorderPages(old))
+            }
             Command::Batch(cmds) => {
                 let mut undo = Vec::with_capacity(cmds.len());
                 for cmd in cmds {
@@ -363,6 +455,16 @@ impl Project {
         }
         match self.device_by_tag(tag) {
             Some(d) if Some(d.id) != except => Err(ModelError::DuplicateTag(tag.to_owned())),
+            _ => Ok(()),
+        }
+    }
+
+    fn check_page_name(&self, name: &str, except: Option<PageId>) -> Result<()> {
+        if name.trim().is_empty() {
+            return Err(ModelError::EmptyPageName);
+        }
+        match self.pages.values().find(|p| p.name == name) {
+            Some(p) if Some(p.id) != except => Err(ModelError::DuplicatePageName(name.to_owned())),
             _ => Ok(()),
         }
     }
@@ -437,6 +539,23 @@ impl Project {
             max = Point::new(max.x.max(c.x), max.y.max(c.y));
         }
         Ok(Some((min, max)))
+    }
+
+    /// Bounding box (`min`, `max`) of the symbols and wires on a page, or `None` when empty.
+    pub fn content_bounds(&self, page: PageId) -> Option<(Point, Point)> {
+        let mut pts = Vec::new();
+        for f in self.functions_on(page) {
+            if let Ok(Some((lo, hi))) = self.function_bounds(f.id) {
+                pts.extend([lo, hi]);
+            }
+        }
+        for c in self.connections_on(page) {
+            pts.extend(self.route(c).unwrap_or_default());
+        }
+        let first = *pts.first()?;
+        Some(pts.iter().fold((first, first), |(lo, hi), p| {
+            (Point::new(lo.x.min(p.x), lo.y.min(p.y)), Point::new(hi.x.max(p.x), hi.y.max(p.y)))
+        }))
     }
 
     /// Orthogonal route from one end to the other. Straight when the ends face each other on one

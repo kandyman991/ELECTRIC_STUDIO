@@ -14,6 +14,7 @@ use std::sync::Arc;
 pub const LAYER_SYMBOLS: &str = "SYMBOLS";
 pub const LAYER_WIRES: &str = "WIRES";
 pub const LAYER_TAGS: &str = "TAGS";
+pub const LAYER_FRAME: &str = "FRAME";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ViewError {
@@ -112,6 +113,7 @@ pub fn page_drawing(project: &Project, page: PageId) -> Result<Drawing> {
     project.page(page)?;
     let mut d = Drawing::new_metric();
     let err = |e: cadcraft_doc::DocError| ViewError::Drawing(e.to_string());
+    draw_sheet(&mut d, project, page)?;
 
     // Only the symbols this page uses, in a stable order.
     let mut used: Vec<_> = project.functions_on(page).map(|f| f.symbol.clone()).collect();
@@ -222,6 +224,73 @@ pub fn page_primitives(project: &Project, page: PageId, background: [u8; 3]) -> 
         }
     }
     Ok(out)
+}
+
+fn add_line(d: &mut Drawing, common: &Common, a: Point, b: Point) -> Result<()> {
+    d.add(&Space::Model, common.clone(), EntityKind::Line(Line { a: v(a), b: v(b) }))
+        .map(|_| ())
+        .map_err(|e| ViewError::Drawing(e.to_string()))
+}
+
+fn add_rect(d: &mut Drawing, common: &Common, lo: Point, hi: Point) -> Result<()> {
+    let (a, b, c, e) = (lo, Point::new(hi.x, lo.y), hi, Point::new(lo.x, hi.y));
+    for (p, q) in [(a, b), (b, c), (c, e), (e, a)] {
+        add_line(d, common, p, q)?;
+    }
+    Ok(())
+}
+
+fn add_text(d: &mut Drawing, common: &Common, t: Text) -> Result<()> {
+    d.add(&Space::Model, common.clone(), EntityKind::Text(t)).map(|_| ()).map_err(|e| ViewError::Drawing(e.to_string()))
+}
+
+/// The sheet: outer edge, frame, numbered column band and the title block.
+fn draw_sheet(d: &mut Drawing, project: &Project, page: PageId) -> Result<()> {
+    use ecad_model::sheet::{COLUMN_BAND, TITLE_BLOCK_HEIGHT};
+    let sheet = &project.sheet;
+    // Colour 8 (grey) reads on dark screens and prints light on paper; text stays colour 7.
+    let lines = Common { color: Color::from_aci(8), ..on(LAYER_FRAME) };
+    let words = on(LAYER_FRAME);
+    let (s_lo, s_hi) = sheet.bounds();
+    add_rect(d, &lines, s_lo, s_hi)?;
+    let (lo, hi) = sheet.frame();
+    add_rect(d, &lines, lo, hi)?;
+
+    let band = hi.y - COLUMN_BAND;
+    add_line(d, &lines, Point::new(lo.x, band), Point::new(hi.x, band))?;
+    for n in 1..=sheet.columns {
+        let (left, right) = sheet.column_span(n);
+        if n > 1 {
+            add_line(d, &lines, Point::new(left, band), Point::new(left, hi.y))?;
+        }
+        let at = Point::new((left + right) / 2.0, band + COLUMN_BAND / 2.0);
+        add_text(d, &words, justified(at, 2.5, &n.to_string(), HAlign::Center, VAlign::Middle))?;
+    }
+
+    let this = project.page(page)?;
+    let (t_lo, t_hi) = sheet.title_block();
+    add_rect(d, &lines, t_lo, t_hi)?;
+    let split_x = t_hi.x - 40.0;
+    let mid_y = t_lo.y + TITLE_BLOCK_HEIGHT / 2.0;
+    add_line(d, &lines, Point::new(split_x, t_lo.y), Point::new(split_x, t_hi.y))?;
+    add_line(d, &lines, Point::new(t_lo.x, mid_y), Point::new(split_x, mid_y))?;
+    let caption = |x: f64, y: f64, s: &str| justified(Point::new(x, y), 1.8, s, HAlign::Left, VAlign::Top);
+    let value = |x: f64, y: f64, s: &str| text(Point::new(x, y), 3.5, s);
+    add_text(d, &words, caption(t_lo.x + 2.0, t_hi.y - 1.5, "Project"))?;
+    add_text(d, &words, value(t_lo.x + 2.0, mid_y + 3.0, &project.name))?;
+    add_text(d, &words, caption(t_lo.x + 2.0, mid_y - 1.5, "Page content"))?;
+    add_text(d, &words, value(t_lo.x + 2.0, t_lo.y + 3.0, &this.description))?;
+    add_text(d, &words, caption(split_x + 2.0, t_hi.y - 1.5, "Page"))?;
+    let page_at = Point::new((split_x + t_hi.x) / 2.0, mid_y + 1.0);
+    add_text(d, &words, justified(page_at, 7.0, &this.name, HAlign::Center, VAlign::Middle))?;
+    let index = project.pages_in_order().iter().position(|p| p.id == page).map_or(0, |i| i + 1);
+    let count = format!("{index} of {}", project.pages.len());
+    add_text(
+        d,
+        &words,
+        justified(Point::new((split_x + t_hi.x) / 2.0, t_lo.y + 2.0), 2.5, &count, HAlign::Center, VAlign::Bottom),
+    )?;
+    Ok(())
 }
 
 /// The page as DXF text.

@@ -12,7 +12,7 @@
 //! Loading replays everything through the model's commands, so a hand-edited file that breaks
 //! a rule (duplicate tag, wire to a missing point) is rejected with the file named.
 
-use ecad_model::{Command, Connection, Device, Function, ModelError, Page, Project, SymbolDef};
+use ecad_model::{Command, Connection, Device, Function, ModelError, Page, Point, Project, Sheet, SymbolDef};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -38,6 +38,9 @@ pub type Result<T> = std::result::Result<T, ProjectError>;
 struct ProjectFile {
     format: u32,
     name: String,
+    /// Missing in projects saved before M2a; such projects get a sheet around their drawing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sheet: Option<Sheet>,
     pages: Vec<Page>,
 }
 
@@ -95,8 +98,9 @@ pub fn save(project: &Project, dir: &Path) -> Result<()> {
         std::fs::create_dir_all(d).map_err(io(d))?;
     }
 
-    let pages: Vec<Page> = project.pages.values().cloned().collect();
-    write_json(&dir.join("project.json"), &ProjectFile { format: FORMAT, name: project.name.clone(), pages })?;
+    let pages: Vec<Page> = project.pages_in_order().into_iter().cloned().collect();
+    let head = ProjectFile { format: FORMAT, name: project.name.clone(), sheet: Some(project.sheet), pages };
+    write_json(&dir.join("project.json"), &head)?;
 
     let mut devices: Vec<&Device> = project.devices.values().collect();
     devices.sort_by(|a, b| a.tag.cmp(&b.tag));
@@ -134,6 +138,7 @@ pub fn load(dir: &Path) -> Result<Project> {
     for page in head.pages {
         project.add_page(page);
     }
+    let sheet = head.sheet;
 
     let symbols_dir = dir.join("symbols");
     let mut symbol_paths: Vec<PathBuf> = std::fs::read_dir(&symbols_dir)
@@ -166,7 +171,23 @@ pub fn load(dir: &Path) -> Result<Project> {
             project.apply(Command::Connect(c)).map_err(model(&path))?;
         }
     }
+    project.sheet = match sheet {
+        Some(s) => s,
+        None => legacy_sheet(&project),
+    };
     Ok(project)
+}
+
+/// A sheet for a project saved before sheets existed: placed around everything drawn, so no
+/// page content ends up outside the frame.
+fn legacy_sheet(project: &Project) -> Sheet {
+    let boxes: Vec<_> = project.pages.keys().filter_map(|p| project.content_bounds(*p)).collect();
+    let Some(&(mut lo, mut hi)) = boxes.first() else { return Sheet::default() };
+    for (a, b) in &boxes[1..] {
+        lo = Point::new(lo.x.min(a.x), lo.y.min(a.y));
+        hi = Point::new(hi.x.max(b.x), hi.y.max(b.y));
+    }
+    Sheet::around(lo, hi)
 }
 
 #[cfg(test)]
@@ -210,6 +231,19 @@ mod tests {
         std::fs::write(&devices, text).unwrap();
         let err = load(dir.path()).unwrap_err().to_string();
         assert!(err.contains("devices.json") && err.contains("-K1"), "{err}");
+    }
+
+    #[test]
+    fn projects_saved_before_sheets_get_one_around_their_drawing() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = start_circuit().unwrap();
+        save(&original, dir.path()).unwrap();
+        let head = dir.path().join("project.json");
+        let mut json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&head).unwrap()).unwrap();
+        json.as_object_mut().unwrap().remove("sheet");
+        std::fs::write(&head, json.to_string()).unwrap();
+        let loaded = load(dir.path()).unwrap();
+        assert_eq!(loaded.sheet, original.sheet, "the same placement the sample itself uses");
     }
 
     #[test]

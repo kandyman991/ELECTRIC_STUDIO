@@ -94,6 +94,24 @@ pub enum UiEvent {
     Confirm {
         choice: Choice,
     },
+    /// Show this page.
+    ShowPage {
+        id: PageId,
+    },
+    /// Add a page after the current one and show it.
+    AddPage,
+    /// Delete the current page and everything on it (undoable).
+    DeletePage,
+    RenamePage {
+        name: String,
+    },
+    DescribePage {
+        text: String,
+    },
+    /// Move the current page earlier (negative) or later (positive).
+    MovePage {
+        delta: i32,
+    },
 }
 
 /// Keys the UI maps from its own key events.
@@ -110,6 +128,13 @@ pub enum KeyName {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct PaletteItem {
     pub id: String,
+    pub description: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PageInfo {
+    pub id: PageId,
+    pub name: String,
     pub description: String,
 }
 
@@ -140,6 +165,9 @@ pub struct Frame {
     pub title: String,
     pub project_dir: String,
     pub palette: Vec<PaletteItem>,
+    /// All pages in order, and the one shown.
+    pub pages: Vec<PageInfo>,
+    pub page: PageId,
     /// An unsaved-changes question waiting for [`UiEvent::Confirm`].
     pub prompt: Option<String>,
     /// The window may close now.
@@ -182,7 +210,7 @@ fn blank_project(dir: &Path) -> Project {
     for s in ecad_model::sample::symbols() {
         p.add_symbol(s);
     }
-    p.add_page(Page { id: PageId::new(), name: "1".into() });
+    p.add_page(Page::new("1", 0));
     p
 }
 
@@ -310,6 +338,30 @@ impl Session {
                     self.request(Pending::Close);
                 }
             }
+            UiEvent::ShowPage { id } => {
+                let r = self.editor.set_page(id);
+                self.report(r);
+            }
+            UiEvent::AddPage => {
+                let r = self.editor.add_page();
+                self.report(r);
+            }
+            UiEvent::DeletePage => {
+                let r = self.editor.delete_page();
+                self.report(r);
+            }
+            UiEvent::RenamePage { name } => {
+                let r = self.editor.rename_page(&name);
+                self.report(r);
+            }
+            UiEvent::DescribePage { text } => {
+                let r = self.editor.describe_page(&text);
+                self.report(r);
+            }
+            UiEvent::MovePage { delta } => {
+                let r = self.editor.move_page(delta);
+                self.report(r);
+            }
             UiEvent::Confirm { choice } => {
                 let Some(action) = self.pending.take() else { return };
                 match choice {
@@ -398,7 +450,7 @@ impl Session {
     /// The frame to paint. `known_revision` is the revision whose base the UI already holds.
     pub fn frame(&self, known_revision: Option<u64>, background: [u8; 3]) -> Frame {
         let editor = &self.editor;
-        let revision = editor.revision();
+        let revision = editor.scene_revision();
         let (base, base_error) = if known_revision == Some(revision) {
             (None, None)
         } else {
@@ -437,6 +489,12 @@ impl Session {
                 .values()
                 .map(|s| PaletteItem { id: s.id.0.clone(), description: s.description.clone() })
                 .collect(),
+            pages: project
+                .pages_in_order()
+                .into_iter()
+                .map(|p| PageInfo { id: p.id, name: p.name.clone(), description: p.description.clone() })
+                .collect(),
+            page: editor.page(),
             prompt,
             close: self.closing,
         }
@@ -598,6 +656,61 @@ mod tests {
         assert!(
             matches!(s.frame(None, [0, 0, 0]).selection, Some(SelectionInfo::Wire { number: Some(n), .. }) if n == "102")
         );
+    }
+
+    #[test]
+    fn pages_are_added_shown_renamed_moved_and_deleted() {
+        let (_dir, mut s) = session();
+        let first = s.frame(None, [0, 0, 0]);
+        let page1 = first.page;
+        s.handle(UiEvent::AddPage);
+        let f = s.frame(Some(first.revision), [0, 0, 0]);
+        assert_eq!(f.pages.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["1", "2"]);
+        assert_ne!(f.page, page1, "the new page is shown");
+        assert!(f.base.is_some(), "switching pages redraws");
+        assert_eq!(s.editor().project().functions_on(f.page).count(), 0);
+
+        s.handle(UiEvent::RenamePage { name: "1".into() });
+        assert_eq!(s.frame(None, [0, 0, 0]).status, "page `1` already exists");
+        s.handle(UiEvent::RenamePage { name: "2a".into() });
+        s.handle(UiEvent::DescribePage { text: "Motor".into() });
+        s.handle(UiEvent::MovePage { delta: -1 });
+        let f = s.frame(None, [0, 0, 0]);
+        assert_eq!(f.pages.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["2a", "1"]);
+        assert_eq!(f.pages[0].description, "Motor");
+
+        // Place something on page 2a, then delete the page: it all goes, and undo brings it back.
+        place_coil(&mut s);
+        s.handle(UiEvent::DeletePage);
+        let f = s.frame(None, [0, 0, 0]);
+        assert_eq!(f.pages.len(), 1);
+        assert_eq!(f.page, page1);
+        assert!(s.editor().project().device_by_tag("-K2").is_none());
+        s.handle(UiEvent::Key { key: KeyName::Undo });
+        assert_eq!(s.editor().project().pages.len(), 2);
+        assert!(s.editor().project().device_by_tag("-K2").is_some());
+
+        // Undo everything; then the last page can't be deleted.
+        for _ in 0..5 {
+            s.handle(UiEvent::Key { key: KeyName::Undo });
+        }
+        let f = s.frame(None, [0, 0, 0]);
+        assert_eq!(f.pages.len(), 1);
+        assert_eq!(f.page, page1, "undoing 'Add page' while it was shown went back to page 1");
+        assert!(!f.dirty, "back where we started");
+        s.handle(UiEvent::DeletePage);
+        assert_eq!(s.frame(None, [0, 0, 0]).status, "A project needs at least one page");
+    }
+
+    #[test]
+    fn switching_pages_does_not_count_as_a_change() {
+        let (_dir, mut s) = session();
+        s.handle(UiEvent::AddPage);
+        s.handle(UiEvent::Save);
+        let pages = s.frame(None, [0, 0, 0]).pages;
+        s.handle(UiEvent::ShowPage { id: pages[0].id });
+        s.handle(UiEvent::ShowPage { id: pages[1].id });
+        assert!(!s.frame(None, [0, 0, 0]).dirty);
     }
 
     #[test]
