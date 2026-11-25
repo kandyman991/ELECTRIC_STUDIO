@@ -13,6 +13,10 @@ publish = false
 ecad-model = { path = "crates/ecad-model" }
 ecad-view = { path = "crates/ecad-view" }
 ecad-reports = { path = "crates/ecad-reports" }
+ecad-project = { path = "crates/ecad-project" }
+ecad-editor = { path = "crates/ecad-editor" }
+serde_json = "1"
+tempfile = "3"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -21,6 +25,7 @@ png = "0.18"
 # CADCraft, used as a library and pinned to one upstream commit (see docs/CADCRAFT.md).
 # Only ecad-view may depend on these crates.
 cadcraft-doc = { git = "https://github.com/storytold/cadcraft", rev = "0d4b100209990e485891d85c70ff465c8e709156" }
+cadcraft-render = { git = "https://github.com/storytold/cadcraft", rev = "0d4b100209990e485891d85c70ff465c8e709156" }
 cadcraft-io = { git = "https://github.com/storytold/cadcraft", rev = "0d4b100209990e485891d85c70ff465c8e709156" }
 
 [workspace.lints.rust]

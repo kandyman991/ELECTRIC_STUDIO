@@ -1,6 +1,8 @@
 //! The project: pages, symbols, devices, their functions on pages, and the connections between
 //! connection points. Connections refer to connection points, never to coordinates, so moving a
 //! symbol can never break a wire.
+//!
+//! Every change goes through [`Project::apply`], which returns the command that undoes it.
 
 use crate::geometry::{Direction, Point, Rotation};
 use crate::symbol::{SymbolDef, SymbolId};
@@ -12,6 +14,7 @@ macro_rules! id_type {
     ($(#[$doc:meta])* $name:ident) => {
         $(#[$doc])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+        #[serde(transparent)]
         pub struct $name(pub Uuid);
 
         impl $name {
@@ -55,6 +58,7 @@ pub struct Device {
     pub id: DeviceId,
     /// IEC 81346 reference designation, e.g. `-K1` or `=A1+B2-K1`.
     pub tag: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
 }
 
@@ -65,11 +69,19 @@ pub struct Function {
     pub symbol: SymbolId,
     pub page: PageId,
     pub position: Point,
+    #[serde(default)]
     pub rotation: Rotation,
 }
 
+impl Function {
+    /// A symbol-local point in page coordinates.
+    pub fn to_page(&self, local: Point) -> Point {
+        self.position.offset(self.rotation.apply(local))
+    }
+}
+
 /// A connection point of a function, by its designation.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConnectionRef {
     pub function: FunctionId,
     pub point: String,
@@ -77,10 +89,7 @@ pub struct ConnectionRef {
 
 impl ConnectionRef {
     pub fn new(function: FunctionId, point: &str) -> Self {
-        ConnectionRef {
-            function,
-            point: point.to_owned(),
-        }
+        ConnectionRef { function, point: point.to_owned() }
     }
 }
 
@@ -89,7 +98,35 @@ pub struct Connection {
     pub id: ConnectionId,
     pub from: ConnectionRef,
     pub to: ConnectionRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wire_number: Option<String>,
+}
+
+/// One undoable change. [`Project::apply`] returns the command that reverses it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Command {
+    AddDevice(Device),
+    /// Only a device with no functions can be removed.
+    RemoveDevice(DeviceId),
+    RenameDevice {
+        id: DeviceId,
+        tag: String,
+    },
+    Place(Function),
+    /// Removes a function and every connection to it.
+    Unplace(FunctionId),
+    Move {
+        id: FunctionId,
+        to: Point,
+    },
+    Rotate {
+        id: FunctionId,
+        to: Rotation,
+    },
+    Connect(Connection),
+    Disconnect(ConnectionId),
+    /// Several commands applied together: all of them or none.
+    Batch(Vec<Command>),
 }
 
 #[derive(Debug, thiserror::Error, PartialEq)]
@@ -100,6 +137,8 @@ pub enum ModelError {
     NoDevice(DeviceId),
     #[error("no function {0:?}")]
     NoFunction(FunctionId),
+    #[error("no connection {0:?}")]
+    NoConnection(ConnectionId),
     #[error("no symbol `{}`", .0.0)]
     NoSymbol(SymbolId),
     #[error("symbol `{symbol}` has no connection point `{point}`")]
@@ -112,6 +151,12 @@ pub enum ModelError {
     CrossPage,
     #[error("device tag `{0}` is already used")]
     DuplicateTag(String),
+    #[error("device tag must not be empty")]
+    EmptyTag,
+    #[error("device `{0}` is still drawn on a page")]
+    DeviceInUse(String),
+    #[error("id {0} is already used")]
+    DuplicateId(Uuid),
 }
 
 pub type Result<T> = std::result::Result<T, ModelError>;
@@ -119,54 +164,48 @@ pub type Result<T> = std::result::Result<T, ModelError>;
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Project {
     pub name: String,
-    pub pages: Vec<Page>,
+    pub pages: BTreeMap<PageId, Page>,
     pub symbols: BTreeMap<SymbolId, SymbolDef>,
-    pub devices: Vec<Device>,
-    pub functions: Vec<Function>,
-    pub connections: Vec<Connection>,
+    pub devices: BTreeMap<DeviceId, Device>,
+    pub functions: BTreeMap<FunctionId, Function>,
+    pub connections: BTreeMap<ConnectionId, Connection>,
 }
 
 impl Project {
     pub fn new(name: &str) -> Self {
-        Project {
-            name: name.to_owned(),
-            ..Project::default()
-        }
+        Project { name: name.to_owned(), ..Project::default() }
     }
 
     // ---- lookups ----
 
     pub fn page(&self, id: PageId) -> Result<&Page> {
-        self.pages
-            .iter()
-            .find(|p| p.id == id)
-            .ok_or(ModelError::NoPage(id))
+        self.pages.get(&id).ok_or(ModelError::NoPage(id))
     }
     pub fn device(&self, id: DeviceId) -> Result<&Device> {
-        self.devices
-            .iter()
-            .find(|d| d.id == id)
-            .ok_or(ModelError::NoDevice(id))
+        self.devices.get(&id).ok_or(ModelError::NoDevice(id))
+    }
+    pub fn device_by_tag(&self, tag: &str) -> Option<&Device> {
+        self.devices.values().find(|d| d.tag == tag)
     }
     pub fn function(&self, id: FunctionId) -> Result<&Function> {
-        self.functions
-            .iter()
-            .find(|f| f.id == id)
-            .ok_or(ModelError::NoFunction(id))
+        self.functions.get(&id).ok_or(ModelError::NoFunction(id))
+    }
+    pub fn connection(&self, id: ConnectionId) -> Result<&Connection> {
+        self.connections.get(&id).ok_or(ModelError::NoConnection(id))
     }
     pub fn symbol(&self, id: &SymbolId) -> Result<&SymbolDef> {
-        self.symbols
-            .get(id)
-            .ok_or_else(|| ModelError::NoSymbol(id.clone()))
+        self.symbols.get(id).ok_or_else(|| ModelError::NoSymbol(id.clone()))
     }
     pub fn functions_on(&self, page: PageId) -> impl Iterator<Item = &Function> {
-        self.functions.iter().filter(move |f| f.page == page)
+        self.functions.values().filter(move |f| f.page == page)
     }
-    /// Connections drawn on a page (both ends are always on the same page in M0).
+    /// Connections drawn on a page (both ends are always on the same page in M1).
     pub fn connections_on(&self, page: PageId) -> impl Iterator<Item = &Connection> {
-        self.connections
-            .iter()
-            .filter(move |c| self.function(c.from.function).is_ok_and(|f| f.page == page))
+        self.connections.values().filter(move |c| self.function(c.from.function).is_ok_and(|f| f.page == page))
+    }
+    /// The connection attached to a connection point, if any.
+    pub fn connection_at(&self, r: &ConnectionRef) -> Option<&Connection> {
+        self.connections.values().find(|c| c.from == *r || c.to == *r)
     }
 
     /// `(device tag, point)` for display and reports.
@@ -175,11 +214,16 @@ impl Project {
         Ok((self.device(f.device)?.tag.clone(), r.point.clone()))
     }
 
-    // ---- edits (become undoable commands in M1) ----
+    /// The lowest free tag `<prefix><n>`, n from 1.
+    pub fn next_tag(&self, prefix: &str) -> String {
+        (1..).map(|n| format!("{prefix}{n}")).find(|t| self.device_by_tag(t).is_none()).unwrap_or_default()
+    }
+
+    // ---- library edits (not undoable) ----
 
     pub fn add_page(&mut self, page: Page) -> PageId {
         let id = page.id;
-        self.pages.push(page);
+        self.pages.insert(id, page);
         id
     }
 
@@ -187,65 +231,150 @@ impl Project {
         self.symbols.insert(symbol.id.clone(), symbol);
     }
 
-    pub fn add_device(&mut self, device: Device) -> Result<DeviceId> {
-        if self.devices.iter().any(|d| d.tag == device.tag) {
-            return Err(ModelError::DuplicateTag(device.tag));
-        }
-        let id = device.id;
-        self.devices.push(device);
-        Ok(id)
-    }
+    // ---- undoable edits ----
 
-    pub fn place(&mut self, function: Function) -> Result<FunctionId> {
-        self.page(function.page)?;
-        self.device(function.device)?;
-        self.symbol(&function.symbol)?;
-        let id = function.id;
-        self.functions.push(function);
-        Ok(id)
-    }
-
-    pub fn connect(&mut self, connection: Connection) -> Result<ConnectionId> {
-        if connection.from == connection.to {
-            return Err(ModelError::SelfConnection);
-        }
-        self.connection_point(&connection.from)?;
-        self.connection_point(&connection.to)?;
-        if self.function(connection.from.function)?.page
-            != self.function(connection.to.function)?.page
-        {
-            return Err(ModelError::CrossPage);
-        }
-        for end in [&connection.from, &connection.to] {
-            if let Some(other) = self
-                .connections
-                .iter()
-                .find(|c| c.from == *end || c.to == *end)
-            {
-                let far = if other.from == *end {
-                    &other.to
-                } else {
-                    &other.from
-                };
-                return Err(ModelError::AlreadyConnected(
-                    self.describe(end)?,
-                    self.describe(far)?,
-                ));
+    /// Apply a command; returns the command that undoes it. On error nothing changes.
+    pub fn apply(&mut self, cmd: Command) -> Result<Command> {
+        match cmd {
+            Command::AddDevice(d) => {
+                if self.devices.contains_key(&d.id) {
+                    return Err(ModelError::DuplicateId(d.id.0));
+                }
+                self.check_tag(&d.tag, None)?;
+                let id = d.id;
+                self.devices.insert(id, d);
+                Ok(Command::RemoveDevice(id))
+            }
+            Command::RemoveDevice(id) => {
+                let tag = self.device(id)?.tag.clone();
+                if self.functions.values().any(|f| f.device == id) {
+                    return Err(ModelError::DeviceInUse(tag));
+                }
+                let d = self.devices.remove(&id).ok_or(ModelError::NoDevice(id))?;
+                Ok(Command::AddDevice(d))
+            }
+            Command::RenameDevice { id, tag } => {
+                self.check_tag(&tag, Some(id))?;
+                let d = self.devices.get_mut(&id).ok_or(ModelError::NoDevice(id))?;
+                let old = std::mem::replace(&mut d.tag, tag);
+                Ok(Command::RenameDevice { id, tag: old })
+            }
+            Command::Place(f) => {
+                if self.functions.contains_key(&f.id) {
+                    return Err(ModelError::DuplicateId(f.id.0));
+                }
+                self.page(f.page)?;
+                self.device(f.device)?;
+                self.symbol(&f.symbol)?;
+                let id = f.id;
+                self.functions.insert(id, f);
+                Ok(Command::Unplace(id))
+            }
+            Command::Unplace(id) => {
+                self.function(id)?;
+                let attached: Vec<ConnectionId> = self
+                    .connections
+                    .values()
+                    .filter(|c| c.from.function == id || c.to.function == id)
+                    .map(|c| c.id)
+                    .collect();
+                let mut undo = Vec::new();
+                for c in attached {
+                    if let Some(c) = self.connections.remove(&c) {
+                        undo.push(Command::Connect(c));
+                    }
+                }
+                let f = self.functions.remove(&id).ok_or(ModelError::NoFunction(id))?;
+                undo.insert(0, Command::Place(f));
+                Ok(Command::Batch(undo))
+            }
+            Command::Move { id, to } => {
+                let f = self.functions.get_mut(&id).ok_or(ModelError::NoFunction(id))?;
+                let old = std::mem::replace(&mut f.position, to);
+                Ok(Command::Move { id, to: old })
+            }
+            Command::Rotate { id, to } => {
+                let f = self.functions.get_mut(&id).ok_or(ModelError::NoFunction(id))?;
+                let old = std::mem::replace(&mut f.rotation, to);
+                Ok(Command::Rotate { id, to: old })
+            }
+            Command::Connect(c) => {
+                if self.connections.contains_key(&c.id) {
+                    return Err(ModelError::DuplicateId(c.id.0));
+                }
+                self.check_connection(&c)?;
+                let id = c.id;
+                self.connections.insert(id, c);
+                Ok(Command::Disconnect(id))
+            }
+            Command::Disconnect(id) => {
+                let c = self.connections.remove(&id).ok_or(ModelError::NoConnection(id))?;
+                Ok(Command::Connect(c))
+            }
+            Command::Batch(cmds) => {
+                let mut undo = Vec::with_capacity(cmds.len());
+                for cmd in cmds {
+                    match self.apply(cmd) {
+                        Ok(inv) => undo.push(inv),
+                        Err(e) => {
+                            // Roll back what this batch already did.
+                            for inv in undo.into_iter().rev() {
+                                let _ = self.apply(inv);
+                            }
+                            return Err(e);
+                        }
+                    }
+                }
+                undo.reverse();
+                Ok(Command::Batch(undo))
             }
         }
-        let id = connection.id;
-        self.connections.push(connection);
-        Ok(id)
     }
 
-    pub fn move_function(&mut self, id: FunctionId, to: Point) -> Result<()> {
-        let f = self
-            .functions
-            .iter_mut()
-            .find(|f| f.id == id)
-            .ok_or(ModelError::NoFunction(id))?;
-        f.position = to;
+    fn check_tag(&self, tag: &str, except: Option<DeviceId>) -> Result<()> {
+        if tag.trim().is_empty() {
+            return Err(ModelError::EmptyTag);
+        }
+        match self.device_by_tag(tag) {
+            Some(d) if Some(d.id) != except => Err(ModelError::DuplicateTag(tag.to_owned())),
+            _ => Ok(()),
+        }
+    }
+
+    fn check_connection(&self, c: &Connection) -> Result<()> {
+        if c.from == c.to {
+            return Err(ModelError::SelfConnection);
+        }
+        self.connection_point(&c.from)?;
+        self.connection_point(&c.to)?;
+        if self.function(c.from.function)?.page != self.function(c.to.function)?.page {
+            return Err(ModelError::CrossPage);
+        }
+        for end in [&c.from, &c.to] {
+            if let Some(other) = self.connection_at(end) {
+                let far = if other.from == *end { &other.to } else { &other.from };
+                return Err(ModelError::AlreadyConnected(self.describe(end)?, self.describe(far)?));
+            }
+        }
         Ok(())
+    }
+
+    // ---- convenience wrappers (no undo record) ----
+
+    pub fn add_device(&mut self, device: Device) -> Result<DeviceId> {
+        let id = device.id;
+        self.apply(Command::AddDevice(device)).map(|_| id)
+    }
+    pub fn place(&mut self, function: Function) -> Result<FunctionId> {
+        let id = function.id;
+        self.apply(Command::Place(function)).map(|_| id)
+    }
+    pub fn connect(&mut self, connection: Connection) -> Result<ConnectionId> {
+        let id = connection.id;
+        self.apply(Command::Connect(connection)).map(|_| id)
+    }
+    pub fn move_function(&mut self, id: FunctionId, to: Point) -> Result<()> {
+        self.apply(Command::Move { id, to }).map(|_| ())
     }
 
     // ---- geometry derived from the model ----
@@ -256,14 +385,8 @@ impl Project {
         let s = self.symbol(&f.symbol)?;
         let cp = s
             .connection_point(&r.point)
-            .ok_or_else(|| ModelError::NoConnectionPoint {
-                symbol: s.id.0.clone(),
-                point: r.point.clone(),
-            })?;
-        Ok((
-            f.position.offset(f.rotation.apply(cp.at)),
-            f.rotation.apply_dir(cp.leaves),
-        ))
+            .ok_or_else(|| ModelError::NoConnectionPoint { symbol: s.id.0.clone(), point: r.point.clone() })?;
+        Ok((f.to_page(cp.at), f.rotation.apply_dir(cp.leaves)))
     }
 
     /// Orthogonal route from one end to the other. Straight when the ends face each other on one
@@ -294,9 +417,11 @@ fn heads(d: Direction, from: Point, to: Point) -> bool {
     (to.x - from.x) * s.x + (to.y - from.y) * s.y >= 0.0
 }
 
-fn route_between(a: Point, da: Direction, b: Point, db: Direction) -> Vec<Point> {
-    let facing = (a.x == b.x && da.is_vertical() && db.is_vertical())
-        || (a.y == b.y && !da.is_vertical() && !db.is_vertical());
+/// Orthogonal route between two points leaving in the given directions (also used for the
+/// rubber-band wire while drawing).
+pub fn route_between(a: Point, da: Direction, b: Point, db: Direction) -> Vec<Point> {
+    let facing =
+        (a.x == b.x && da.is_vertical() && db.is_vertical()) || (a.y == b.y && !da.is_vertical() && !db.is_vertical());
     if facing && heads(da, a, b) && heads(db, b, a) {
         return vec![a, b];
     }
@@ -305,11 +430,7 @@ fn route_between(a: Point, da: Direction, b: Point, db: Direction) -> Vec<Point>
     let b1 = Point::new(b.x + sb.x * ROUTE_STUB, b.y + sb.y * ROUTE_STUB);
     // Keep going along the start direction if that brings us closer (split the other axis at
     // its midpoint); if it would lead away, turn first.
-    let vertical_mid = if heads(da, a1, b1) {
-        da.is_vertical()
-    } else {
-        !da.is_vertical()
-    };
+    let vertical_mid = if heads(da, a1, b1) { da.is_vertical() } else { !da.is_vertical() };
     let mid = if vertical_mid {
         let my = (a1.y + b1.y) / 2.0;
         [Point::new(a1.x, my), Point::new(b1.x, my)]
@@ -327,11 +448,10 @@ fn simplify(points: Vec<Point>) -> Vec<Point> {
         if out.last() == Some(&p) {
             continue;
         }
-        if out.len() >= 2 {
-            let (q, r) = (out[out.len() - 2], out[out.len() - 1]);
-            if (q.x == r.x && r.x == p.x) || (q.y == r.y && r.y == p.y) {
-                out.pop();
-            }
+        if let [.., q, r] = out.as_slice()
+            && ((q.x == r.x && r.x == p.x) || (q.y == r.y && r.y == p.y))
+        {
+            out.pop();
         }
         out.push(p);
     }

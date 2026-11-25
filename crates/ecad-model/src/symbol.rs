@@ -15,19 +15,9 @@ impl SymbolId {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Graphic {
-    Line {
-        a: Point,
-        b: Point,
-    },
-    Circle {
-        center: Point,
-        radius: f64,
-    },
-    Text {
-        at: Point,
-        height: f64,
-        value: String,
-    },
+    Line { a: Point, b: Point },
+    Circle { center: Point, radius: f64 },
+    Text { at: Point, height: f64, value: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -42,11 +32,34 @@ pub struct ConnectionPointDef {
 pub struct SymbolDef {
     pub id: SymbolId,
     pub description: String,
+    /// Prefix for new device tags, e.g. `-K` gives `-K1`, `-K2`…
+    #[serde(default)]
+    pub tag_prefix: String,
     pub graphics: Vec<Graphic>,
     pub connection_points: Vec<ConnectionPointDef>,
 }
 
 impl SymbolDef {
+    /// Bounding box of the geometry and connection points in symbol-local coordinates
+    /// (`min`, `max`), or `None` for an empty symbol.
+    pub fn bounds(&self) -> Option<(Point, Point)> {
+        let mut pts: Vec<Point> = self.connection_points.iter().map(|c| c.at).collect();
+        for g in &self.graphics {
+            match g {
+                Graphic::Line { a, b } => pts.extend([*a, *b]),
+                Graphic::Circle { center, radius } => {
+                    pts.push(Point::new(center.x - radius, center.y - radius));
+                    pts.push(Point::new(center.x + radius, center.y + radius));
+                }
+                Graphic::Text { at, .. } => pts.push(*at),
+            }
+        }
+        let first = *pts.first()?;
+        Some(pts.iter().fold((first, first), |(lo, hi), p| {
+            (Point::new(lo.x.min(p.x), lo.y.min(p.y)), Point::new(hi.x.max(p.x), hi.y.max(p.y)))
+        }))
+    }
+
     pub fn connection_point(&self, name: &str) -> Option<&ConnectionPointDef> {
         self.connection_points.iter().find(|c| c.name == name)
     }

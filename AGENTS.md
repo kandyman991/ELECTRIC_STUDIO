@@ -13,8 +13,11 @@ Rules for every contributor, human or AI. Read docs/ARCHITECTURE.md first.
 4. **CADCraft is pinned to one commit.** Upgrading it is its own PR: bump the `rev` and the
    copied `[patch.crates-io]` block together, run the golden tests, and review every changed
    golden file. See docs/CADCRAFT.md.
-5. **Edits go through the model's methods** (they become undoable commands in M1). Don't
-   mutate model collections from UI or I/O code.
+5. **Every edit is a `Command`** applied through `Project::apply` (or `History::execute` to
+   make it undoable). Don't mutate model collections from UI or I/O code.
+6. **Editing behaviour lives in `ecad-editor`, not in a UI shell.** A shell only converts
+   input to page millimetres, calls the editor, and draws `Editor::base` + `Editor::overlays`.
+   Anything a shell decides on its own can't be tested and won't exist in the other shell.
 
 ## Code rules
 
