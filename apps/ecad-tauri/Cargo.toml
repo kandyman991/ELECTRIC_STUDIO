@@ -1,0 +1,22 @@
+[package]
+name = "ecad-tauri"
+description = "Test shell: Electric Studio's editor in a Tauri window (M1b comparison)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "electric-studio-tauri"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { workspace = true }
+
+[dependencies]
+ecad-editor = { workspace = true }
+tauri = { workspace = true }
+serde = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,18 @@
+[package]
+name = "ecad-egui"
+description = "Test shell: Electric Studio's editor in a native egui window (M1b comparison)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "electric-studio-egui"
+path = "src/main.rs"
+
+[dependencies]
+ecad-editor = { workspace = true }
+eframe = { workspace = true }
+
+[lints]
+workspace = true

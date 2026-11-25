@@ -11,6 +11,11 @@ use ecad_model::{
     ModelError, PageId, Point, Project, Rotation, SymbolId, route_between,
 };
 pub use ecad_view::{Primitive, Shape};
+pub use session::{Button, Frame, KeyName, PaletteItem, Session, UiEvent};
+pub use view::Viewport;
+
+pub mod session;
+pub mod view;
 
 /// Default snapping grid (IEC 4 mm).
 pub const GRID: f64 = 4.0;
@@ -48,7 +53,8 @@ pub enum Key {
     Redo,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Marker {
     /// A connection point with no wire yet.
     Open,
@@ -59,7 +65,8 @@ pub enum Marker {
 }
 
 /// Things the shell draws on top of the page.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
 pub enum Overlay {
     Marker {
         at: Point,
@@ -77,9 +84,13 @@ pub enum Overlay {
         selected: bool,
     },
     /// The wire being drawn.
-    RubberBand(Vec<Point>),
-    /// Preview of the symbol about to be placed.
-    Ghost(Vec<(Point, Point)>),
+    RubberBand {
+        points: Vec<Point>,
+    },
+    /// Preview of the symbol about to be placed, as line segments.
+    Ghost {
+        lines: Vec<(Point, Point)>,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -402,7 +413,7 @@ impl Editor {
                 _ => None,
             };
             let (b, db) = target.unwrap_or((snap(self.cursor, self.grid), opposite(da)));
-            out.push(Overlay::RubberBand(route_between(a, da, b, db)));
+            out.push(Overlay::RubberBand { points: route_between(a, da, b, db) });
         }
         if let Tool::Place(symbol) = &self.tool
             && let Ok(sym) = self.project.symbol(symbol)
@@ -416,7 +427,7 @@ impl Editor {
                     _ => None,
                 })
                 .collect();
-            out.push(Overlay::Ghost(lines));
+            out.push(Overlay::Ghost { lines });
         }
         out
     }

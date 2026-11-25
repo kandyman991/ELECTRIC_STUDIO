@@ -104,7 +104,8 @@ pub fn page_drawing(project: &Project, page: PageId) -> Result<Drawing> {
         d.add(&Space::Model, on(LAYER_SYMBOLS), EntityKind::Insert(insert)).map_err(err)?;
     }
 
-    let wire = Common { color: Color::from_aci(5), ..on(LAYER_WIRES) };
+    // Colour 150 (mid blue) reads on dark screens and on white paper; pure blue (5) vanishes on dark.
+    let wire = Common { color: Color::from_aci(150), ..on(LAYER_WIRES) };
     for c in project.connections_on(page) {
         let route = project.route(c)?;
         for seg in route.windows(2) {
@@ -120,7 +121,8 @@ pub fn page_drawing(project: &Project, page: PageId) -> Result<Drawing> {
 }
 
 /// What a primitive draws, in page millimetres.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(tag = "kind", content = "points", rename_all = "lowercase")]
 pub enum Shape {
     /// A connected polyline.
     Polyline(Vec<Point>),
@@ -129,7 +131,7 @@ pub enum Shape {
 }
 
 /// One drawable piece of a page, already resolved to a colour for the given background.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct Primitive {
     pub rgb: [u8; 3],
     pub shape: Shape,

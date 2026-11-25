@@ -59,7 +59,7 @@ fn the_place_tool_numbers_new_devices_and_undo_removes_them() {
     let mut e = editor();
     e.set_tool(Tool::Place(SymbolId::new("iec.coil")));
     e.pointer_move(Point::new(41.0, 39.0));
-    assert!(e.overlays().iter().any(|o| matches!(o, Overlay::Ghost(lines) if lines.len() == 6)));
+    assert!(e.overlays().iter().any(|o| matches!(o, Overlay::Ghost { lines } if lines.len() == 6)));
     click(&mut e, 41.0, 39.0);
     click(&mut e, 61.0, 39.0);
     assert_eq!(tag_at(&e, 40.0, 40.0).as_deref(), Some("-K2"));
@@ -83,7 +83,7 @@ fn the_wire_tool_connects_two_points_and_reuses_free_numbers() {
     assert_eq!(open, 2, "-S1:14 and -K1:A1 are free");
     click(&mut e, 0.3, 31.8);
     e.pointer_move(Point::new(0.1, 20.4));
-    assert!(e.overlays().iter().any(|o| matches!(o, Overlay::RubberBand(p) if p.len() == 2)));
+    assert!(e.overlays().iter().any(|o| matches!(o, Overlay::RubberBand { points: p } if p.len() == 2)));
     click(&mut e, 0.1, 20.4);
     assert_eq!(wire_numbers(&e), ["W1", "W2", "W3"]);
     assert_eq!(e.undo_label(), Some("Draw wire W2"));
@@ -96,7 +96,7 @@ fn wiring_an_occupied_point_explains_why_and_changes_nothing() {
     click(&mut e, 0.0, 48.0); // -S1:13 already has W1
     assert_eq!(e.status(), "-S1:13 already has wire W1");
     assert!(!e.is_dirty());
-    assert!(!e.overlays().iter().any(|o| matches!(o, Overlay::RubberBand(_))));
+    assert!(!e.overlays().iter().any(|o| matches!(o, Overlay::RubberBand { .. })));
 }
 
 #[test]

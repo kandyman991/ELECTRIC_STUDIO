@@ -1,0 +1,20 @@
+:root { color-scheme: dark; font: 13px system-ui, sans-serif; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: #1b1d22; color: #d8dde6; }
+body { display: flex; flex-direction: column; }
+header { display: flex; gap: 4px; align-items: center; padding: 6px 8px; background: #25282f; border-bottom: 1px solid #343842; flex-wrap: wrap; }
+header .sep { width: 1px; height: 20px; background: #3a3f4a; margin: 0 4px; }
+#palette { display: contents; }
+button { background: #30343d; color: inherit; border: 1px solid #3d424d; border-radius: 4px; padding: 4px 10px; font: inherit; cursor: pointer; }
+button:hover:not(:disabled) { background: #3a3f4a; }
+button:disabled { opacity: 0.45; cursor: default; }
+button.active { background: #2a4f7a; border-color: #409cff; }
+main { flex: 1; display: flex; min-height: 0; }
+/* Must match BG in src/main.rs. */
+canvas { flex: 1; min-width: 0; display: block; background: rgb(30, 33, 39); cursor: crosshair; }
+aside { width: 210px; padding: 10px; background: #25282f; border-left: 1px solid #343842; }
+aside h2 { font-size: 15px; margin: 0 0 8px; }
+aside input { width: 100%; margin: 4px 0; padding: 4px 6px; background: #1b1d22; color: inherit; border: 1px solid #3d424d; border-radius: 4px; font: inherit; }
+aside hr { border: 0; border-top: 1px solid #343842; margin: 16px 0 8px; }
+.hint { color: #8c96a5; font-size: 12px; }
+footer { padding: 4px 8px; background: #25282f; border-top: 1px solid #343842; min-height: 24px; }

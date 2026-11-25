@@ -12,6 +12,7 @@ cadcraft-doc = { workspace = true }
 cadcraft-io = { workspace = true }
 cadcraft-render = { workspace = true }
 thiserror = { workspace = true }
+serde = { workspace = true }
 
 [dev-dependencies]
 png = { workspace = true }
