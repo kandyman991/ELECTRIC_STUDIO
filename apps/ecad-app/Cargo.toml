@@ -1,13 +1,13 @@
 [package]
-name = "ecad-egui"
-description = "Test shell: Electric Studio's editor in a native egui window (M1b comparison)."
+name = "ecad-app"
+description = "Electric Studio: the editor application (egui)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "electric-studio-egui"
+name = "electric-studio"
 path = "src/main.rs"
 
 [dependencies]

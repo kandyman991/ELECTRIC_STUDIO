@@ -1,5 +1,13 @@
 # M1b: choosing the editor's UI technology
 
+**Decision (25 Nov 2026, owner): egui.** The canvas is where users spend their time, and egui
+draws it in the same process as the model with nothing to serialise or send, so it stays fluid
+on dense pages without extra engineering. Accepted cost: forms and tables (properties, parts,
+reports) are plainer and take more work than HTML would. The Tauri shell was removed after
+the decision; the comparison below is kept as the record of why.
+
+---
+
 Both shells are thin layers over the same `ecad_editor::Session`: they forward input and paint
 the `Frame` they get back. Tools, snapping, hit-testing, undo, pan/zoom and saving are shared
 code, so the two behave identically. The choice is only about the window around the editor.
@@ -9,15 +17,14 @@ code, so the two behave identically. The choice is only about the window around 
 *Same scripted session in each: place -K2 and -S2, wire them (W4), drag -K1 (its wires reroute
 live), switch to the Wire tool.*
 
-## Try them
+## Try it
 
 ```sh
-cargo run -p ecad-egui  -- ~/ElectricStudio/Sample    # native egui window
-cargo run -p ecad-tauri -- ~/ElectricStudio/Sample    # Tauri window (needs WebKitGTK on Linux)
+cargo run -p ecad-app -- ~/ElectricStudio/Sample
 ```
 
-Without a folder argument each opens `~/ElectricStudio/Sample`, creating the sample project
-there if needed. Both edit the same folder format, so you can open one project in each.
+Without a folder argument it opens `~/ElectricStudio/Sample`, creating the sample project there
+if needed.
 
 | Action | Input |
 | --- | --- |
@@ -42,7 +49,7 @@ there if needed. Both edit the same folder format, so you can open one project i
 | Same stack as HMI Studio | No | Yes (Tauri 2) |
 | Cold build on CI | Smaller | Larger (WebKitGTK headers, more crates) |
 
-## Recommendation
+## Recommendation made before the decision
 
 **Tauri**, with one condition. Most of the product's remaining screens are forms and tables:
 properties, parts catalogue, reports, terminal plans, project structure. HTML does those
@@ -52,3 +59,7 @@ incrementally (only what changed) or in a binary form. That's planned work for M
 
 Choose **egui** instead if you'd rather keep the whole product in Rust and value the canvas
 being in-process over richer panels.
+
+Both shells looked and behaved the same on the sample page. Asked which would be more fluid,
+the answer was egui (no per-change transfer; WebKitGTK on Linux is also slower than WebView2),
+and egui was chosen.

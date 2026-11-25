@@ -1,6 +1,6 @@
-//! Electric Studio in a native egui window: a thin shell over `ecad_editor::Session`.
+//! Electric Studio: the editor application, a thin egui shell over `ecad_editor::Session`.
 //!
-//! Usage: `electric-studio-egui [project-dir]`. Without a folder it opens (or creates) the
+//! Usage: `electric-studio [project-dir]`. Without a folder it opens (or creates) the
 //! sample project in `~/ElectricStudio/Sample`.
 //!
 //! This shell only turns egui input into `UiEvent`s and paints the `Frame` it gets back. All
@@ -255,10 +255,7 @@ impl eframe::App for App {
             paint(ui.painter(), rect, &frame.view, &self.base, &frame.overlays);
             if frame.title != self.title {
                 self.title = frame.title.clone();
-                ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
-                    "{} - Electric Studio (egui)",
-                    frame.title
-                )));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!("{} - Electric Studio", frame.title)));
             }
         });
     }
@@ -269,18 +266,16 @@ fn main() -> eframe::Result {
     let session = match Session::open(&dir) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("electric-studio-egui: {}: {e}", dir.display());
+            eprintln!("electric-studio: {}: {e}", dir.display());
             std::process::exit(1);
         }
     };
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1200.0, 800.0])
-            .with_title("Electric Studio (egui)"),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1200.0, 800.0]).with_title("Electric Studio"),
         ..Default::default()
     };
     eframe::run_native(
-        "Electric Studio (egui)",
+        "Electric Studio",
         options,
         Box::new(|_cc| {
             Ok(Box::new(App {
