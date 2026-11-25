@@ -186,7 +186,7 @@ fn paint(painter: &egui::Painter, rect: Rect, view: &Viewport, base: &[Primitive
             }
             Shape::Triangles(pts) => {
                 let mut mesh = egui::Mesh::default();
-                for tri in pts.chunks_exact(3) {
+                for tri in pts.as_chunks::<3>().0 {
                     let i = mesh.vertices.len() as u32;
                     for p in tri {
                         mesh.colored_vertex(at(*p), color(prim.rgb));

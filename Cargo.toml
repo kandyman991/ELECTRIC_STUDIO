@@ -6,7 +6,6 @@ members = ["crates/*", "apps/*"]
 version = "0.0.1"
 edition = "2024"
 rust-version = "1.95"
-repository = "https://github.com/kandyman991/ELECTRIC_STUDIO"
 publish = false
 
 [workspace.dependencies]
