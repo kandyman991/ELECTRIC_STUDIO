@@ -15,7 +15,9 @@ tauri-build = { workspace = true }
 
 [dependencies]
 ecad-editor = { workspace = true }
-tauri = { workspace = true }
+# devtools: right-click > Inspect in test builds, to diagnose problems on users' machines.
+# Remove before a real release.
+tauri = { workspace = true, features = ["devtools"] }
 serde = { workspace = true }
 
 [lints]

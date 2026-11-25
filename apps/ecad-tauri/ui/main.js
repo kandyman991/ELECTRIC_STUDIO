@@ -2,8 +2,16 @@
 // Frame it returns. No editing logic lives here: see crates/ecad-editor (AGENTS.md rule 6).
 "use strict";
 
+// Never fail silently: any script error or failed call is shown in the status bar.
+const showError = (msg) => { const s = document.getElementById("status"); if (s) s.textContent = "Error: " + msg; };
+window.addEventListener("error", (e) => showError(e.message));
+window.addEventListener("unhandledrejection", (e) => showError(e.reason));
+if (!window.__TAURI__) throw new Error("the Tauri API is missing (withGlobalTauri)");
+
 const { invoke } = window.__TAURI__.core;
 const appWindow = window.__TAURI__.window.getCurrentWindow();
+// If the first frame hasn't arrived after 5 s, say so instead of showing an empty canvas.
+setTimeout(() => { if (!frame) showError("no answer from the editor after 5 s"); }, 5000);
 
 const ACCENT = "#409cff", TARGET = "#ffaa28", START = "#50dc78", QUIET = "#8c96a5";
 const canvas = document.getElementById("canvas");
@@ -39,7 +47,7 @@ async function flush() {
     } while (queue.length);
     render();
   } catch (e) {
-    $("status").textContent = "Error: " + e;
+    showError(e);
   } finally {
     busy = false;
   }
