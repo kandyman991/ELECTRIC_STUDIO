@@ -1,0 +1,42 @@
+name: Windows builds
+
+# Test builds for trying the editor on Windows. Not signed: Windows SmartScreen will warn
+# ("More info" → "Run anyway") until a code-signing certificate is added.
+on:
+  pull_request:
+    paths: ["apps/**", "crates/**", "Cargo.*", ".github/workflows/windows-builds.yml"]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: windows-builds-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: cargo-bins/cargo-binstall@main
+      - name: Tauri CLI
+        run: cargo binstall tauri-cli --version "^2" --no-confirm --force
+      - name: Tauri installer (NSIS)
+        working-directory: apps/ecad-tauri
+        run: cargo tauri build --bundles nsis
+      - name: egui executable
+        run: cargo build --release --locked -p ecad-egui
+      - name: Collect
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/bundle/nsis/*.exe dist/
+          Copy-Item target/release/electric-studio-egui.exe dist/
+          Get-ChildItem dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: electric-studio-windows
+          path: dist/
+          if-no-files-found: error

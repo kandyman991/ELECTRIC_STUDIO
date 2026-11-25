@@ -6,6 +6,8 @@
 //! This shell only turns egui input into `UiEvent`s and paints the `Frame` it gets back. All
 //! behaviour lives in `ecad-editor` (AGENTS.md rule 6).
 
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use ecad_editor::{Button, Frame, KeyName, Marker, Overlay, Primitive, Session, Shape, UiEvent, Viewport};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use std::path::PathBuf;
