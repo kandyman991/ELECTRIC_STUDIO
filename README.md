@@ -8,7 +8,7 @@ Drawing, DXF/DWG/PDF output and rendering come from the Rust crates of
 
 > Status: **M4 complete**: live checks, drawing export (one PDF for the project; DXF, DWG and
 > PNG per page) and the `ecad` command for scripts and CI, on top of multi-page schematics,
-> parts, BOM, terminal strips and PLC I/O. Next: the MVP gate. Early development: a starter IEC library of about 40 symbols.
+> parts, BOM, terminal strips and PLC I/O. MVP gate: a real 10-page diagram redrawn as the reference project ([results](docs/MVP-GATE.md)). Early development: a starter IEC library of about 40 symbols.
 
 ## Try it
 
@@ -80,8 +80,8 @@ Planned: `ecad-symbols`, `ecad-parts`, `ecad-mcp`. See [docs/ARCHITECTURE.md](do
 | M2 Multi-page projects | M2a pages, sheet, title block · M2b cross-references · M2c potentials, junctions, interruption points |
 | **M3 Parts and reports** | M3a parts catalogue, BOM, report export · M3b terminal strips, terminal diagram · M3c PLC channels, PLC I/O list |
 | **M4 Checks and output** | M4a live checks, checks panel, `ecad check` · M4b PDF/DXF/DWG export · M4c `ecad` for scripts and CI (this) |
-| *MVP release gate* | *G1a sheet grid with rows, references like `A3/2F`, full title block · G1b tag format and wire numbers per potential · G2 multi-pole devices and contact tables · G3 symbol library and black boxes · G4a wire details, cables, cable list, BOM code and pages, table of contents · G4b connectors and location boxes (this); then a reference project redrawn end to end* |
-| *Gate check* | *One real panel drawn end to end; BOM and wire list match it; checks clean* |
+| *MVP release gate* | *G1a sheet grid with rows, references like `A3/2F`, full title block · G1b tag format and wire numbers per potential · G2 multi-pole devices and contact tables · G3 symbol library and black boxes · G4a wire details, cables, cable list, BOM code and pages, table of contents · G4b connectors and location boxes · reference project redrawn end to end (this; `ecad new-sample <dir> reference`)* |
+| *Gate check* | *One real panel drawn end to end; BOM and wire list match it; checks clean. Done: 0 errors, 28 devices match the BOM exactly; gaps listed in [docs/MVP-GATE.md](docs/MVP-GATE.md)* |
 | M5 Panel layout | 2D mounting plate, DIN rails, ducts, parts at scale, cables |
 | M6 Integrations | HMI Studio tag exchange, TIA Portal tag table, MCP server, DXF import |
 

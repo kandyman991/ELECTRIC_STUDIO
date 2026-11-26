@@ -360,7 +360,7 @@ impl App {
                 }
                 if role != "potential" && role != "interruption" && !symbol.ends_with("junction") {
                     ui.add_space(8.0);
-                    ui.strong(if role == "terminal" { "Parts (per terminal)" } else { "Parts" });
+                    ui.strong(if role == "terminal" { "Parts (per terminal unless per strip)" } else { "Parts" });
                     if parts.is_empty() {
                         ui.small("None yet: this device is missing from the BOM.");
                     }
@@ -371,6 +371,19 @@ impl App {
                                 events.push(UiEvent::SetDevicePartQuantity { number: p.number.clone(), quantity: q });
                             }
                             ui.label(&p.number).on_hover_text(&p.description);
+                            if role == "terminal" {
+                                let mut once = p.per_strip;
+                                if ui
+                                    .checkbox(&mut once, "per strip")
+                                    .on_hover_text("Count once for the strip (end plate, bracket), not per terminal")
+                                    .changed()
+                                {
+                                    events.push(UiEvent::SetDevicePartPerStrip {
+                                        number: p.number.clone(),
+                                        per_strip: once,
+                                    });
+                                }
+                            }
                             if ui.small_button("✕").on_hover_text("Remove from this device").clicked() {
                                 events.push(UiEvent::RemoveDevicePart { number: p.number.clone() });
                             }

@@ -204,6 +204,12 @@ pub enum UiEvent {
         number: String,
         quantity: u32,
     },
+    /// On a terminal strip: count this part once for the strip (end plates, brackets) or once
+    /// per terminal.
+    SetDevicePartPerStrip {
+        number: String,
+        per_strip: bool,
+    },
     /// Write every report as CSV into this folder.
     ExportReports {
         path: PathBuf,
@@ -337,6 +343,7 @@ pub struct PlcInfo {
 pub struct DevicePart {
     pub number: String,
     pub quantity: u32,
+    pub per_strip: bool,
     pub description: String,
 }
 
@@ -680,6 +687,11 @@ impl Session {
                     p.quantity = quantity;
                 }
             }),
+            UiEvent::SetDevicePartPerStrip { number, per_strip } => self.edit_device_parts(|parts| {
+                if let Some(p) = parts.iter_mut().find(|p| p.number == number) {
+                    p.per_strip = per_strip;
+                }
+            }),
             UiEvent::ExportReports { path } => self.export_reports(&path),
             UiEvent::ExportDrawings { path } => self.export_drawings(&path),
             UiEvent::SetPlcProperty { key, value } => {
@@ -909,6 +921,7 @@ impl Session {
                         .map(|r| DevicePart {
                             number: r.number.clone(),
                             quantity: r.quantity,
+                            per_strip: r.per_strip,
                             description: project
                                 .parts
                                 .get(&r.number)

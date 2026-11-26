@@ -3293,11 +3293,11 @@ AcDbText
  10
 -104.5
  20
--119.56666666666666
+-119.69701213818861
  30
 0.0
  40
-2.8
+2.408963585434174
   1
 Sample: start circuit
   7
@@ -4015,118 +4015,6 @@ TEXT
 100
 AcDbEntity
   8
-XREF
-100
-AcDbText
- 10
-42.5
- 20
-7.7
- 30
-0.0
- 40
-1.8
-  1
-/1.6
-  7
-Standard
- 11
-42.5
- 21
-9.5
- 31
-0.0
-100
-AcDbText
- 73
-3
-  0
-INSERT
-  5
-153
-330
-1159
-100
-AcDbEntity
-  8
-SYMBOLS
-100
-AcDbBlockReference
- 66
-1
-  2
-iec.contact_no
- 10
-40.0
- 20
-12.0
- 30
-0.0
- 41
-1.0
- 42
-1.0
- 43
-1.0
- 50
-0.0
-  0
-ATTRIB
-  5
-11A4
-330
-153
-100
-AcDbEntity
-  8
-SYMBOLS
-100
-AcDbText
- 10
-42.5
- 20
-10.75
- 30
-0.0
- 40
-2.5
-  1
--K1
-  7
-Standard
- 11
-42.5
- 21
-12.0
- 31
-0.0
-100
-AcDbAttribute
-  2
-TAG
- 70
-0
- 74
-2
-  0
-SEQEND
-  5
-11A5
-330
-153
-100
-AcDbEntity
-  8
-SYMBOLS
-  0
-TEXT
-  5
-154
-330
-1159
-100
-AcDbEntity
-  8
 TAGS
 100
 AcDbText
@@ -4155,7 +4043,7 @@ AcDbText
   0
 TEXT
   5
-155
+153
 330
 1159
 100
@@ -4189,7 +4077,7 @@ AcDbText
   0
 TEXT
   5
-156
+154
 330
 1159
 100
@@ -4199,7 +4087,7 @@ XREF
 100
 AcDbText
  10
-126.0
+46.74
  20
 7.7
  30
@@ -4211,7 +4099,119 @@ AcDbText
   7
 Standard
  11
-126.0
+46.74
+ 21
+9.5
+ 31
+0.0
+100
+AcDbText
+ 73
+3
+  0
+INSERT
+  5
+155
+330
+1159
+100
+AcDbEntity
+  8
+SYMBOLS
+100
+AcDbBlockReference
+ 66
+1
+  2
+iec.contact_no
+ 10
+40.0
+ 20
+12.0
+ 30
+0.0
+ 41
+1.0
+ 42
+1.0
+ 43
+1.0
+ 50
+0.0
+  0
+ATTRIB
+  5
+11A4
+330
+155
+100
+AcDbEntity
+  8
+SYMBOLS
+100
+AcDbText
+ 10
+46.74
+ 20
+10.75
+ 30
+0.0
+ 40
+2.5
+  1
+-K1
+  7
+Standard
+ 11
+46.74
+ 21
+12.0
+ 31
+0.0
+100
+AcDbAttribute
+  2
+TAG
+ 70
+0
+ 74
+2
+  0
+SEQEND
+  5
+11A5
+330
+155
+100
+AcDbEntity
+  8
+SYMBOLS
+  0
+TEXT
+  5
+156
+330
+1159
+100
+AcDbEntity
+  8
+XREF
+100
+AcDbText
+ 10
+126.74
+ 20
+7.7
+ 30
+0.0
+ 40
+1.8
+  1
+/1.6
+  7
+Standard
+ 11
+126.74
  21
 9.5
  31
@@ -4263,7 +4263,7 @@ SYMBOLS
 100
 AcDbText
  10
-126.0
+126.74
  20
 10.75
  30
@@ -4275,7 +4275,7 @@ AcDbText
   7
 Standard
  11
-126.0
+126.74
  21
 12.0
  31

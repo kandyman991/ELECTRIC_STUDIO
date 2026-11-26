@@ -97,13 +97,13 @@ pub struct BomRow {
 }
 
 /// The bill of materials: every part used by a device, with the total quantity, sorted by part
-/// number. Parts of a terminal strip count once per terminal.
+/// number. Parts of a terminal strip count once per terminal, unless marked per strip.
 pub fn bom(project: &Project) -> Vec<BomRow> {
     let mut rows: std::collections::BTreeMap<&str, BomRow> = std::collections::BTreeMap::new();
     for d in project.devices.values() {
         let terminals = project.terminals_of(d.id).len() as u32;
-        let per = terminals.max(1);
         for r in &d.parts {
+            let per = if r.per_strip { 1 } else { terminals.max(1) };
             let part = project.parts.get(&r.number);
             let row = rows.entry(&r.number).or_insert_with(|| BomRow {
                 number: r.number.clone(),

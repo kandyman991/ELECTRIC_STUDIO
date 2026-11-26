@@ -11,6 +11,11 @@ use cadcraft_doc::{
 use ecad_model::{Direction, Graphic, PageId, Point, Project, Role};
 use std::sync::Arc;
 
+pub mod clash;
+mod place;
+
+use place::{Placer, Side, TagSize};
+
 pub const LAYER_SYMBOLS: &str = "SYMBOLS";
 pub const LAYER_WIRES: &str = "WIRES";
 pub const LAYER_TAGS: &str = "TAGS";
@@ -50,7 +55,7 @@ fn text(at: Point, height: f64, value: &str) -> Text {
 }
 
 /// Text anchored at `at` by the given justification (left/baseline uses the start point).
-fn justified(at: Point, height: f64, value: &str, halign: HAlign, valign: VAlign) -> Text {
+pub(crate) fn justified(at: Point, height: f64, value: &str, halign: HAlign, valign: VAlign) -> Text {
     let mut t = text(at, height, value);
     if (halign, valign) != (HAlign::Left, VAlign::Baseline) {
         t.align_pt = Some(v(at));
@@ -61,9 +66,9 @@ fn justified(at: Point, height: f64, value: &str, halign: HAlign, valign: VAlign
 }
 
 /// Gap between a connection point and its designation, in mm.
-const LABEL_GAP: f64 = 1.0;
+pub(crate) const LABEL_GAP: f64 = 1.0;
 /// Gap between a symbol's box and its device tag, in mm.
-const TAG_GAP: f64 = 2.5;
+pub(crate) const TAG_GAP: f64 = 2.5;
 pub const LABEL_HEIGHT: f64 = 1.8;
 pub const TAG_HEIGHT: f64 = 2.5;
 
@@ -81,15 +86,19 @@ fn point_label(at: Point, leaves: Direction, name: &str) -> Text {
     }
 }
 
-/// Which side of a symbol its tag and cross-references go on: the first of right, left and
-/// above that no wire leaves from, so they never sit on a wire.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Side {
-    Right,
-    Left,
-    Above,
+/// Whether a terminal or channel has one of the same device just left of it on the same page,
+/// 8 mm away at the same height: then its label leaves out the strip's name.
+fn continues_row(project: &Project, f: &ecad_model::Function) -> bool {
+    project.functions_of(f.device).any(|g| {
+        g.id != f.id
+            && g.page == f.page
+            && (g.position.y - f.position.y).abs() < 0.01
+            && (f.position.x - g.position.x - 8.0).abs() < 0.01
+    })
 }
 
+/// Which side of a symbol its tag and cross-references go on first: the first of right, left
+/// and above that no wire leaves from. (They move elsewhere if that side is crowded.)
 fn tag_side(leaving: &[Direction]) -> Side {
     if !leaving.contains(&Direction::Right) {
         Side::Right
@@ -100,43 +109,29 @@ fn tag_side(leaving: &[Direction]) -> Side {
     }
 }
 
-/// Where a device tag goes, on its symbol's free side.
-fn tag_text(min: Point, max: Point, side: Side, tag: &str) -> Text {
-    match side {
-        Side::Above => {
-            let at = Point::new((min.x + max.x) / 2.0, max.y + TAG_GAP);
-            justified(at, TAG_HEIGHT, tag, HAlign::Center, VAlign::Bottom)
-        }
-        Side::Right => {
-            let at = Point::new(max.x + TAG_GAP, (min.y + max.y) / 2.0);
-            justified(at, TAG_HEIGHT, tag, HAlign::Left, VAlign::Middle)
-        }
-        Side::Left => {
-            let at = Point::new(min.x - TAG_GAP, (min.y + max.y) / 2.0);
-            justified(at, TAG_HEIGHT, tag, HAlign::Right, VAlign::Middle)
-        }
-    }
-}
-
 /// Cross-reference text for a function: under a coil, one line per contact
 /// (`13-14 NO 2.4`); at a contact of a device that has a coil, where that coil is (`/1.3`).
-/// Each entry is (line index, text).
-fn cross_reference_lines(project: &Project, f: ecad_model::FunctionId, role: Role) -> Result<Vec<(usize, String)>> {
+fn cross_reference_lines(project: &Project, f: ecad_model::FunctionId, role: Role) -> Result<Vec<String>> {
     let device = project.function(f)?.device;
     Ok(match role {
         // Drawn as a contact table instead.
         Role::Main => Vec::new(),
         Role::Contact { .. } => match project.main_function(device) {
-            Some(main) => vec![(0, project.reference(main.id)?)],
+            Some(main) => vec![project.reference(main.id)?],
             None => Vec::new(),
         },
-        // An interruption point shows where its partners are.
-        Role::Interruption => project
-            .functions_of(device)
-            .filter(|g| g.id != f)
-            .filter_map(|g| project.reference(g.id).ok())
-            .enumerate()
-            .collect(),
+        // An interruption point shows where its potential goes on: the next page that has a
+        // partner (or, from the last such page, the first), not every page that uses it.
+        Role::Interruption => {
+            let order: Vec<PageId> = project.pages_in_order().iter().map(|p| p.id).collect();
+            let rank = |page: PageId| order.iter().position(|p| *p == page).unwrap_or(usize::MAX);
+            let here = rank(project.function(f)?.page);
+            let mut others: Vec<&ecad_model::Function> =
+                project.functions_of(device).filter(|g| g.id != f && rank(g.page) != here).collect();
+            others.sort_by_key(|g| rank(g.page));
+            let next = others.iter().find(|g| rank(g.page) > here).or_else(|| others.first());
+            next.and_then(|g| project.reference(g.id).ok()).map(|r| vec![r]).unwrap_or_default()
+        }
         // A PLC channel shows its address and symbol: `I0.0 Door_Closed`.
         Role::PlcChannel { .. } => {
             let g = project.function(f)?;
@@ -145,7 +140,7 @@ fn cross_reference_lines(project: &Project, f: ecad_model::FunctionId, role: Rol
                 .filter(|s| !s.is_empty())
                 .collect::<Vec<_>>()
                 .join(" ");
-            if line.is_empty() { Vec::new() } else { vec![(0, line)] }
+            if line.is_empty() { Vec::new() } else { vec![line] }
         }
         Role::Single | Role::Potential | Role::Terminal => Vec::new(),
     })
@@ -154,67 +149,81 @@ fn cross_reference_lines(project: &Project, f: ecad_model::FunctionId, role: Rol
 /// The contact table under a coil or breaker: one row per pole of each of its contacts, as in
 /// `14 _/_ 13  2/4C`: the designations around a small NO or NC contact, then where it is drawn.
 /// `top` is the top-left corner of the first row.
-fn contact_table(d: &mut Drawing, project: &Project, main: ecad_model::FunctionId, top: Vec3) -> Result<()> {
+fn contact_table(project: &Project, main: ecad_model::FunctionId, top: Point) -> Result<ContactTable> {
     let device = project.function(main)?.device;
     let step = XREF_HEIGHT * 1.5;
-    let layer = on(LAYER_XREF);
+    let mut table = ContactTable::default();
     let mut row = 0.0;
     for c in project.contacts_of(device) {
         for (first, second) in &c.poles {
             let y = top.y - step * row - XREF_HEIGHT / 2.0;
             let x = top.x;
             let mid = |at: f64, s: &str, h: HAlign| justified(Point::new(at, y), XREF_HEIGHT, s, h, VAlign::Middle);
-            add_text(d, &layer, mid(x + 3.5, second, HAlign::Right))?;
+            table.texts.push(mid(x + 3.5, second, HAlign::Right));
             let glyph = x + 4.2;
             let base = y - 0.6;
-            let mut segments = vec![
+            table.lines.extend([
                 (Point::new(glyph, base), Point::new(glyph + 1.0, base)),
                 (Point::new(glyph + 2.0, base), Point::new(glyph + 3.0, base)),
-            ];
+            ]);
             match c.kind {
                 // The blade crosses under the fixed contact and a hook closes it.
-                ecad_model::ContactKind::NormallyClosed => segments.extend([
+                ecad_model::ContactKind::NormallyClosed => table.lines.extend([
                     (Point::new(glyph + 1.0, base), Point::new(glyph + 2.4, base - 0.7)),
                     (Point::new(glyph + 2.0, base), Point::new(glyph + 2.0, base - 0.9)),
                 ]),
-                _ => segments.push((Point::new(glyph + 1.0, base), Point::new(glyph + 2.3, base + 1.1))),
+                _ => table.lines.push((Point::new(glyph + 1.0, base), Point::new(glyph + 2.3, base + 1.1))),
             }
-            for (a, b) in segments {
-                add_line(d, &layer, a, b)?;
-            }
-            add_text(d, &layer, mid(x + 7.8, first, HAlign::Left))?;
-            add_text(d, &layer, mid(x + 13.0, &c.location, HAlign::Left))?;
+            table.texts.push(mid(x + 7.8, first, HAlign::Left));
+            table.texts.push(mid(x + 13.0, &c.location, HAlign::Left));
             row += 1.0;
         }
     }
-    Ok(())
+    Ok(table)
 }
 
-/// Where cross-reference lines go: under the tag, which sits right of an upright symbol and
-/// above a sideways one (so the lines go below a sideways symbol instead, clear of the tag).
-fn line_text(min: Point, max: Point, side: Side, (i, s): &(usize, String)) -> Text {
-    let step = XREF_HEIGHT * 1.5;
-    let under_tag = (min.y + max.y) / 2.0 - TAG_HEIGHT - step * *i as f64;
-    match side {
-        Side::Above => {
-            justified(Point::new(min.x, min.y - TAG_GAP - step * *i as f64), XREF_HEIGHT, s, HAlign::Left, VAlign::Top)
+/// A coil's contact table: its texts and the lines of its little contact symbols.
+#[derive(Default)]
+struct ContactTable {
+    texts: Vec<Text>,
+    lines: Vec<(Point, Point)>,
+}
+
+/// Width of a contact table, in mm (to the end of a typical location like `12/3C`).
+const TABLE_WIDTH: f64 = 22.0;
+
+/// Top-left corners to try for a coil's contact table: under the tag on its preferred side, on
+/// the other side, then further and further down under the symbol (below a rail if need be, as
+/// printed drawings do in dense columns).
+fn table_corners(min: Point, max: Point, preferred: Side, floor: f64) -> Vec<Point> {
+    let corner = |side| {
+        let c = table_corner(min, max, side);
+        Point::new(c.x, c.y)
+    };
+    let mut out = vec![corner(preferred)];
+    for side in [Side::Right, Side::Left] {
+        if side != preferred {
+            out.push(corner(side));
         }
-        Side::Right => justified(Point::new(max.x + TAG_GAP, under_tag), XREF_HEIGHT, s, HAlign::Left, VAlign::Top),
-        Side::Left => justified(Point::new(min.x - TAG_GAP, under_tag), XREF_HEIGHT, s, HAlign::Right, VAlign::Top),
     }
+    let x = (min.x + max.x) / 2.0 - TABLE_WIDTH / 2.0;
+    let mut y = min.y - TAG_GAP;
+    while y > floor {
+        out.push(Point::new(x, y));
+        y -= 4.0;
+    }
+    out
 }
 
-/// A wire number at the middle of the wire's longest segment: beside a vertical run, above a
-/// horizontal one.
-fn wire_label(route: &[Point], number: &str) -> Text {
-    let len = |s: &[Point]| (s[1].x - s[0].x).abs() + (s[1].y - s[0].y).abs();
-    let longest = route.windows(2).max_by(|a, b| len(a).total_cmp(&len(b)));
-    let Some(seg) = longest else { return text(route.first().copied().unwrap_or(Point::ZERO), LABEL_HEIGHT, number) };
-    let mid = Point::new((seg[0].x + seg[1].x) / 2.0, (seg[0].y + seg[1].y) / 2.0);
-    if seg[0].x == seg[1].x {
-        justified(Point::new(mid.x + LABEL_GAP, mid.y), LABEL_HEIGHT, number, HAlign::Left, VAlign::Middle)
-    } else {
-        justified(Point::new(mid.x, mid.y + LABEL_GAP), LABEL_HEIGHT, number, HAlign::Center, VAlign::Bottom)
+/// The top-left corner of a coil's contact table: where the first cross-reference line would go
+/// under its tag on the preferred side (below a sideways symbol).
+fn table_corner(min: Point, max: Point, side: Side) -> Vec3 {
+    let under_tag = (min.y + max.y) / 2.0 - TAG_HEIGHT;
+    match side {
+        Side::Right => Vec3::new(max.x + TAG_GAP, under_tag, 0.0),
+        // The table reads left to right; start it far enough left to end at the symbol.
+        Side::Left => Vec3::new(min.x - TAG_GAP - 24.0, under_tag, 0.0),
+        _ => Vec3::new(min.x, min.y - TAG_GAP, 0.0),
     }
 }
 
@@ -277,74 +286,89 @@ pub fn page_drawing(project: &Project, page: PageId) -> Result<Drawing> {
         d.blocks.insert(id.0.clone(), Arc::new(b));
     }
 
+    // First everything with a fixed place: symbols' point labels, contact tables, wires, cables
+    // and location boxes. Then the tags, cross-references and wire numbers, each where it
+    // doesn't sit on any of those or on each other.
+    struct Tagged {
+        id: ecad_model::FunctionId,
+        symbol: String,
+        position: Point,
+        rotation: f64,
+        bounds: (Point, Point),
+        preferred: Side,
+        tag: String,
+        size: TagSize,
+        /// A terminal or PLC channel, labelled with its number.
+        numbered: bool,
+        lines: Vec<String>,
+        hidden: bool,
+        table: bool,
+    }
+    let mut tagged = Vec::new();
+    let mut placer = {
+        use ecad_model::sheet::COLUMN_BAND;
+        let (flo, fhi) = project.sheet.frame();
+        let (_, tb) = project.sheet.title_block();
+        Placer::new((Point::new(flo.x, tb.y), Point::new(fhi.x, fhi.y - COLUMN_BAND)))
+    };
     for f in project.functions_on(page) {
         let device = project.device(f.device)?;
         let sym = project.symbol(&f.symbol)?;
         // Labels are placed in page coordinates, not inside the block, so they stay upright
         // and readable whatever the symbol's rotation.
+        let (min, max) = project.function_bounds(f.id)?.unwrap_or((f.position, f.position));
+        placer.add_symbol(f.id, min, max);
+        // The tag keeps clear of the symbol and of its point labels, which may stick out.
+        let (mut tag_min, mut tag_max) = (min, max);
         let mut leaving = Vec::new();
         for cp in &sym.connection_points {
             let (at, leaves) = project.connection_point(&ecad_model::ConnectionRef::new(f.id, &cp.name))?;
             leaving.push(leaves);
             if !sym.hide_point_labels {
                 let label = point_label(at, leaves, f.designation(&cp.name));
+                if let Some(r) = clash::text_rect(&label) {
+                    tag_min = Point::new(tag_min.x.min(r.lo.x), tag_min.y.min(r.lo.y));
+                    tag_max = Point::new(tag_max.x.max(r.hi.x), tag_max.y.max(r.hi.y));
+                }
                 d.add(&Space::Model, on(LAYER_TAGS), EntityKind::Text(label)).map_err(err)?;
             }
         }
         let side = tag_side(&leaving);
-        let (min, max) = project.function_bounds(f.id)?.unwrap_or((f.position, f.position));
-        if sym.role == Role::Main {
-            let mut top = line_text(min, max, side, &(0, String::new())).insert;
-            if side == Side::Left {
-                // The table reads left to right; start it far enough left to end at the symbol.
-                top.x -= 24.0;
-            }
-            contact_table(&mut d, project, f.id, top)?;
-        } else {
-            for line in cross_reference_lines(project, f.id, sym.role)? {
-                d.add(&Space::Model, on(LAYER_XREF), EntityKind::Text(line_text(min, max, side, &line)))
-                    .map_err(err)?;
-            }
-        }
-        let tag = Attrib {
-            tag: "TAG".into(),
-            // A terminal or PLC channel is labelled with its device and number: -X2:3, -KF1:0.
-            text: tag_text(
-                min,
-                max,
-                side,
-                &match project.drawing_number(f.id) {
-                    Some(n) => format!("{}:{n}", device.tag),
-                    None => device.tag.clone(),
-                },
-            ),
-            // Kept in the DXF even when not shown (junctions), so the drawing stays complete.
-            invisible: sym.hide_tag,
-            constant: false,
-            prompt: "Device tag".into(),
-            props: Default::default(),
-            multiline: None,
-            modes: Default::default(),
-        };
-        let insert = Insert {
-            block: f.symbol.0.clone(),
-            insert: v(f.position),
+        let lines = if sym.role == Role::Main { Vec::new() } else { cross_reference_lines(project, f.id, sym.role)? };
+        tagged.push(Tagged {
+            id: f.id,
+            symbol: f.symbol.0.clone(),
+            position: f.position,
             rotation: f.rotation.degrees().to_radians(),
-            attribs: vec![tag],
-            ..Insert::default()
-        };
-        d.add(&Space::Model, on(LAYER_SYMBOLS), EntityKind::Insert(insert)).map_err(err)?;
+            bounds: (tag_min, tag_max),
+            preferred: side,
+            // A terminal or PLC channel is labelled with its device and number: -X2:3, -KF1:0.
+            tag: match project.drawing_number(f.id) {
+                // In a row of terminals of one strip, only the first names the strip.
+                Some(n) if continues_row(project, f) => format!(":{n}"),
+                Some(n) => format!("{}:{n}", device.tag),
+                None => device.tag.clone(),
+            },
+            numbered: project.drawing_number(f.id).is_some(),
+            size: if project.drawing_number(f.id).is_some() && continues_row(project, f) {
+                TagSize::COMPACT
+            } else {
+                TagSize::NORMAL
+            },
+            lines,
+            hidden: sym.hide_tag,
+            table: sym.role == Role::Main,
+        });
     }
 
     // Colour 150 (mid blue) reads on dark screens and on white paper; pure blue (5) vanishes on dark.
     let wire = Common { color: Color::from_aci(150), ..on(LAYER_WIRES) };
+    let mut numbered = Vec::new();
     for c in project.connections_on(page) {
         let route = project.route(c)?;
         for seg in route.windows(2) {
             d.add(&Space::Model, wire.clone(), EntityKind::Line(Line { a: v(seg[0]), b: v(seg[1]) })).map_err(err)?;
-        }
-        if let Some(n) = &c.wire_number {
-            d.add(&Space::Model, on(LAYER_TAGS), EntityKind::Text(wire_label(&route, n))).map_err(err)?;
+            placer.add_wire(seg[0], seg[1]);
         }
         // Cross-section and colour go just after the number: `2,5 BU`.
         let spec = [c.spec.cross_section.as_str(), c.spec.colour.as_str()]
@@ -352,19 +376,128 @@ pub fn page_drawing(project: &Project, page: PageId) -> Result<Drawing> {
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
             .join(" ");
-        if !spec.is_empty() {
-            let mut t = wire_label(&route, &spec);
-            t.height = LABEL_HEIGHT * 0.8;
-            let below = if c.wire_number.is_some() { LABEL_HEIGHT * 1.5 } else { 0.0 };
-            t.insert.y -= below;
-            if let Some(a) = t.align_pt.as_mut() {
-                a.y -= below;
-            }
-            d.add(&Space::Model, on(LAYER_TAGS), EntityKind::Text(t)).map_err(err)?;
+        if c.wire_number.is_some() || !spec.is_empty() {
+            numbered.push((route, c.wire_number.clone(), spec));
         }
     }
     draw_cables(&mut d, project, page)?;
     draw_boxes(&mut d, project, page)?;
+    for e in d.model.iter() {
+        if let EntityKind::Text(t) = &e.kind {
+            placer.add_text(t);
+        }
+    }
+    for b in project.boxes_on(page) {
+        let (lo, hi) = (b.min, b.max);
+        let corners = [lo, Point::new(hi.x, lo.y), hi, Point::new(lo.x, hi.y), lo];
+        for side in corners.windows(2) {
+            placer.add_edge(side[0], side[1]);
+        }
+    }
+    for b in project.boxes_on(page).filter(|b| !b.label.is_empty()) {
+        for t in placer.choose(box_label_candidates(b.min, b.max, &b.label), None) {
+            d.add(&Space::Model, on(LAYER_BOXES), EntityKind::Text(t)).map_err(err)?;
+        }
+    }
+
+    // Contact tables first: they are big and have few places to go.
+    let floor = placer.floor();
+    for t in tagged.iter().filter(|t| t.table) {
+        let (min, max) = t.bounds;
+        let mut tables = Vec::new();
+        for corner in table_corners(min, max, t.preferred, floor) {
+            tables.push(contact_table(project, t.id, corner)?);
+        }
+        let candidates: Vec<Vec<Text>> = tables.iter().map(|tb| tb.texts.clone()).collect();
+        if let Some(i) = placer.choose_index(&candidates, Some(t.id))
+            && let Some(table) = tables.into_iter().nth(i)
+        {
+            let layer = on(LAYER_XREF);
+            for text in table.texts {
+                add_text(&mut d, &layer, text)?;
+            }
+            for (a, b) in table.lines {
+                add_line(&mut d, &layer, a, b)?;
+            }
+        }
+    }
+    for t in tagged {
+        let (min, max) = t.bounds;
+        let texts = if t.hidden {
+            // Not shown, but kept in the DXF so the drawing stays complete.
+            place::tag_block(min, max, t.preferred, t.size, &t.tag, &[])
+        } else {
+            let mut sides = vec![t.preferred];
+            sides.extend(Side::ALL.iter().filter(|s| **s != t.preferred));
+            // A terminal's or pin's label may shrink to the compact size where the normal one
+            // finds no clear place.
+            let mut sizes = vec![t.size];
+            if t.numbered && t.size.height > TagSize::COMPACT.height {
+                sizes.push(TagSize::COMPACT);
+            }
+            let candidates = sizes
+                .iter()
+                .flat_map(|size| sides.iter().map(|side| place::tag_block(min, max, *side, *size, &t.tag, &t.lines)))
+                .collect();
+            placer.choose(candidates, Some(t.id))
+        };
+        let mut texts = texts.into_iter();
+        let Some(tag_text) = texts.next() else { continue };
+        for line in texts {
+            d.add(&Space::Model, on(LAYER_XREF), EntityKind::Text(line)).map_err(err)?;
+        }
+        let tag = Attrib {
+            tag: "TAG".into(),
+            text: tag_text,
+            invisible: t.hidden,
+            constant: false,
+            prompt: "Device tag".into(),
+            props: Default::default(),
+            multiline: None,
+            modes: Default::default(),
+        };
+        let insert = Insert {
+            block: t.symbol,
+            insert: v(t.position),
+            rotation: t.rotation,
+            attribs: vec![tag],
+            ..Insert::default()
+        };
+        d.add(&Space::Model, on(LAYER_SYMBOLS), EntityKind::Insert(insert)).map_err(err)?;
+    }
+
+    // First every wire that has a clear place for its labels. Then the rest: a wire whose number
+    // and spec another wire of the page already shows goes without (typically the short stretch
+    // from an arrow or terminal to the next junction); the others take the least crowded place.
+    let mut shown: Vec<(Option<String>, String)> = Vec::new();
+    let mut crowded = Vec::new();
+    for (route, number, spec) in numbered {
+        let mut candidates = place::wire_candidates(&route, number.as_deref(), &spec);
+        if candidates.is_empty() {
+            // A wire of no length: label it where it is.
+            let at = route.first().copied().unwrap_or(Point::ZERO);
+            candidates.push(place::wire_labels(at, at, 0.5, false, number.as_deref(), &spec));
+        }
+        let texts = placer.choose_clear(candidates.clone(), None);
+        if texts.is_empty() {
+            crowded.push((candidates, number, spec));
+            continue;
+        }
+        shown.push((number, spec));
+        for t in texts {
+            d.add(&Space::Model, on(LAYER_TAGS), EntityKind::Text(t)).map_err(err)?;
+        }
+    }
+    for (candidates, number, spec) in crowded {
+        let key = (number, spec);
+        if shown.contains(&key) {
+            continue;
+        }
+        shown.push(key);
+        for t in placer.choose(candidates, None) {
+            d.add(&Space::Model, on(LAYER_TAGS), EntityKind::Text(t)).map_err(err)?;
+        }
+    }
     Ok(d)
 }
 
@@ -379,12 +512,27 @@ fn draw_boxes(d: &mut Drawing, project: &Project, page: PageId) -> Result<()> {
                 add_line(d, &layer, a, z)?;
             }
         }
-        if !b.label.is_empty() {
-            let at = Point::new(lo.x, hi.y + TAG_GAP);
-            add_text(d, &layer, justified(at, TAG_HEIGHT, &b.label, HAlign::Left, VAlign::Bottom))?;
-        }
     }
     Ok(())
+}
+
+/// Places for a location box's label: above its top-left corner, above its top-right corner,
+/// inside along the top, below the bottom-left corner.
+fn box_label_candidates(lo: Point, hi: Point, label: &str) -> Vec<Vec<Text>> {
+    let t = |at: Point, h: HAlign, v: VAlign| vec![justified(at, TAG_HEIGHT, label, h, v)];
+    let top = hi.y - LABEL_GAP;
+    vec![
+        // Above the box, at either end; inside its top corners; beside it at the top; below.
+        t(Point::new(lo.x, hi.y + TAG_GAP), HAlign::Left, VAlign::Bottom),
+        t(Point::new(hi.x, hi.y + TAG_GAP), HAlign::Right, VAlign::Bottom),
+        t(Point::new(lo.x + LABEL_GAP, top), HAlign::Left, VAlign::Top),
+        t(Point::new(hi.x - LABEL_GAP, top), HAlign::Right, VAlign::Top),
+        t(Point::new(lo.x - LABEL_GAP, top), HAlign::Right, VAlign::Top),
+        t(Point::new(hi.x + LABEL_GAP, top), HAlign::Left, VAlign::Top),
+        t(Point::new(lo.x - LABEL_GAP, lo.y + LABEL_GAP), HAlign::Right, VAlign::Bottom),
+        t(Point::new(hi.x + LABEL_GAP, lo.y + LABEL_GAP), HAlign::Left, VAlign::Bottom),
+        t(Point::new(lo.x, lo.y - TAG_GAP), HAlign::Left, VAlign::Top),
+    ]
 }
 
 /// Where a wire is marked as running in a cable: a third of the way along its longest segment.
@@ -550,9 +698,10 @@ fn title_block(
     let (t_lo, t_hi) = project.sheet.title_block();
     add_rect(d, lines, t_lo, t_hi)?;
     let caption = |x: f64, y: f64, s: &str| justified(Point::new(x, y), 1.6, s, HAlign::Left, VAlign::Top);
-    // Text shrinks to fit its cell (stroke-font characters are about 0.7 of their height wide).
+    // Text shrinks to fit its cell (stroke-font characters with their spacing are about 0.85 of
+    // their height wide, measured on rendered pages).
     let value = |x: f64, y: f64, h: f64, s: &str, width: f64| {
-        let fit = width / (s.chars().count().max(1) as f64 * 0.7);
+        let fit = width / (s.chars().count().max(1) as f64 * 0.85);
         justified(Point::new(x, y), h.min(fit), s, HAlign::Left, VAlign::Bottom)
     };
     // Column edges, left to right; the title takes what is left.

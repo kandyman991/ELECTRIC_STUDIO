@@ -54,6 +54,7 @@ pub fn start_circuit() -> Result<Project> {
     ];
     for (id, number, (fa, pa), (fb, pb)) in wires {
         p.connect(Connection {
+            bend: None,
             id: ConnectionId::from_u128(id),
             from: ConnectionRef::new(FunctionId::from_u128(fa), pa),
             to: ConnectionRef::new(FunctionId::from_u128(fb), pb),
@@ -167,6 +168,7 @@ pub fn with_potentials() -> Result<Project> {
     ];
     for (id, number, (fa, pa), (fb, pb)) in wires {
         p.connect(Connection {
+            bend: None,
             id: ConnectionId::from_u128(id),
             from: ConnectionRef::new(fid(fa), pa),
             to: ConnectionRef::new(fid(fb), pb),
@@ -217,6 +219,7 @@ pub fn with_terminals() -> Result<Project> {
     ];
     for (id, number, (fa, pa), (fb, pb)) in wires {
         p.connect(Connection {
+            bend: None,
             id: ConnectionId::from_u128(id),
             from: ConnectionRef::new(FunctionId::from_u128(fa), pa),
             to: ConnectionRef::new(FunctionId::from_u128(fb), pb),
@@ -316,6 +319,7 @@ pub fn with_plc() -> Result<Project> {
     ];
     for (id, number, (fa, pa), (fb, pb)) in wires {
         p.connect(Connection {
+            bend: None,
             id: ConnectionId::from_u128(id),
             from: ConnectionRef::new(fid(fa), pa),
             to: ConnectionRef::new(fid(fb), pb),
@@ -400,6 +404,7 @@ pub fn with_power() -> Result<Project> {
     wires.push((0x32c, 0x229, "1", 0x22a, "N"));
     for (id, fa, pa, fb, pb) in wires {
         p.connect(Connection {
+            bend: None,
             id: ConnectionId::from_u128(id),
             from: ConnectionRef::new(fid(fa), pa),
             to: ConnectionRef::new(fid(fb), pb),
@@ -416,6 +421,7 @@ pub fn with_power() -> Result<Project> {
     for (i, (contact, motor)) in [("2", "U"), ("4", "V"), ("6", "W")].into_iter().enumerate() {
         let id = ConnectionId::from_u128(0x330 + i as u128);
         p.connect(Connection {
+            bend: None,
             id,
             from: ConnectionRef::new(fid(0x225), contact),
             to: ConnectionRef::new(fid(0x22c), motor),
