@@ -16,6 +16,7 @@ pub const LAYER_WIRES: &str = "WIRES";
 pub const LAYER_TAGS: &str = "TAGS";
 pub const LAYER_FRAME: &str = "FRAME";
 pub const LAYER_XREF: &str = "XREF";
+pub const LAYER_BOXES: &str = "BOXES";
 /// Text height of cross-reference lines.
 pub const XREF_HEIGHT: f64 = 1.8;
 
@@ -363,7 +364,27 @@ pub fn page_drawing(project: &Project, page: PageId) -> Result<Drawing> {
         }
     }
     draw_cables(&mut d, project, page)?;
+    draw_boxes(&mut d, project, page)?;
     Ok(d)
+}
+
+/// Location boxes: a dashed rectangle with its label above the top-left corner.
+fn draw_boxes(d: &mut Drawing, project: &Project, page: PageId) -> Result<()> {
+    let layer = on(LAYER_BOXES);
+    for b in project.boxes_on(page) {
+        let (lo, hi) = (b.min, b.max);
+        let corners = [lo, Point::new(hi.x, lo.y), hi, Point::new(lo.x, hi.y), lo];
+        for side in corners.windows(2) {
+            for (a, z) in dashes(side[0], side[1]) {
+                add_line(d, &layer, a, z)?;
+            }
+        }
+        if !b.label.is_empty() {
+            let at = Point::new(lo.x, hi.y + TAG_GAP);
+            add_text(d, &layer, justified(at, TAG_HEIGHT, &b.label, HAlign::Left, VAlign::Bottom))?;
+        }
+    }
+    Ok(())
 }
 
 /// Where a wire is marked as running in a cable: a third of the way along its longest segment.

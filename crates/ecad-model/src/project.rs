@@ -49,6 +49,7 @@ id_type!(
 );
 id_type!(ConnectionId);
 id_type!(CableId);
+id_type!(BoxId);
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Page {
@@ -175,6 +176,25 @@ pub struct WireSpec {
 pub struct CableCore {
     pub cable: CableId,
     pub core: String,
+}
+
+/// A dashed box on a page around part of the drawing, labelled with where that part is or
+/// what it belongs to: a location (`+A101`), a connector housing (`-XCPR1`) or a field device
+/// (`EXT`). Devices drawn inside it are in that place.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LocationBox {
+    pub id: BoxId,
+    pub page: PageId,
+    pub min: Point,
+    pub max: Point,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+}
+
+impl LocationBox {
+    pub fn contains(&self, p: Point) -> bool {
+        p.x >= self.min.x && p.x <= self.max.x && p.y >= self.min.y && p.y <= self.max.y
+    }
 }
 
 /// A physical cable: its tag, type and cores.
@@ -307,6 +327,11 @@ pub enum Command {
         device: DeviceId,
         designations: BTreeMap<String, String>,
     },
+    /// Draw a location box (at least 4 mm each way).
+    AddBox(LocationBox),
+    /// Move, resize or relabel a box.
+    UpdateBox(LocationBox),
+    RemoveBox(BoxId),
     /// Add a cable (its tag must be new).
     AddCable(Cable),
     /// Change a cable's tag, type, cores or shield.
@@ -401,6 +426,10 @@ pub enum ModelError {
     PartInUse(String, String),
     #[error("a black box needs at least one terminal, and every terminal a unique, non-empty name")]
     InvalidBlackBox,
+    #[error("no box {0:?}")]
+    NoBox(BoxId),
+    #[error("a box must be at least 4 mm wide and high")]
+    BoxTooSmall,
     #[error("no cable {0:?}")]
     NoCable(CableId),
     #[error("cable {0} still has wires in it")]
@@ -454,6 +483,9 @@ pub struct Project {
     /// Cables, by id; wires refer to their cores.
     #[serde(default)]
     pub cables: BTreeMap<CableId, Cable>,
+    /// Location boxes on the pages.
+    #[serde(default)]
+    pub boxes: BTreeMap<BoxId, LocationBox>,
 }
 
 /// Title-block fields of a project. All free text.
@@ -870,7 +902,7 @@ impl Project {
             }
             Command::RemovePage(id) => {
                 let name = self.page(id)?.name.clone();
-                if self.functions.values().any(|f| f.page == id) {
+                if self.functions.values().any(|f| f.page == id) || self.boxes.values().any(|b| b.page == id) {
                     return Err(ModelError::PageNotEmpty(name));
                 }
                 let page = self.pages.remove(&id).ok_or(ModelError::NoPage(id))?;
@@ -935,6 +967,24 @@ impl Project {
                 let old_device = std::mem::replace(&mut f.device, device);
                 let old_designations = std::mem::replace(&mut f.designations, designations);
                 Ok(Command::Reassign { id, device: old_device, designations: old_designations })
+            }
+            Command::AddBox(b) => {
+                let b = self.checked_box(b)?;
+                if self.boxes.contains_key(&b.id) {
+                    return Err(ModelError::DuplicateId(b.id.0));
+                }
+                let id = b.id;
+                self.boxes.insert(id, b);
+                Ok(Command::RemoveBox(id))
+            }
+            Command::UpdateBox(b) => {
+                let b = self.checked_box(b)?;
+                let slot = self.boxes.get_mut(&b.id).ok_or(ModelError::NoBox(b.id))?;
+                Ok(Command::UpdateBox(std::mem::replace(slot, b)))
+            }
+            Command::RemoveBox(id) => {
+                let b = self.boxes.remove(&id).ok_or(ModelError::NoBox(id))?;
+                Ok(Command::AddBox(b))
             }
             Command::AddCable(cable) => {
                 let cable = Cable { tag: cable.tag.trim().to_owned(), ..cable };
@@ -1143,6 +1193,32 @@ impl Project {
             Some(p) if Some(p.id) != except => Err(ModelError::DuplicatePageName(name.to_owned())),
             _ => Ok(()),
         }
+    }
+
+    /// A box with its corners in order, its label trimmed, on an existing page.
+    fn checked_box(&self, b: LocationBox) -> Result<LocationBox> {
+        self.page(b.page)?;
+        let min = Point::new(b.min.x.min(b.max.x), b.min.y.min(b.max.y));
+        let max = Point::new(b.min.x.max(b.max.x), b.min.y.max(b.max.y));
+        if max.x - min.x < 4.0 || max.y - min.y < 4.0 {
+            return Err(ModelError::BoxTooSmall);
+        }
+        Ok(LocationBox { min, max, label: b.label.trim().to_owned(), ..b })
+    }
+
+    /// The boxes on a page.
+    pub fn boxes_on(&self, page: PageId) -> impl Iterator<Item = &LocationBox> {
+        self.boxes.values().filter(move |b| b.page == page)
+    }
+
+    /// Where a drawing is: the labels of the boxes around it, outermost first (`+A101 -XCPR1`).
+    pub fn box_labels(&self, f: FunctionId) -> Vec<String> {
+        let Ok(f) = self.function(f) else { return Vec::new() };
+        let mut around: Vec<&LocationBox> =
+            self.boxes_on(f.page).filter(|b| b.contains(f.position) && !b.label.is_empty()).collect();
+        let area = |b: &LocationBox| (b.max.x - b.min.x) * (b.max.y - b.min.y);
+        around.sort_by(|a, b| area(b).total_cmp(&area(a)));
+        around.into_iter().map(|b| b.label.clone()).collect()
     }
 
     /// A cable's tag is non-empty and unique.

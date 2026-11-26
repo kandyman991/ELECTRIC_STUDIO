@@ -356,6 +356,43 @@ mod tests {
     }
 
     #[test]
+    fn boxes_tell_where_devices_are_and_plug_pins_number_like_terminals() {
+        let mut p = sample::with_power().unwrap();
+        let motor = FunctionId::from_u128(0x22c);
+        assert_eq!(p.box_labels(motor), ["EXT"]);
+        // An inner box around the motor too: outermost first.
+        let inner = LocationBox {
+            id: BoxId::from_u128(0x601),
+            page: sample::PAGE_4,
+            min: Point::new(-104.0, -64.0),
+            max: Point::new(-76.0, -40.0),
+            label: " -XCPR1 ".into(),
+        };
+        p.apply(Command::AddBox(inner.clone())).unwrap();
+        assert_eq!(p.box_labels(motor), ["EXT", "-XCPR1"]);
+        let tiny = LocationBox { id: BoxId::from_u128(0x602), max: Point::new(-102.0, -62.0), ..inner };
+        assert_eq!(p.apply(Command::AddBox(tiny)).unwrap_err(), ModelError::BoxTooSmall);
+        // A page with a box isn't empty.
+        p.apply(Command::AddPage(Page::new("9", 9))).unwrap();
+        let nine = p.pages.values().find(|x| x.name == "9").unwrap().id;
+        let b = LocationBox {
+            id: BoxId::from_u128(0x603),
+            page: nine,
+            min: Point::ZERO,
+            max: Point::new(8.0, 8.0),
+            label: String::new(),
+        };
+        p.apply(Command::AddBox(b)).unwrap();
+        assert_eq!(p.apply(Command::RemovePage(nine)).unwrap_err(), ModelError::PageNotEmpty("9".into()));
+
+        // Plug pins are numbered on their connector like terminals on a strip.
+        let xd = DeviceId::from_u128(0x700);
+        p.add_device(Device::new(xd, "-XD1", "")).unwrap();
+        let pin = SymbolId::new("iec.plug_pin");
+        assert_eq!(p.next_designations(xd, &pin).get("1").map(String::as_str), Some("1"));
+    }
+
+    #[test]
     fn references_follow_the_sheet_grid() {
         let mut p = sample::with_contacts().unwrap();
         let k1 = p.function(K1_COIL).unwrap().clone();

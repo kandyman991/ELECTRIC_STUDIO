@@ -38,12 +38,15 @@ pub enum Tool {
     },
     /// Click a connection point, then another, to draw a wire.
     Wire,
+    /// Drag a rectangle to draw a location box.
+    Box,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Selected {
     Function(FunctionId),
     Connection(ConnectionId),
+    Box(ecad_model::BoxId),
 }
 
 /// What is under the pointer, in priority order: connection points, then symbols, then wires.
@@ -52,6 +55,8 @@ pub enum Hit {
     Point(ConnectionRef),
     Function(FunctionId),
     Connection(ConnectionId),
+    /// A location box, by its edge or label.
+    Box(ecad_model::BoxId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -125,6 +130,10 @@ pub struct Editor {
     selection: Option<Selected>,
     hover: Option<Hit>,
     drag: Option<Drag>,
+    /// A box being moved: the box as it was and where it was grabbed (from its corner).
+    box_drag: Option<(ecad_model::LocationBox, Point, bool)>,
+    /// The first corner of a box being drawn.
+    box_start: Option<Point>,
     wire_start: Option<ConnectionRef>,
     cursor: Point,
     /// Snapping grid in mm.
@@ -185,6 +194,8 @@ impl Editor {
             selection: None,
             hover: None,
             drag: None,
+            box_drag: None,
+            box_start: None,
             wire_start: None,
             cursor: Point::ZERO,
             grid: GRID,
@@ -346,6 +357,9 @@ impl Editor {
         let on_page: Vec<&Function> = self.project.functions_on(page).collect();
         for f in &on_page {
             cmds.push(Command::Unplace(f.id));
+        }
+        for b in self.project.boxes_on(page) {
+            cmds.push(Command::RemoveBox(b.id));
         }
         // Devices drawn only on this page go with it.
         let mut devices: Vec<DeviceId> = on_page.iter().map(|f| f.device).collect();
@@ -553,6 +567,19 @@ impl Editor {
 
     pub fn pointer_move(&mut self, p: Point) {
         self.cursor = p;
+        if let Some((from, grab, _)) = self.box_drag.clone() {
+            let min = snap(Point::new(p.x - grab.x, p.y - grab.y), self.grid);
+            let (dx, dy) = (min.x - from.min.x, min.y - from.min.y);
+            let moved =
+                ecad_model::LocationBox { min, max: Point::new(from.max.x + dx, from.max.y + dy), ..from.clone() };
+            let now = self.project.boxes.get(&from.id).map(|b| b.min);
+            if now != Some(min) && self.project.apply(Command::UpdateBox(moved)).is_ok() {
+                self.box_drag = Some((from, grab, true));
+                self.revision += 1;
+                self.scene += 1;
+            }
+            return;
+        }
         if let Some(mut drag) = self.drag {
             let to = snap(Point::new(p.x - drag.grab.x, p.y - drag.grab.y), self.grid);
             let at = self.project.function(drag.function).map(|f| f.position).ok();
@@ -581,8 +608,16 @@ impl Editor {
                     }
                 }
                 Some(Hit::Connection(c)) => self.selection = Some(Selected::Connection(c)),
+                Some(Hit::Box(b)) => {
+                    self.selection = Some(Selected::Box(b));
+                    if let Some(from) = self.project.boxes.get(&b) {
+                        let grab = Point::new(p.x - from.min.x, p.y - from.min.y);
+                        self.box_drag = Some((from.clone(), grab, false));
+                    }
+                }
                 None => self.selection = None,
             },
+            Tool::Box => self.box_start = Some(snap(p, self.grid)),
             Tool::Place(symbol) => self.place(&symbol, snap(p, self.grid)),
             Tool::PlaceFor { symbol, device } => self.place_for(&symbol, device, snap(p, self.grid)),
             Tool::Wire => self.wire_click(hit),
@@ -591,6 +626,26 @@ impl Editor {
 
     pub fn pointer_up(&mut self, p: Point) {
         self.cursor = p;
+        if let Some((from, _, moved)) = self.box_drag.take()
+            && moved
+        {
+            self.forget_saved_branch();
+            let label = if from.label.is_empty() { "Move box".to_owned() } else { format!("Move box {}", from.label) };
+            self.history.record(&label, Command::UpdateBox(from));
+        }
+        if let Some(start) = self.box_start.take() {
+            let end = snap(p, self.grid);
+            let id = ecad_model::BoxId::new();
+            let b = ecad_model::LocationBox { id, page: self.page, min: start, max: end, label: String::new() };
+            match self.execute("Draw box", Command::AddBox(b)) {
+                Ok(()) => {
+                    self.selection = Some(Selected::Box(id));
+                    self.tool = Tool::Select;
+                    self.status = "Type the box's label in the side panel, e.g. +A101 or EXT".into();
+                }
+                Err(e) => self.status = e.to_string(),
+            }
+        }
         if let Some(drag) = self.drag.take()
             && drag.moved
         {
@@ -627,6 +682,10 @@ impl Editor {
                 Some(Selected::Connection(c)) => {
                     let label = format!("Delete wire {}", self.wire_name(c));
                     let r = self.execute(&label, Command::Disconnect(c));
+                    self.report(r);
+                }
+                Some(Selected::Box(b)) => {
+                    let r = self.execute("Delete box", Command::RemoveBox(b));
                     self.report(r);
                 }
                 None => {}
@@ -720,7 +779,18 @@ impl Editor {
                     out.push(Overlay::Wire { points, selected: false });
                 }
             }
+            Some(Hit::Box(b)) if matches!(self.tool, Tool::Select) => {
+                if let Some(b) = self.project.boxes.get(b) {
+                    out.push(Overlay::Outline { min: b.min, max: b.max, selected: false });
+                }
+            }
             _ => {}
+        }
+        // The box being drawn.
+        if let Some(a) = self.box_start {
+            let b = snap(self.cursor, self.grid);
+            let points = vec![a, Point::new(b.x, a.y), b, Point::new(a.x, b.y), a];
+            out.push(Overlay::RubberBand { points });
         }
         match self.selection {
             Some(Selected::Function(f)) => {
@@ -743,6 +813,11 @@ impl Editor {
                 }
                 if let Some(points) = self.wire_points(c) {
                     out.push(Overlay::Wire { points, selected: true });
+                }
+            }
+            Some(Selected::Box(b)) => {
+                if let Some(b) = self.project.boxes.get(&b) {
+                    out.push(Overlay::Outline { min: b.min, max: b.max, selected: true });
                 }
             }
             None => {}
@@ -813,7 +888,32 @@ impl Editor {
                 return Some(Hit::Connection(c.id));
             }
         }
+        // A box by its edge, or its label above the top-left corner.
+        for b in self.project.boxes_on(self.page) {
+            let (lo, hi) = (b.min, b.max);
+            let corners = [lo, Point::new(hi.x, lo.y), hi, Point::new(lo.x, hi.y), lo];
+            let on_edge = corners.windows(2).any(|s| dist_to_segment(p, s[0], s[1]) <= tol);
+            let on_label = !b.label.is_empty()
+                && p.x >= lo.x
+                && p.x <= lo.x + 6.0 + 2.5 * b.label.len() as f64
+                && p.y >= hi.y
+                && p.y <= hi.y + 6.0;
+            if on_edge || on_label {
+                return Some(Hit::Box(b.id));
+            }
+        }
         None
+    }
+
+    /// Set the selected box's label (`+A101`, `EXT`, `-XCPR1`…).
+    pub fn label_selected_box(&mut self, label: &str) -> Result<(), ModelError> {
+        let Some(Selected::Box(id)) = self.selection else { return Ok(()) };
+        let Some(b) = self.project.boxes.get(&id) else { return Ok(()) };
+        if b.label == label.trim() {
+            return Ok(());
+        }
+        let updated = ecad_model::LocationBox { label: label.to_owned(), ..b.clone() };
+        self.execute(&format!("Label box {}", label.trim()), Command::UpdateBox(updated))
     }
 
     /// A function's box on the page.
@@ -1033,6 +1133,7 @@ impl Editor {
         let exists = |s: &Selected| match s {
             Selected::Function(f) => self.project.function(*f).is_ok(),
             Selected::Connection(c) => self.project.connection(*c).is_ok(),
+            Selected::Box(b) => self.project.boxes.contains_key(b),
         };
         if self.selection.as_ref().is_some_and(|s| !exists(s)) {
             self.selection = None;

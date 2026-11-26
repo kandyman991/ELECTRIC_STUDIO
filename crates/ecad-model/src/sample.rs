@@ -431,6 +431,14 @@ pub fn with_power() -> Result<Project> {
         let spec = WireSpec { cross_section: "16".into(), colour: "BK".into(), cable: None };
         p.apply(Command::SetWireSpec { id: ConnectionId::from_u128(0x320 + i), spec })?;
     }
+    // The motor is out in the field: a box labelled EXT around it.
+    p.apply(Command::AddBox(LocationBox {
+        id: BoxId::from_u128(0x600),
+        page: PAGE_4,
+        min: Point::new(-112.0, -68.0),
+        max: Point::new(-72.0, -38.0),
+        label: "EXT".into(),
+    }))?;
     // Number every wire as the reference project does: one number per potential, named
     // potentials by their name, the others by page (101, 401…).
     p.apply(Command::SetNaming(crate::Naming::by_page()))?;

@@ -45,6 +45,7 @@ fn category_of(id: &str) -> &'static str {
         n if n.starts_with("breaker") || n.starts_with("motor_protection") || n.starts_with("fuse") => "Protection",
         "disconnector_fuse_3" => "Protection",
         "lamp" | "siren" => "Signalling",
+        "plug_pin" | "terminal" => "Wiring",
         n if n.starts_with("motor") || n == "power_supply" || n == "socket_2pe" => "Loads and supplies",
         _ => "Wiring",
     }
@@ -612,7 +613,29 @@ fn load_symbols() -> Vec<SymbolDef> {
         ),
         sym("iec.power_supply", "Power supply AC/DC", "-GD", Role::Single, psu, psu_points),
         sym("iec.socket_2pe", "Socket 2P+E", "-XS", Role::Single, socket, socket_points),
+        plug_pin(),
     ]
+}
+
+/// One pin of a plug connector: the socket half above (an arc open upward), the pin below. It
+/// is numbered on its connector like a terminal on a strip (`-XD1:3`), and both halves are one
+/// potential.
+fn plug_pin() -> SymbolDef {
+    let mut g = arc(0.0, 2.0, 1.8, 180.0, 360.0);
+    g.extend([line(0.0, 2.0, 0.0, 6.0), line(0.0, 0.2, 0.0, -1.0), line(0.0, -1.0, 0.0, -6.0)]);
+    g.extend(rect(-0.6, -1.0, 0.6, 1.0));
+    SymbolDef {
+        id: SymbolId::new("iec.plug_pin"),
+        description: "Plug connector pin".into(),
+        tag_prefix: "-XD".into(),
+        role: Role::Terminal,
+        bridged: true,
+        hide_tag: false,
+        hide_point_labels: true,
+        category: String::new(),
+        graphics: g,
+        connection_points: vec![cp("1", 0.0, 6.0, Direction::Up), cp("2", 0.0, -6.0, Direction::Down)],
+    }
 }
 
 /// Terminal pitch of a black box, in mm.
