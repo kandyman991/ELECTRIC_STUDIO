@@ -39,6 +39,9 @@ if needed.
 | Move a contact to a coil | Select the contact, type the coil's tag in "Belongs to device" |
 | Potentials | Select a wire: its potential is highlighted on the page and named in the right panel |
 | Same potential or interruption point on another page | Select it, "Add another point", click on any page |
+| Parts catalogue | Toolbar "Parts": edit in place, ✕ to remove, add a row, Import CSV (`,` or `;`) |
+| Parts of a device | Select it: "Add part…" in the right panel, quantity, ✕ to remove |
+| Reports | File → Export reports… (wire list, BOM, devices without parts) |
 | Pan, zoom, fit | Middle-drag, wheel, F |
 | Edit tag, description, wire number | Select, edit in the right panel; applied when the field loses focus (Enter, Tab or a click) |
 

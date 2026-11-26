@@ -10,6 +10,7 @@ publish.workspace = true
 ecad-model = { workspace = true }
 ecad-view = { workspace = true }
 ecad-project = { workspace = true }
+ecad-reports = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]

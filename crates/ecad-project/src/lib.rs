@@ -5,6 +5,7 @@
 //! my-panel/
 //!   project.json          format version, name, pages
 //!   devices.json          all devices, sorted by tag
+//!   parts.json            the parts catalogue, sorted by part number
 //!   symbols/<id>.json     one file per symbol used by the project
 //!   pages/<page-id>.json  the functions and connections on that page
 //! ```
@@ -12,7 +13,9 @@
 //! Loading replays everything through the model's commands, so a hand-edited file that breaks
 //! a rule (duplicate tag, wire to a missing point) is rejected with the file named.
 
-use ecad_model::{Command, Connection, Device, Function, ModelError, Page, Point, Project, Sheet, SymbolDef};
+use ecad_model::{Command, Connection, Device, Function, ModelError, Page, Part, Point, Project, Sheet, SymbolDef};
+
+pub mod csv;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -102,6 +105,9 @@ pub fn save(project: &Project, dir: &Path) -> Result<()> {
     let head = ProjectFile { format: FORMAT, name: project.name.clone(), sheet: Some(project.sheet), pages };
     write_json(&dir.join("project.json"), &head)?;
 
+    let parts: Vec<&Part> = project.parts.values().collect();
+    write_json(&dir.join("parts.json"), &parts)?;
+
     let mut devices: Vec<&Device> = project.devices.values().collect();
     devices.sort_by(|a, b| a.tag.cmp(&b.tag));
     write_json(&dir.join("devices.json"), &devices)?;
@@ -149,6 +155,14 @@ pub fn load(dir: &Path) -> Result<Project> {
     symbol_paths.sort();
     for p in symbol_paths {
         project.add_symbol(read_json::<SymbolDef>(&p)?);
+    }
+
+    // The catalogue comes before the devices that use it; projects saved before M3a have none.
+    let path = dir.join("parts.json");
+    if path.exists() {
+        for part in read_json::<Vec<Part>>(&path)? {
+            project.apply(Command::AddPart(part)).map_err(model(&path))?;
+        }
     }
 
     let path = dir.join("devices.json");
@@ -244,6 +258,25 @@ mod tests {
         std::fs::write(&head, json.to_string()).unwrap();
         let loaded = load(dir.path()).unwrap();
         assert_eq!(loaded.sheet, original.sheet, "the same placement the sample itself uses");
+    }
+
+    #[test]
+    fn the_catalogue_is_saved_and_projects_without_one_still_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = start_circuit().unwrap();
+        assert_eq!(original.parts.len(), 3);
+        save(&original, dir.path()).unwrap();
+        assert!(dir.path().join("parts.json").exists());
+        assert_eq!(load(dir.path()).unwrap(), original);
+        // A project saved before M3a: no parts.json and no parts on devices.
+        let mut old = original.clone();
+        for d in old.devices.values_mut() {
+            d.parts.clear();
+        }
+        old.parts.clear();
+        save(&old, dir.path()).unwrap();
+        std::fs::remove_file(dir.path().join("parts.json")).unwrap();
+        assert_eq!(load(dir.path()).unwrap(), old);
     }
 
     #[test]
