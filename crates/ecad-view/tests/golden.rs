@@ -115,6 +115,14 @@ fn multi_pole_devices_and_contact_tables() {
 }
 
 #[test]
+fn symbol_library() {
+    let p = ecad_model::sample::library_overview().unwrap();
+    for (i, page) in p.pages_in_order().iter().enumerate() {
+        check_page(&p, page.id, &format!("library_page{}", i + 1));
+    }
+}
+
+#[test]
 fn dxf_output_is_deterministic() {
     let p = start_circuit().unwrap();
     assert_eq!(ecad_view::page_dxf(&p, PAGE_1).unwrap(), ecad_view::page_dxf(&p, PAGE_1).unwrap());

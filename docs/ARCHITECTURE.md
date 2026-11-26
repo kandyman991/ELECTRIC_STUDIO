@@ -31,6 +31,8 @@ Dependencies point downward only. The core never depends on the UI or on CADCraf
 | Device | A real component with an IEC 81346 tag (`-K1`, `=A1+B2-K1`) and a part number |
 | Function | One drawing of a device on a page (a coil here, its contacts elsewhere), with its own terminal designations (`23`/`24` for a second NO contact) |
 | Symbol role | Main function (a coil or a breaker: shows a contact table of its contacts), contact (NO/NC auxiliary contacts numbered 13-14, 21-22…, or main contacts 1-2 3-4 5-6; each refers back to its main function), or single (terminal, supply) |
+| Symbol library | `ecad-model::library`: about 40 IEC 60617 symbols in categories (coils and valves, contacts, operator devices, sensors and switches, protection, signalling, loads and supplies, PLC, wiring), with IEC 81346 letter codes (`-KM`, `-KA`, `-QF`, `-SB`, `-SH`, `-HL`, `-FU`, `-M`…). New projects get the library; opening an older project adds the symbols it lacks without touching its own. `ecad new-sample <dir> library` draws them all |
+| Black box | A device drawn as a box with its own named terminals on any side (an inverter, a safety module, a power supply): a symbol made for it (`box.1`…), added to the project with an undoable command |
 | Multi-pole device | One symbol for all poles, 8 mm apart, with the dashed mechanical link: contactor main contacts, 3-pole breaker, motor-protection breaker, 3P+N residual-current breaker, switch-disconnector with fuses |
 | Contact table | Under a coil or breaker, one row per pole of each contact: `14 ⌐ 13  3/6C`, the designations around a small NO or NC contact and where it is drawn |
 | Connection point | A designated terminal (`A1`, `13`) with the direction a wire leaves in |

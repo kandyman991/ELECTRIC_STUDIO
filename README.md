@@ -8,7 +8,7 @@ Drawing, DXF/DWG/PDF output and rendering come from the Rust crates of
 
 > Status: **M4 complete**: live checks, drawing export (one PDF for the project; DXF, DWG and
 > PNG per page) and the `ecad` command for scripts and CI, on top of multi-page schematics,
-> parts, BOM, terminal strips and PLC I/O. Next: the MVP gate. Early development: an eleven-symbol placeholder library.
+> parts, BOM, terminal strips and PLC I/O. Next: the MVP gate. Early development: a starter IEC library of about 40 symbols.
 
 ## Try it
 
@@ -23,7 +23,7 @@ Projects are folders of JSON files:
 
 ```sh
 cargo run -p ecad-cli -- new-sample my-project     # write the sample as a project folder
-cargo run -p ecad-cli -- new-sample my-project power  # or: start, contacts, potentials, terminals, plc
+cargo run -p ecad-cli -- new-sample my-project power  # or: start, contacts, potentials, terminals, plc, library
 cargo run -p ecad-cli -- check my-project          # summarise and list errors and warnings (exit 1 on errors)
 cargo run -p ecad-cli -- export my-project out     # drawings.pdf, DXF/DWG/PNG per page, and the reports
 ```
@@ -80,7 +80,7 @@ Planned: `ecad-symbols`, `ecad-parts`, `ecad-mcp`. See [docs/ARCHITECTURE.md](do
 | M2 Multi-page projects | M2a pages, sheet, title block · M2b cross-references · M2c potentials, junctions, interruption points |
 | **M3 Parts and reports** | M3a parts catalogue, BOM, report export · M3b terminal strips, terminal diagram · M3c PLC channels, PLC I/O list |
 | **M4 Checks and output** | M4a live checks, checks panel, `ecad check` · M4b PDF/DXF/DWG export · M4c `ecad` for scripts and CI (this) |
-| *MVP release gate* | *G1a sheet grid with rows, references like `A3/2F`, full title block · G1b tag format and wire numbers per potential · G2 multi-pole devices and contact tables (this) · G3 symbol library and black boxes · G4 connectors, cables, report details; then a reference project redrawn end to end* |
+| *MVP release gate* | *G1a sheet grid with rows, references like `A3/2F`, full title block · G1b tag format and wire numbers per potential · G2 multi-pole devices and contact tables · G3 symbol library and black boxes (this) · G4 connectors, cables, report details; then a reference project redrawn end to end* |
 | *Gate check* | *One real panel drawn end to end; BOM and wire list match it; checks clean* |
 | M5 Panel layout | 2D mounting plate, DIN rails, ducts, parts at scale, cables |
 | M6 Integrations | HMI Studio tag exchange, TIA Portal tag table, MCP server, DXF import |

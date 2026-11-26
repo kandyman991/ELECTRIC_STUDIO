@@ -265,6 +265,10 @@ pub enum Command {
         device: DeviceId,
         designations: BTreeMap<String, String>,
     },
+    /// Add a symbol to the project's library (its id must be new), e.g. a black box.
+    AddSymbol(SymbolDef),
+    /// Remove a symbol nothing is drawn with.
+    RemoveSymbol(SymbolId),
     /// Add a part to the catalogue (its number must be new).
     AddPart(Part),
     /// Replace a catalogue entry with the same number.
@@ -340,6 +344,12 @@ pub enum ModelError {
     UnknownPart(String),
     #[error("part `{0}` is used by {1}")]
     PartInUse(String, String),
+    #[error("a black box needs at least one terminal, and every terminal a unique, non-empty name")]
+    InvalidBlackBox,
+    #[error("symbol `{0}` already exists")]
+    DuplicateSymbol(String),
+    #[error("symbol `{0}` is used by {1}")]
+    SymbolInUse(String, String),
     #[error("part number must not be empty")]
     EmptyPartNumber,
     #[error("quantity must be at least 1")]
@@ -859,6 +869,22 @@ impl Project {
                 let old_device = std::mem::replace(&mut f.device, device);
                 let old_designations = std::mem::replace(&mut f.designations, designations);
                 Ok(Command::Reassign { id, device: old_device, designations: old_designations })
+            }
+            Command::AddSymbol(symbol) => {
+                if self.symbols.contains_key(&symbol.id) {
+                    return Err(ModelError::DuplicateSymbol(symbol.id.0));
+                }
+                let id = symbol.id.clone();
+                self.symbols.insert(id.clone(), symbol);
+                Ok(Command::RemoveSymbol(id))
+            }
+            Command::RemoveSymbol(id) => {
+                if let Some(f) = self.functions.values().find(|f| f.symbol == id) {
+                    let tag = self.device(f.device).map(|d| d.tag.clone()).unwrap_or_default();
+                    return Err(ModelError::SymbolInUse(id.0, tag));
+                }
+                let symbol = self.symbols.remove(&id).ok_or(ModelError::NoSymbol(id))?;
+                Ok(Command::AddSymbol(symbol))
             }
             Command::AddPart(part) => {
                 let part = Part { number: part.number.trim().to_owned(), ..part };

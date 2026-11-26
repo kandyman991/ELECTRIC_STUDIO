@@ -22,7 +22,7 @@ usage:
   ecad report <project-dir> <report>
       Print one report as CSV: wire-list, bom, terminal-diagram, plc-io-list,
       devices-without-parts
-  ecad new-sample <project-dir> [start|contacts|potentials|terminals|plc|power]
+  ecad new-sample <project-dir> [start|contacts|potentials|terminals|plc|power|library]
       Write a sample project (default: start).
   ecad demo <out-dir>
       export for the built-in sample, without a project folder.
@@ -181,9 +181,10 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                 Some("terminals") => sample::with_terminals(),
                 Some("plc") => sample::with_plc(),
                 Some("power") => sample::with_power(),
+                Some("library") => sample::library_overview(),
                 Some(other) => {
                     return Err(format!(
-                        "unknown sample `{other}` (use start, contacts, potentials, terminals, plc, power)"
+                        "unknown sample `{other}` (use start, contacts, potentials, terminals, plc, power, library)"
                     ));
                 }
             }

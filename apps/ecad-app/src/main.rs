@@ -39,6 +39,9 @@ struct App {
     show_parts: bool,
     /// Whether the checks panel is open.
     show_checks: bool,
+    /// Filter text of the symbol library.
+    symbol_filter: String,
+    black_box: BoxFields,
     /// Whether the project settings window is open, and its buffers.
     show_project: bool,
     project_fields: ProjectFields,
@@ -57,6 +60,35 @@ struct PageFields {
     name: String,
     description: String,
     subtitle: String,
+}
+
+/// The "New black box" window: terminal names as comma-separated lists.
+struct BoxFields {
+    open: bool,
+    description: String,
+    prefix: String,
+    top: String,
+    bottom: String,
+    left: String,
+    right: String,
+}
+
+impl Default for BoxFields {
+    fn default() -> Self {
+        BoxFields {
+            open: false,
+            description: String::new(),
+            prefix: "-A".into(),
+            top: String::new(),
+            bottom: String::new(),
+            left: String::new(),
+            right: String::new(),
+        }
+    }
+}
+
+fn names(list: &str) -> Vec<String> {
+    list.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect()
 }
 
 /// Edit buffers of the project settings window; refilled when the project changes underneath.
@@ -220,10 +252,6 @@ impl App {
             };
             tool(ui, "Select", "select", "Click to select, drag to move (Esc)");
             tool(ui, "Wire", "wire", "Click two connection points (W)");
-            ui.separator();
-            for item in &frame.palette {
-                tool(ui, &item.description, &item.id, &format!("Place {}", item.id));
-            }
             ui.separator();
             let undo = frame.undo.as_deref().map(|l| format!("Undo {l}")).unwrap_or_else(|| "Nothing to undo".into());
             if ui.add_enabled(frame.undo.is_some(), egui::Button::new("Undo")).on_hover_text(undo).clicked() {
@@ -510,10 +538,101 @@ impl App {
         }
     }
 
+    /// The symbol library, grouped by category; click a symbol, then click on the page.
+    fn library(&mut self, ui: &mut egui::Ui, frame: &Frame) {
+        ui.heading("Symbols");
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.symbol_filter).hint_text("Search…").desired_width(110.0));
+            if ui.button("Black box…").on_hover_text("A device drawn as a box with its own terminals").clicked() {
+                self.black_box.open = true;
+            }
+        });
+        let filter = self.symbol_filter.trim().to_lowercase();
+        let mut events = Vec::new();
+        egui::ScrollArea::vertical().id_salt("library").show(ui, |ui| {
+            let mut categories: Vec<&str> = frame.palette.iter().map(|i| i.category.as_str()).collect();
+            categories.dedup();
+            for cat in categories {
+                let items: Vec<_> = frame
+                    .palette
+                    .iter()
+                    .filter(|i| i.category == cat)
+                    .filter(|i| {
+                        filter.is_empty() || i.description.to_lowercase().contains(&filter) || i.id.contains(&filter)
+                    })
+                    .collect();
+                if items.is_empty() {
+                    continue;
+                }
+                let header = egui::CollapsingHeader::new(cat).default_open(false);
+                let header = if filter.is_empty() { header } else { header.open(Some(true)) };
+                header.show(ui, |ui| {
+                    for item in items {
+                        let active = frame.tool == item.id;
+                        if ui
+                            .selectable_label(active, &item.description)
+                            .on_hover_text("Then click on the page")
+                            .clicked()
+                        {
+                            events.push(UiEvent::Tool { tool: item.id.clone() });
+                        }
+                    }
+                });
+            }
+        });
+        for ev in events {
+            self.send(ev);
+        }
+    }
+
+    fn black_box_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.black_box.open;
+        let mut create = None;
+        egui::Window::new("New black box").open(&mut open).default_width(420.0).show(ctx, |ui| {
+            let b = &mut self.black_box;
+            ui.small("For devices such as inverters, safety modules or power supplies: a box with the terminals named as on the device. Names are separated by commas.");
+            egui::Grid::new("black-box").num_columns(2).show(ui, |ui| {
+                let fields: [(&str, &mut String, &str); 6] = [
+                    ("Description", &mut b.description, "Inverter"),
+                    ("Letter code", &mut b.prefix, "-A"),
+                    ("Top terminals", &mut b.top, "L1, L2, L3, PE"),
+                    ("Bottom terminals", &mut b.bottom, "U, V, W"),
+                    ("Left terminals", &mut b.left, ""),
+                    ("Right terminals", &mut b.right, "DI0, DI1, 0V"),
+                ];
+                for (label, value, hint) in fields {
+                    ui.label(label);
+                    ui.add(egui::TextEdit::singleline(value).hint_text(hint).desired_width(280.0));
+                    ui.end_row();
+                }
+            });
+            let spec = ecad_editor::BlackBox {
+                description: b.description.trim().to_owned(),
+                tag_prefix: b.prefix.trim().to_owned(),
+                top: names(&b.top),
+                bottom: names(&b.bottom),
+                left: names(&b.left),
+                right: names(&b.right),
+            };
+            let valid = spec.is_valid();
+            if !valid {
+                ui.small("Give it at least one terminal; names must be unique.");
+            }
+            if ui.add_enabled(valid, egui::Button::new("Create and place")).clicked() {
+                create = Some(spec);
+            }
+        });
+        self.black_box.open = open && create.is_none();
+        if let Some(spec) = create {
+            self.send(UiEvent::CreateBlackBox { spec });
+        }
+    }
+
     fn pages(&mut self, ui: &mut egui::Ui, frame: &Frame) {
         ui.heading("Pages");
         let mut events = Vec::new();
-        egui::ScrollArea::vertical().max_height(ui.available_height() - 170.0).show(ui, |ui| {
+        // Room below for the page fields and the symbol library.
+        egui::ScrollArea::vertical().id_salt("pages").max_height(160.0).show(ui, |ui| {
             for p in &frame.pages {
                 let label =
                     if p.description.is_empty() { p.name.clone() } else { format!("{}  {}", p.name, p.description) };
@@ -954,7 +1073,11 @@ impl eframe::App for App {
         if self.show_checks {
             egui::Panel::bottom("checks").resizable(true).default_size(150.0).show(ui, |ui| self.checks(ui, &before));
         }
-        egui::Panel::left("pages").default_size(170.0).show(ui, |ui| self.pages(ui, &before));
+        egui::Panel::left("pages").default_size(190.0).show(ui, |ui| {
+            self.pages(ui, &before);
+            ui.separator();
+            self.library(ui, &before);
+        });
         egui::Panel::right("inspector").default_size(200.0).show(ui, |ui| self.inspector(ui, &before));
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
             let rect = self.canvas(ui);
@@ -969,6 +1092,9 @@ impl eframe::App for App {
             }
             if self.show_project {
                 self.project_window(&ctx, &frame);
+            }
+            if self.black_box.open {
+                self.black_box_window(&ctx);
             }
             if let Some(question) = &frame.prompt {
                 self.prompt(&ctx, question);
@@ -1011,6 +1137,8 @@ fn main() -> eframe::Result {
                 page_fields: PageFields::default(),
                 show_parts: false,
                 show_checks: false,
+                symbol_filter: String::new(),
+                black_box: BoxFields::default(),
                 show_project: false,
                 project_fields: ProjectFields::default(),
                 part_edits: Default::default(),

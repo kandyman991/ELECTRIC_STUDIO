@@ -121,6 +121,10 @@ pub enum UiEvent {
         name: String,
         info: ecad_model::ProjectInfo,
     },
+    /// Make a black-box symbol (a box with named terminals) and pick it for placing.
+    CreateBlackBox {
+        spec: ecad_model::library::BlackBox,
+    },
     /// How new tags and wire numbers are formed.
     Naming {
         naming: ecad_model::Naming,
@@ -205,6 +209,8 @@ pub enum KeyName {
 pub struct PaletteItem {
     pub id: String,
     pub description: String,
+    /// The library group, e.g. "Contacts".
+    pub category: String,
 }
 
 /// One finding of the checks, for the checks panel.
@@ -358,14 +364,21 @@ fn first_page_editor(project: Project) -> Result<Editor, String> {
 }
 
 fn load_editor(dir: &Path) -> Result<Editor, String> {
-    first_page_editor(ecad_project::load(dir).map_err(|e| e.to_string())?)
+    let mut project = ecad_project::load(dir).map_err(|e| e.to_string())?;
+    // Projects made before a library symbol existed get it; the project's own copies win.
+    for s in ecad_model::library::iec() {
+        if !project.symbols.contains_key(&s.id) {
+            project.add_symbol(s);
+        }
+    }
+    first_page_editor(project)
 }
 
 /// An empty project with one page and the starter symbols, named after its folder.
 fn blank_project(dir: &Path) -> Project {
     let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("New project");
     let mut p = Project::new(name);
-    for s in ecad_model::sample::symbols() {
+    for s in ecad_model::library::iec() {
         p.add_symbol(s);
     }
     p.add_page(Page::new("1", 0));
@@ -531,6 +544,10 @@ impl Session {
             }
             UiEvent::ProjectInfo { name, info } => {
                 let r = self.editor.set_project_info(&name, info);
+                self.report(r);
+            }
+            UiEvent::CreateBlackBox { spec } => {
+                let r = self.editor.create_black_box(&spec);
                 self.report(r);
             }
             UiEvent::Naming { naming } => {
@@ -880,23 +897,43 @@ impl Session {
             dirty: editor.is_dirty(),
             title: format!("{}{}", project.name, if editor.is_dirty() { " *" } else { "" }),
             project_dir: self.dir.display().to_string(),
-            palette: project
-                .symbols
-                .values()
-                .map(|s| PaletteItem { id: s.id.0.clone(), description: s.description.clone() })
-                .collect(),
+            palette: {
+                let mut items: Vec<PaletteItem> = project
+                    .symbols
+                    .values()
+                    .map(|s| PaletteItem {
+                        id: s.id.0.clone(),
+                        description: s.description.clone(),
+                        category: if s.category.is_empty() { "Other".into() } else { s.category.clone() },
+                    })
+                    .collect();
+                items.sort_by(|a, b| (&a.category, &a.description).cmp(&(&b.category, &b.description)));
+                items
+            },
             parts: project.parts.values().cloned().collect(),
             contact_palette: project
                 .symbols
                 .values()
-                .filter(|s| matches!(s.role, Role::Contact { .. }))
-                .map(|s| PaletteItem { id: s.id.0.clone(), description: s.description.clone() })
+                // Plain contacts for coils and breakers; operator and sensor contacts are
+                // devices of their own.
+                .filter(|s| {
+                    matches!(s.role, Role::Contact { .. }) && (s.category == "Contacts" || s.category.is_empty())
+                })
+                .map(|s| PaletteItem {
+                    id: s.id.0.clone(),
+                    description: s.description.clone(),
+                    category: s.category.clone(),
+                })
                 .collect(),
             channel_palette: project
                 .symbols
                 .values()
                 .filter(|s| matches!(s.role, Role::PlcChannel { .. }))
-                .map(|s| PaletteItem { id: s.id.0.clone(), description: s.description.clone() })
+                .map(|s| PaletteItem {
+                    id: s.id.0.clone(),
+                    description: s.description.clone(),
+                    category: s.category.clone(),
+                })
                 .collect(),
             pages: project
                 .pages_in_order()
@@ -1046,7 +1083,7 @@ mod tests {
         let f = s.frame(None, [0, 0, 0]);
         assert_eq!(f.title, "Panel A");
         assert_eq!(s.editor().project().functions.len(), 0);
-        assert_eq!(f.palette.len(), 16, "starter symbols are available");
+        assert_eq!(f.palette.len(), ecad_model::library::iec().len(), "starter symbols are available");
         assert!(path.join("project.json").exists());
 
         // New into a folder that already has a project is refused.
@@ -1395,6 +1432,34 @@ mod tests {
             naming: ecad_model::Naming { tag_format: "{page}".into(), ..ecad_model::Naming::by_page() },
         });
         assert!(s.frame(None, [0, 0, 0]).status.contains("needs one {n}"), "{}", s.frame(None, [0, 0, 0]).status);
+    }
+
+    #[test]
+    fn a_black_box_is_made_placed_and_undone() {
+        let (_dir, mut s) = session();
+        s.handle(UiEvent::CreateBlackBox { spec: ecad_model::library::BlackBox::default() });
+        assert!(s.frame(None, [0, 0, 0]).status.contains("at least one terminal"));
+        let spec = ecad_model::library::BlackBox {
+            description: "Safety module".into(),
+            tag_prefix: "-KF".into(),
+            top: vec!["A1".into(), "S11".into(), "S12".into()],
+            bottom: vec!["A2".into(), "13".into(), "14".into()],
+            ..Default::default()
+        };
+        s.handle(UiEvent::CreateBlackBox { spec });
+        let f = s.frame(None, [0, 0, 0]);
+        assert_eq!(f.tool, "box.1");
+        assert!(f.palette.iter().any(|i| i.id == "box.1" && i.category == "Black boxes"));
+        let (x, y) = s.view().to_screen(Point::new(120.0, 40.0));
+        s.handle(UiEvent::PointerDown { x, y, button: Button::Primary });
+        s.handle(UiEvent::PointerUp { x, y, button: Button::Primary });
+        assert!(
+            matches!(s.frame(None, [0, 0, 0]).selection, Some(SelectionInfo::Device { ref tag, .. }) if tag == "-KF1")
+        );
+        // Undo the placing, then the symbol itself.
+        s.handle(UiEvent::Key { key: KeyName::Undo });
+        s.handle(UiEvent::Key { key: KeyName::Undo });
+        assert!(!s.frame(None, [0, 0, 0]).palette.iter().any(|i| i.id == "box.1"));
     }
 
     #[test]
