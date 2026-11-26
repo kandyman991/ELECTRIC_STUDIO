@@ -74,6 +74,10 @@ pub enum UiEvent {
     Describe {
         text: String,
     },
+    /// The selected box's label.
+    LabelBox {
+        text: String,
+    },
     /// The selected wire's cross-section, colour, and cable (by tag, empty for none) and core.
     WireSpec {
         cross_section: String,
@@ -284,6 +288,8 @@ pub enum SelectionInfo {
         terminal: Option<String>,
         /// For a PLC channel: its kind, number, address, symbol and comment.
         plc: Option<PlcInfo>,
+        /// The labels of the boxes around this drawing, outermost first (`+A101 -XCPR1`).
+        location: String,
     },
     Wire {
         number: Option<String>,
@@ -299,6 +305,8 @@ pub enum SelectionInfo {
         cable: String,
         core: String,
     },
+    /// A location box: its label and the devices drawn inside it.
+    Box { label: String, devices: Vec<String> },
 }
 
 /// A cable, for the cables window and the wire panel.
@@ -529,6 +537,7 @@ impl Session {
             UiEvent::Tool { tool } => self.editor.set_tool(match tool.as_str() {
                 "select" => Tool::Select,
                 "wire" => Tool::Wire,
+                "box" => Tool::Box,
                 symbol => Tool::Place(SymbolId::new(symbol)),
             }),
             UiEvent::Rename { tag } => {
@@ -537,6 +546,10 @@ impl Session {
             }
             UiEvent::Describe { text } => {
                 let r = self.editor.describe_selected(&text);
+                self.report(r);
+            }
+            UiEvent::LabelBox { text } => {
+                let r = self.editor.label_selected_box(&text);
                 self.report(r);
             }
             UiEvent::WireSpec { cross_section, colour, cable, core } => {
@@ -802,7 +815,7 @@ impl Session {
     fn selected_device(&self) -> Option<ecad_model::DeviceId> {
         match self.editor.selection()? {
             Selected::Function(f) => self.editor.project().function(f).ok().map(|f| f.device),
-            Selected::Connection(_) => None,
+            Selected::Connection(_) | Selected::Box(_) => None,
         }
     }
 
@@ -879,6 +892,7 @@ impl Session {
                     .into(),
                     references,
                     terminal: project.terminal_number(f.id),
+                    location: project.box_labels(f.id).join(" "),
                     plc: match role {
                         Role::PlcChannel { kind } => Some(PlcInfo {
                             kind: kind.short().into(),
@@ -903,6 +917,17 @@ impl Session {
                         })
                         .collect(),
                 })
+            }
+            Selected::Box(b) => {
+                let b = project.boxes.get(&b)?;
+                let mut devices: Vec<String> = project
+                    .functions_on(b.page)
+                    .filter(|f| b.contains(f.position))
+                    .filter_map(|f| project.device(f.device).ok().map(|d| d.tag.clone()))
+                    .collect();
+                devices.sort();
+                devices.dedup();
+                Some(SelectionInfo::Box { label: b.label.clone(), devices })
             }
             Selected::Connection(c) => {
                 let c = project.connection(c).ok()?;
@@ -958,6 +983,7 @@ impl Session {
             tool: match editor.tool() {
                 Tool::Select => "select".into(),
                 Tool::Wire => "wire".into(),
+                Tool::Box => "box".into(),
                 Tool::Place(s) => s.0.clone(),
                 Tool::PlaceFor { symbol, .. } => format!("contact:{}", symbol.0),
             },
@@ -1583,6 +1609,39 @@ mod tests {
         assert_eq!(s.frame(None, [0, 0, 0]).status, "cable -W1 still has wires in it");
         s.handle(UiEvent::UpdateCable { id, tag: "-W2".into(), kind: "3G1,5".into(), cores: 3, shielded: true });
         assert_eq!(s.frame(None, [0, 0, 0]).cables[0].tag, "-W2");
+    }
+
+    #[test]
+    fn a_box_is_drawn_labelled_moved_and_deleted() {
+        let (_dir, mut s) = session();
+        s.handle(UiEvent::Tool { tool: "box".into() });
+        let drag = |s: &mut Session, a: Point, b: Point| {
+            let (x, y) = s.view().to_screen(a);
+            s.handle(UiEvent::PointerDown { x, y, button: Button::Primary });
+            let (x, y) = s.view().to_screen(b);
+            s.handle(UiEvent::PointerMove { x, y });
+            s.handle(UiEvent::PointerUp { x, y, button: Button::Primary });
+        };
+        // Around -K1 (at 0, 12).
+        drag(&mut s, Point::new(-12.0, 0.0), Point::new(12.0, 24.0));
+        let f = s.frame(None, [0, 0, 0]);
+        assert_eq!(f.tool, "select");
+        let Some(SelectionInfo::Box { devices, .. }) = f.selection else { panic!("box selected") };
+        assert_eq!(devices, ["-K1"]);
+        s.handle(UiEvent::LabelBox { text: "+A1".into() });
+        assert!(
+            matches!(s.frame(None, [0, 0, 0]).selection, Some(SelectionInfo::Box { ref label, .. }) if label == "+A1")
+        );
+        // -K1 is in +A1 now.
+        let k1 = s.editor().project().functions.values().find(|f| f.symbol.0 == "iec.coil").unwrap().id;
+        assert_eq!(s.editor().project().box_labels(k1), ["+A1"]);
+        // Drag its left edge 8 mm to the left: the box moves, one undo step.
+        drag(&mut s, Point::new(-12.0, 8.0), Point::new(-20.0, 8.0));
+        let b = s.editor().project().boxes.values().next().unwrap().clone();
+        assert_eq!((b.min.x, b.max.x), (-20.0, 4.0));
+        assert_eq!(s.editor().undo_label(), Some("Move box +A1"));
+        s.handle(UiEvent::Key { key: KeyName::Delete });
+        assert!(s.editor().project().boxes.is_empty());
     }
 
     #[test]

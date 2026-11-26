@@ -15,8 +15,8 @@
 //! a rule (duplicate tag, wire to a missing point) is rejected with the file named.
 
 use ecad_model::{
-    Cable, Command, Connection, Device, Function, ModelError, Naming, Page, Part, Point, Project, ProjectInfo, Sheet,
-    SymbolDef,
+    Cable, Command, Connection, Device, Function, LocationBox, ModelError, Naming, Page, Part, Point, Project,
+    ProjectInfo, Sheet, SymbolDef,
 };
 
 pub mod csv;
@@ -69,6 +69,9 @@ fn is_default(info: &ProjectInfo) -> bool {
 struct PageFile {
     functions: Vec<Function>,
     connections: Vec<Connection>,
+    /// Location boxes; missing in projects saved before G4b.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    boxes: Vec<LocationBox>,
 }
 
 fn io(path: &Path) -> impl FnOnce(std::io::Error) -> ProjectError + '_ {
@@ -154,6 +157,7 @@ pub fn save(project: &Project, dir: &Path) -> Result<()> {
         let file = PageFile {
             functions: project.functions_on(*page).cloned().collect(),
             connections: project.connections_on(*page).cloned().collect(),
+            boxes: project.boxes_on(*page).cloned().collect(),
         };
         let name = format!("{}.json", page.0);
         write_json(&pages_dir.join(&name), &file)?;
@@ -217,6 +221,9 @@ pub fn load(dir: &Path) -> Result<Project> {
         let file: PageFile = read_json(&path)?;
         for f in &file.functions {
             project.apply(Command::Place(f.clone())).map_err(model(&path))?;
+        }
+        for b in &file.boxes {
+            project.apply(Command::AddBox(b.clone())).map_err(model(&path))?;
         }
         pages.push((path, file.connections));
     }

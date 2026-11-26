@@ -45,6 +45,8 @@ Dependencies point downward only. The core never depends on the UI or on CADCraf
 | Terminal strip | A device (`-X2`) whose drawings are its terminals, each with a number unique on the strip (`-X2:3`); both sides of a terminal are one potential; its parts count once per terminal |
 | PLC card | A device (`-KF1`) whose drawings are its channels: digital or analog input or output (DI, DO, AI, AO), numbered per card from 0 (`-KF1:3`). Each channel has an address (`I0.0`, `Q1.3`, `IW256`; new channels get the next free one), a PLC symbol and a comment. Addresses and symbols are unique in the project. The PLC I/O list reports them with what each channel is wired to |
 | Wire details | Each wire can carry its cross-section (`2,5`) and colour (`BK`, upper case), shown under its number, and the cable core it is |
+| Location box | A dashed rectangle on a page with a label: a location (`+A101`), a connector housing (`-XCPR1`) or a field device (`EXT`). Drawn with the Box tool, moved by its edge; devices inside are in that place (shown in the device panel, outermost box first). Saved with the page |
+| Plug connector | A device (`-XD1`) whose drawings are its pins, numbered like terminals on a strip (`-XD1:3`), both halves one potential; listed in the terminal diagram |
 | Cable | Tag (`-WM1`), type (`4G2,5`), number of cores and shield. Its wires are marked with a slash and joined by a dashed line, with the tag and type beside them. A core is used once per cable; a cable with wires can't be removed. Saved in `cables.json` |
 
 Every object has a stable UUID; tags and names are attributes. Implemented so far: project,

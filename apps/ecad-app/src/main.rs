@@ -273,6 +273,7 @@ impl App {
             };
             tool(ui, "Select", "select", "Click to select, drag to move (Esc)");
             tool(ui, "Wire", "wire", "Click two connection points (W)");
+            tool(ui, "Box", "box", "Drag a dashed location box: +A101, EXT, a connector housing");
             ui.separator();
             let undo = frame.undo.as_deref().map(|l| format!("Undo {l}")).unwrap_or_else(|| "Nothing to undo".into());
             if ui.add_enabled(frame.undo.is_some(), egui::Button::new("Undo")).on_hover_text(undo).clicked() {
@@ -300,6 +301,7 @@ impl App {
             SelectionInfo::Wire { number, from, to, cross_section, colour, cable, core, .. } => {
                 format!("wire {from} {to} {number:?} {cross_section} {colour} {cable} {core}")
             }
+            SelectionInfo::Box { label, devices } => format!("box {label} {devices:?}"),
         });
         if key != self.fields.key {
             self.fields = Fields { key, ..Fields::default() };
@@ -321,13 +323,24 @@ impl App {
                     self.fields.cable = cable.clone();
                     self.fields.core = core.clone();
                 }
+                Some(SelectionInfo::Box { label, .. }) => self.fields.tag = label.clone(),
                 None => {}
             }
         }
         // A field is applied when it loses focus (Tab, Enter or a click elsewhere) with a change.
         let mut events = Vec::new();
         match &frame.selection {
-            Some(SelectionInfo::Device { tag, description, symbol, role, references, parts, terminal, plc }) => {
+            Some(SelectionInfo::Device {
+                tag,
+                description,
+                symbol,
+                role,
+                references,
+                parts,
+                terminal,
+                plc,
+                location,
+            }) => {
                 if self.fields.owner.is_empty() {
                     self.fields.owner = tag.clone();
                 }
@@ -342,6 +355,9 @@ impl App {
                 }
                 ui.add_space(4.0);
                 ui.small(format!("Symbol: {symbol}"));
+                if !location.is_empty() {
+                    ui.small(format!("In: {location}"));
+                }
                 if role != "potential" && role != "interruption" && !symbol.ends_with("junction") {
                     ui.add_space(8.0);
                     ui.strong(if role == "terminal" { "Parts (per terminal)" } else { "Parts" });
@@ -575,6 +591,22 @@ impl App {
                 }
                 ui.add_space(8.0);
                 ui.label("Delete removes the wire.");
+            }
+            Some(SelectionInfo::Box { label, devices }) => {
+                ui.label("Box label");
+                let edit = ui.add(egui::TextEdit::singleline(&mut self.fields.tag).hint_text("+A101, EXT, -XCPR1"));
+                if edit.lost_focus() && self.fields.tag.trim() != label {
+                    events.push(UiEvent::LabelBox { text: self.fields.tag.clone() });
+                }
+                ui.small("Where the devices inside are, or what they belong to.");
+                ui.add_space(6.0);
+                ui.strong("Inside");
+                if devices.is_empty() {
+                    ui.small("No devices yet.");
+                }
+                ui.label(devices.join("  "));
+                ui.add_space(8.0);
+                ui.label("Drag the edge to move, Delete removes.");
             }
             None => {
                 ui.label("Nothing selected.");
