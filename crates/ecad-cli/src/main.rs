@@ -1,6 +1,6 @@
 //! `ecad`: headless commands.
 //!
-//! - `ecad new-sample <project-dir> [start|contacts|potentials]`: write a sample project:
+//! - `ecad new-sample <project-dir> [start|contacts|potentials|terminals]`: write a sample project:
 //!   the start circuit (default), plus -K1's contacts on page 2, plus potentials and an
 //!   interruption point across both pages
 //! - `ecad check <project-dir>`: load a project and report what it contains
@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const USAGE: &str = "usage:
-  ecad new-sample <project-dir> [start|contacts|potentials]
+  ecad new-sample <project-dir> [start|contacts|potentials|terminals]
   ecad check <project-dir>
   ecad export <project-dir> <out-dir>
   ecad demo <out-dir>";
@@ -49,6 +49,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 None | Some("start") => sample::start_circuit(),
                 Some("contacts") => sample::with_contacts(),
                 Some("potentials") => sample::with_potentials(),
+                Some("terminals") => sample::with_terminals(),
                 Some(other) => return Err(format!("unknown sample `{other}`\n{USAGE}")),
             }
             .map_err(|e| e.to_string())?;

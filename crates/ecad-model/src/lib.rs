@@ -237,9 +237,9 @@ mod tests {
         assert_eq!(p.main_function(k1).map(|f| f.id), Some(K1_COIL));
         assert_eq!(p.function_location(K1_COIL).unwrap(), format!("1.{}", col(K1_COIL)));
         // A third contact takes the next free number; the sample pushbutton -S1 has no coil.
-        let third = p.next_contact_designations(k1, &SymbolId::new("iec.contact_no"));
+        let third = p.next_designations(k1, &SymbolId::new("iec.contact_no"));
         assert_eq!(third.get("13").map(String::as_str), Some("33"));
-        assert!(p.next_contact_designations(k1, &SymbolId::new("iec.coil")).is_empty());
+        assert!(p.next_designations(k1, &SymbolId::new("iec.coil")).is_empty());
         assert!(p.main_function(DeviceId::from_u128(0x102)).is_none());
         // Wires and reports name the contact by its own designation.
         assert_eq!(p.describe(&ConnectionRef::new(sample::K1_NC, "11")).unwrap(), ("-K1".into(), "21".into()));
@@ -293,6 +293,30 @@ mod tests {
             h.undo(&mut p).unwrap();
         }
         assert_eq!(p, original);
+    }
+
+    #[test]
+    fn terminals_are_numbered_naturally_and_uniquely_per_strip() {
+        let mut p = sample::with_terminals().unwrap();
+        let strip = DeviceId::from_u128(0x10a);
+        let numbers = |p: &Project| p.terminals_of(strip).iter().map(|t| t.number.clone()).collect::<Vec<_>>();
+        assert_eq!(numbers(&p), ["1", "2"]);
+        assert_eq!(p.describe(&ConnectionRef::new(sample::X2_2, "2")).unwrap(), ("-X2".into(), "2".into()));
+        // Both sides of a terminal are one potential: L+ reaches -S1:13 through -X2:1.
+        let w9 = p.connections.values().find(|c| c.wire_number.as_deref() == Some("W9")).unwrap().id;
+        assert_eq!(p.potential_of(w9).and_then(|x| x.name()).as_deref(), Some("L+"));
+        let ten: std::collections::BTreeMap<String, String> =
+            [("1".into(), "10".into()), ("2".into(), "10".into())].into();
+        p.apply(Command::SetDesignations { id: sample::X2_1, designations: ten }).unwrap();
+        assert_eq!(numbers(&p), ["2", "10"], "10 sorts after 2");
+        assert_eq!(p.next_terminal_number(strip), "11");
+        let two: std::collections::BTreeMap<String, String> =
+            [("1".into(), "2".into()), ("2".into(), "2".into())].into();
+        assert_eq!(
+            p.apply(Command::SetDesignations { id: sample::X2_1, designations: two }).unwrap_err(),
+            ModelError::DuplicateTerminal("-X2".into(), "2".into())
+        );
+        assert_eq!(numbers(&p), ["2", "10"], "a refused renumber changes nothing");
     }
 
     #[test]

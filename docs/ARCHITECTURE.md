@@ -36,7 +36,8 @@ Dependencies point downward only. The core never depends on the UI or on CADCraf
 | Junction | A dot whose four connection points are one potential, so wiring can branch |
 | Part | Catalogue entry: part number (unique), manufacturer, description; kept in the project (`parts.json`), importable from CSV |
 | Device parts | The parts a device is built from, with quantities; the BOM adds them up |
-| Cable, terminal strip, PLC card | M3b, M3c and later |
+| Terminal strip | A device (`-X2`) whose drawings are its terminals, each with a number unique on the strip (`-X2:3`); both sides of a terminal are one potential; its parts count once per terminal |
+| Cable, PLC card | M3c and later |
 
 Every object has a stable UUID; tags and names are attributes. Implemented so far: project,
 page, symbol, device, function, connection point, connection, routing, commands and undo.

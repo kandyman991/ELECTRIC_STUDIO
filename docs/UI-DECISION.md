@@ -41,7 +41,8 @@ if needed.
 | Same potential or interruption point on another page | Select it, "Add another point", click on any page |
 | Parts catalogue | Toolbar "Parts": edit in place, ✕ to remove, add a row, Import CSV (`,` or `;`) |
 | Parts of a device | Select it: "Add part…" in the right panel, quantity, ✕ to remove |
-| Reports | File → Export reports… (wire list, BOM, devices without parts) |
+| Terminals | Toolbar "Terminal" starts a strip at 1; select a terminal: "Add terminal" (next number, any page), edit its number, links to the strip's other terminals |
+| Reports | File → Export reports… (wire list, BOM, terminal diagram, devices without parts) |
 | Pan, zoom, fit | Middle-drag, wheel, F |
 | Edit tag, description, wire number | Select, edit in the right panel; applied when the field loses focus (Enter, Tab or a click) |
 

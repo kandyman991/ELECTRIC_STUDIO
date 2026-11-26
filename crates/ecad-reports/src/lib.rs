@@ -66,10 +66,12 @@ pub struct BomRow {
 }
 
 /// The bill of materials: every part used by a device, with the total quantity, sorted by part
-/// number.
+/// number. Parts of a terminal strip count once per terminal.
 pub fn bom(project: &Project) -> Vec<BomRow> {
     let mut rows: std::collections::BTreeMap<&str, BomRow> = std::collections::BTreeMap::new();
     for d in project.devices.values() {
+        let terminals = project.terminals_of(d.id).len() as u32;
+        let per = terminals.max(1);
         for r in &d.parts {
             let part = project.parts.get(&r.number);
             let row = rows.entry(&r.number).or_insert_with(|| BomRow {
@@ -79,7 +81,7 @@ pub fn bom(project: &Project) -> Vec<BomRow> {
                 quantity: 0,
                 devices: Vec::new(),
             });
-            row.quantity += r.quantity;
+            row.quantity += r.quantity * per;
             row.devices.push(d.tag.clone());
         }
     }
@@ -133,10 +135,77 @@ pub fn devices_without_parts_csv(rows: &[(String, String)]) -> String {
     out
 }
 
+/// One terminal in the terminal diagram.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalRow {
+    pub strip: String,
+    pub terminal: String,
+    /// What the inside (top, cabinet) side is wired to, e.g. `-K1:A1`.
+    pub inside: String,
+    /// What the outside (bottom, field) side is wired to.
+    pub outside: String,
+    pub potential: String,
+    /// Where the terminal is drawn, e.g. `1.6`.
+    pub location: String,
+}
+
+/// Every terminal strip, sorted by tag, each in terminal order, with what both sides connect to.
+pub fn terminal_diagram(project: &Project) -> Vec<TerminalRow> {
+    let potentials = project.potentials();
+    let mut strips: Vec<&ecad_model::Device> =
+        project.devices.values().filter(|d| !project.terminals_of(d.id).is_empty()).collect();
+    strips.sort_by(|a, b| a.tag.cmp(&b.tag));
+    let mut rows = Vec::new();
+    for strip in strips {
+        for t in project.terminals_of(strip.id) {
+            let Ok(f) = project.function(t.function) else { continue };
+            let points: Vec<String> = project
+                .symbol(&f.symbol)
+                .map(|s| s.connection_points.iter().map(|cp| cp.name.clone()).collect())
+                .unwrap_or_default();
+            let far = |point: Option<&String>| -> String {
+                let Some(point) = point else { return String::new() };
+                let here = ecad_model::ConnectionRef::new(f.id, point);
+                let Some(c) = project.connection_at(&here) else { return String::new() };
+                let other = if c.from == here { &c.to } else { &c.from };
+                project.describe(other).map(|(tag, p)| format!("{tag}:{p}")).unwrap_or_default()
+            };
+            let first = points.first().map(|p| ecad_model::ConnectionRef::new(f.id, p));
+            let potential = first
+                .and_then(|r| potentials.iter().find(|p| p.points.contains(&r)))
+                .and_then(|p| p.name())
+                .unwrap_or_default();
+            rows.push(TerminalRow {
+                strip: strip.tag.clone(),
+                terminal: t.number.clone(),
+                inside: far(points.first()),
+                outside: far(points.get(1)),
+                potential,
+                location: t.location.clone(),
+            });
+        }
+    }
+    rows
+}
+
+pub fn terminal_diagram_csv(rows: &[TerminalRow]) -> String {
+    let mut out = String::from("strip,terminal,inside,outside,potential,location\n");
+    for r in rows {
+        let fields = [&r.strip, &r.terminal, &r.inside, &r.outside, &r.potential, &r.location];
+        out += &fields.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(",");
+        out.push('\n');
+    }
+    out
+}
+
 /// Every report, as (file name, contents), for writing into an output folder. The list of
 /// devices without parts is only included when there are some.
 pub fn all_csv(project: &Project) -> Result<Vec<(&'static str, String)>, ModelError> {
     let mut files = vec![("wire-list.csv", wire_list_csv(&wire_list(project)?)), ("bom.csv", bom_csv(&bom(project)))];
+    let terminals = terminal_diagram(project);
+    if !terminals.is_empty() {
+        files.push(("terminal-diagram.csv", terminal_diagram_csv(&terminals)));
+    }
     let missing = devices_without_parts(project);
     if !missing.is_empty() {
         files.push(("devices-without-parts.csv", devices_without_parts_csv(&missing)));
@@ -184,6 +253,29 @@ mod tests {
              W2,,-S1,14,-K1,A1\n\
              W3,M,-K1,A2,M,1\n"
         );
+    }
+
+    #[test]
+    fn the_terminal_diagram_lists_both_sides_and_the_bom_counts_terminals() {
+        let p = ecad_model::sample::with_terminals().unwrap();
+        let rows = terminal_diagram(&p);
+        let csv = terminal_diagram_csv(&rows);
+        let col = |f| p.sheet.column_of(p.function(f).unwrap().position);
+        assert_eq!(
+            csv,
+            format!(
+                "strip,terminal,inside,outside,potential,location\n\
+                 -X2,1,L+:1,-S1:13,L+,1.{}\n\
+                 -X2,2,-S1:14,-K1:A1,,1.{}\n",
+                col(ecad_model::sample::X2_1),
+                col(ecad_model::sample::X2_2)
+            )
+        );
+        // One terminal part on the strip, two terminals: two in the BOM.
+        let tb = bom(&p).into_iter().find(|r| r.number == "EX-TB-4").unwrap();
+        assert_eq!((tb.quantity, tb.devices), (2, vec!["-X2".to_owned()]));
+        let names: Vec<&str> = all_csv(&p).unwrap().iter().map(|(n, _)| *n).collect();
+        assert!(names.contains(&"terminal-diagram.csv"), "{names:?}");
     }
 
     #[test]

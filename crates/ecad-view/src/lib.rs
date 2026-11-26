@@ -116,7 +116,7 @@ fn cross_reference_lines(project: &Project, f: ecad_model::FunctionId, role: Rol
             .enumerate()
             .map(|(i, at)| (i, format!("/{at}")))
             .collect(),
-        Role::Single | Role::Potential => Vec::new(),
+        Role::Single | Role::Potential | Role::Terminal => Vec::new(),
     })
 }
 
@@ -201,7 +201,16 @@ pub fn page_drawing(project: &Project, page: PageId) -> Result<Drawing> {
         }
         let tag = Attrib {
             tag: "TAG".into(),
-            text: tag_text(min, max, sideways, &device.tag),
+            // A terminal is labelled with its strip and number: -X2:3.
+            text: tag_text(
+                min,
+                max,
+                sideways,
+                &match project.terminal_number(f.id) {
+                    Some(n) => format!("{}:{n}", device.tag),
+                    None => device.tag.clone(),
+                },
+            ),
             // Kept in the DXF even when not shown (junctions), so the drawing stays complete.
             invisible: sym.hide_tag,
             constant: false,
