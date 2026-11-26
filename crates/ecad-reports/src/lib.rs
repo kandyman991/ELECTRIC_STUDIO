@@ -198,6 +198,67 @@ pub fn terminal_diagram_csv(rows: &[TerminalRow]) -> String {
     out
 }
 
+/// One channel in the PLC I/O list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlcIoRow {
+    pub card: String,
+    pub channel: String,
+    /// `DI`, `DO`, `AI` or `AO`.
+    pub kind: String,
+    pub address: String,
+    pub symbol: String,
+    pub comment: String,
+    /// What the channel is wired to, e.g. `-B1:14`.
+    pub wired_to: String,
+    /// Where the channel is drawn, e.g. `3.2`.
+    pub location: String,
+}
+
+/// Every PLC card, sorted by tag, each in channel order.
+pub fn plc_io_list(project: &Project) -> Vec<PlcIoRow> {
+    let mut cards: Vec<&ecad_model::Device> =
+        project.devices.values().filter(|d| !project.plc_channels_of(d.id).is_empty()).collect();
+    cards.sort_by(|a, b| a.tag.cmp(&b.tag));
+    let mut rows = Vec::new();
+    for card in cards {
+        for c in project.plc_channels_of(card.id) {
+            let wired_to = project
+                .function(c.function)
+                .and_then(|f| project.symbol(&f.symbol))
+                .ok()
+                .and_then(|s| s.connection_points.first())
+                .and_then(|cp| {
+                    let here = ecad_model::ConnectionRef::new(c.function, &cp.name);
+                    let conn = project.connection_at(&here)?;
+                    let other = if conn.from == here { &conn.to } else { &conn.from };
+                    project.describe(other).ok().map(|(tag, p)| format!("{tag}:{p}"))
+                })
+                .unwrap_or_default();
+            rows.push(PlcIoRow {
+                card: card.tag.clone(),
+                channel: c.channel,
+                kind: c.kind.short().to_owned(),
+                address: c.address,
+                symbol: c.symbol,
+                comment: c.comment,
+                wired_to,
+                location: c.location,
+            });
+        }
+    }
+    rows
+}
+
+pub fn plc_io_list_csv(rows: &[PlcIoRow]) -> String {
+    let mut out = String::from("card,channel,kind,address,symbol,comment,wired_to,location\n");
+    for r in rows {
+        let fields = [&r.card, &r.channel, &r.kind, &r.address, &r.symbol, &r.comment, &r.wired_to, &r.location];
+        out += &fields.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(",");
+        out.push('\n');
+    }
+    out
+}
+
 /// Every report, as (file name, contents), for writing into an output folder. The list of
 /// devices without parts is only included when there are some.
 pub fn all_csv(project: &Project) -> Result<Vec<(&'static str, String)>, ModelError> {
@@ -205,6 +266,10 @@ pub fn all_csv(project: &Project) -> Result<Vec<(&'static str, String)>, ModelEr
     let terminals = terminal_diagram(project);
     if !terminals.is_empty() {
         files.push(("terminal-diagram.csv", terminal_diagram_csv(&terminals)));
+    }
+    let channels = plc_io_list(project);
+    if !channels.is_empty() {
+        files.push(("plc-io-list.csv", plc_io_list_csv(&channels)));
     }
     let missing = devices_without_parts(project);
     if !missing.is_empty() {
@@ -276,6 +341,34 @@ mod tests {
         assert_eq!((tb.quantity, tb.devices), (2, vec!["-X2".to_owned()]));
         let names: Vec<&str> = all_csv(&p).unwrap().iter().map(|(n, _)| *n).collect();
         assert!(names.contains(&"terminal-diagram.csv"), "{names:?}");
+    }
+
+    #[test]
+    fn the_plc_io_list_shows_each_channel_with_address_symbol_and_wiring() {
+        let p = ecad_model::sample::with_plc().unwrap();
+        let rows = plc_io_list(&p);
+        let summary: Vec<String> = rows
+            .iter()
+            .map(|r| {
+                format!("{}:{} {} {} {} [{}] {}", r.card, r.channel, r.kind, r.address, r.symbol, r.comment, r.wired_to)
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                "-KF1:0 DI I0.0 Door_Closed [Guard door closed] -B1:14",
+                "-KF1:1 DI I0.1 Start_Spare [Start button, NC contact] -S1:22",
+                "-KF1:2 DO Q0.0 Pump_On [] -K3:A1",
+                "-KF1:3 AI IW256 Tank_Level [Tank level 4-20 mA] ",
+            ]
+        );
+        assert!(rows.iter().all(|r| r.location.starts_with("3.")), "{rows:?}");
+        let names: Vec<&str> = all_csv(&p).unwrap().iter().map(|(n, _)| *n).collect();
+        assert!(names.contains(&"plc-io-list.csv"), "{names:?}");
+        assert!(
+            plc_io_list_csv(&rows)
+                .starts_with("card,channel,kind,address,symbol,comment,wired_to,location\n-KF1,0,DI,I0.0")
+        );
     }
 
     #[test]

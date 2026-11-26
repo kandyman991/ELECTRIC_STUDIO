@@ -45,6 +45,27 @@ impl ContactKind {
     }
 }
 
+/// The kind of a PLC channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IoKind {
+    DigitalIn,
+    DigitalOut,
+    AnalogIn,
+    AnalogOut,
+}
+
+impl IoKind {
+    /// `DI`, `DO`, `AI` or `AO`.
+    pub fn short(self) -> &'static str {
+        match self {
+            IoKind::DigitalIn => "DI",
+            IoKind::DigitalOut => "DO",
+            IoKind::AnalogIn => "AI",
+            IoKind::AnalogOut => "AO",
+        }
+    }
+}
+
 /// What a symbol stands for within its device, which decides cross-references.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -65,6 +86,16 @@ pub enum Role {
     /// One terminal of a terminal strip: the strip is the device (`-X2`), each terminal is
     /// one drawing with its own number (`-X2:3`). Its two sides are bridged.
     Terminal,
+    /// One channel of a PLC card: the card is the device (`-KF1`), each channel is one
+    /// drawing with its own number (`-KF1:3`), an address (`I0.3`) and a symbol name.
+    PlcChannel { kind: IoKind },
+}
+
+impl Role {
+    /// Roles whose drawings carry a number unique on their device (terminals, PLC channels).
+    pub fn numbered(self) -> bool {
+        matches!(self, Role::Terminal | Role::PlcChannel { .. })
+    }
 }
 
 impl Role {

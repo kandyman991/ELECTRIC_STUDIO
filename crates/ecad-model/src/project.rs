@@ -7,7 +7,7 @@
 use crate::geometry::{Direction, Point, Rotation};
 use crate::parts::{Part, PartRef};
 use crate::sheet::Sheet;
-use crate::symbol::{ContactKind, Role, SymbolDef, SymbolId};
+use crate::symbol::{ContactKind, IoKind, Role, SymbolDef, SymbolId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uuid::Uuid;
@@ -100,9 +100,22 @@ pub struct Function {
     /// symbol's `13`/`14`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub designations: BTreeMap<String, String>,
+    /// Extra fields some drawings carry, e.g. a PLC channel's `address`, `symbol`, `comment`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub properties: BTreeMap<String, String>,
 }
 
+/// Property keys of a PLC channel.
+pub const ADDRESS: &str = "address";
+pub const SYMBOL: &str = "symbol";
+pub const COMMENT: &str = "comment";
+
 impl Function {
+    /// A property's value, or `""`.
+    pub fn property(&self, key: &str) -> &str {
+        self.properties.get(key).map_or("", String::as_str)
+    }
+
     /// The designation shown for one of this function's connection points.
     pub fn designation<'a>(&'a self, point: &'a str) -> &'a str {
         self.designations.get(point).map_or(point, String::as_str)
@@ -144,6 +157,19 @@ fn natural(a: &str, b: &str) -> std::cmp::Ordering {
         (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
         _ => a.cmp(b),
     }
+}
+
+/// One channel of a PLC card.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ChannelRef {
+    pub function: FunctionId,
+    pub page: PageId,
+    pub channel: String,
+    pub kind: IoKind,
+    pub address: String,
+    pub symbol: String,
+    pub comment: String,
+    pub location: String,
 }
 
 /// One terminal of a strip.
@@ -230,6 +256,11 @@ pub enum Command {
         id: DeviceId,
         parts: Vec<PartRef>,
     },
+    /// Set a drawing's properties (a PLC channel's address, symbol, comment).
+    SetProperties {
+        id: FunctionId,
+        properties: BTreeMap<String, String>,
+    },
     /// Set a drawing's terminal designations (e.g. renumber a terminal).
     SetDesignations {
         id: FunctionId,
@@ -287,10 +318,14 @@ pub enum ModelError {
     EmptyPartNumber,
     #[error("quantity must be at least 1")]
     ZeroQuantity,
-    #[error("terminal {0}:{1} already exists")]
-    DuplicateTerminal(String, String),
-    #[error("terminal number must not be empty")]
-    EmptyTerminalNumber,
+    #[error("{0}:{1} already exists")]
+    DuplicateNumber(String, String),
+    #[error("the terminal or channel number must not be empty")]
+    EmptyNumber,
+    #[error("PLC address {0} is already used by {1}")]
+    DuplicateAddress(String, String),
+    #[error("PLC symbol `{0}` is already used by {1}")]
+    DuplicatePlcSymbol(String, String),
     #[error("id {0} is already used")]
     DuplicateId(Uuid),
 }
@@ -421,6 +456,12 @@ impl Project {
             let n = self.next_terminal_number(device);
             return sym.connection_points.iter().map(|cp| (cp.name.clone(), n.clone())).collect();
         }
+        if let Role::PlcChannel { .. } = sym.role {
+            // Channels count from 0 on each card.
+            let used: Vec<u32> = self.plc_channels_of(device).iter().filter_map(|c| c.channel.parse().ok()).collect();
+            let n = (0..).find(|n| !used.contains(n)).unwrap_or(0).to_string();
+            return sym.connection_points.iter().map(|cp| (cp.name.clone(), n.clone())).collect();
+        }
         if !matches!(sym.role, Role::Contact { .. }) {
             return BTreeMap::new();
         }
@@ -439,12 +480,78 @@ impl Project {
             .collect()
     }
 
-    /// A terminal's number: the designation of its first side.
-    pub fn terminal_number(&self, f: FunctionId) -> Option<String> {
+    /// The number of a terminal or PLC channel: the designation of its first connection point.
+    pub fn drawing_number(&self, f: FunctionId) -> Option<String> {
         let f = self.function(f).ok()?;
         let sym = self.symbol(&f.symbol).ok()?;
-        (sym.role == Role::Terminal)
-            .then(|| sym.connection_points.first().map(|cp| f.designation(&cp.name).to_owned()))?
+        sym.role.numbered().then(|| sym.connection_points.first().map(|cp| f.designation(&cp.name).to_owned()))?
+    }
+
+    /// A terminal's number.
+    pub fn terminal_number(&self, f: FunctionId) -> Option<String> {
+        (self.role(f).ok()? == Role::Terminal).then(|| self.drawing_number(f))?
+    }
+
+    /// A PLC card's channels, in channel order.
+    pub fn plc_channels_of(&self, card: DeviceId) -> Vec<ChannelRef> {
+        let mut out: Vec<ChannelRef> = self
+            .functions_of(card)
+            .filter_map(|f| {
+                let Role::PlcChannel { kind } = self.role(f.id).ok()? else { return None };
+                Some(ChannelRef {
+                    function: f.id,
+                    page: f.page,
+                    channel: self.drawing_number(f.id)?,
+                    kind,
+                    address: f.property(ADDRESS).to_owned(),
+                    symbol: f.property(SYMBOL).to_owned(),
+                    comment: f.property(COMMENT).to_owned(),
+                    location: self.location(f.page, f.position).ok()?,
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| natural(&a.channel, &b.channel));
+        out
+    }
+
+    /// The next free PLC address of a kind, following the highest one in the project:
+    /// Siemens-style `I0.0`…`I0.7`, `I1.0` (bits wrap at 8) for digital, `IW256`, `IW258` (words
+    /// in steps of 2) for analog; `Q`/`QW` for outputs. Digital starts at `I0.0`/`Q0.0`;
+    /// analog has no start of its own (empty).
+    pub fn next_address(&self, kind: IoKind) -> String {
+        let (prefix, analog) = match kind {
+            IoKind::DigitalIn => ("I", false),
+            IoKind::DigitalOut => ("Q", false),
+            IoKind::AnalogIn => ("IW", true),
+            IoKind::AnalogOut => ("QW", true),
+        };
+        let used = self.functions.values().filter_map(|f| {
+            let addr = f.property(ADDRESS).strip_prefix(prefix)?;
+            if analog {
+                addr.parse::<u32>().ok().map(|w| (w, 0))
+            } else {
+                let (byte, bit) = addr.split_once('.')?;
+                Some((byte.parse::<u32>().ok()?, bit.parse::<u32>().ok().filter(|b| *b < 8)?))
+            }
+        });
+        match (used.max(), analog) {
+            (None, true) => String::new(),
+            (None, false) => format!("{prefix}0.0"),
+            (Some((w, _)), true) => format!("{prefix}{}", w + 2),
+            (Some((byte, 7)), false) => format!("{prefix}{}.0", byte + 1),
+            (Some((byte, bit)), false) => format!("{prefix}{byte}.{}", bit + 1),
+        }
+    }
+
+    /// Properties for a new drawing with `symbol`: a PLC channel gets the next free address.
+    pub fn new_drawing_properties(&self, symbol: &SymbolId) -> BTreeMap<String, String> {
+        match self.symbol(symbol).map(|s| s.role) {
+            Ok(Role::PlcChannel { kind }) => {
+                let address = self.next_address(kind);
+                if address.is_empty() { BTreeMap::new() } else { [(ADDRESS.to_owned(), address)].into() }
+            }
+            _ => BTreeMap::new(),
+        }
     }
 
     /// The terminals of a strip, in terminal order (numbers compare as numbers: 2 before 10).
@@ -530,7 +637,7 @@ impl Project {
                 self.symbol(&f.symbol)?;
                 let id = f.id;
                 self.functions.insert(id, f);
-                if let Err(e) = self.check_terminal(id) {
+                if let Err(e) = self.check_terminal(id).and_then(|()| self.check_plc(id)) {
                     self.functions.remove(&id);
                     return Err(e);
                 }
@@ -676,6 +783,22 @@ impl Project {
                 let old = std::mem::replace(&mut d.parts, parts);
                 Ok(Command::SetDeviceParts { id, parts: old })
             }
+            Command::SetProperties { id, properties } => {
+                let properties = properties
+                    .into_iter()
+                    .map(|(k, v)| (k, v.trim().to_owned()))
+                    .filter(|(_, v)| !v.is_empty())
+                    .collect();
+                let f = self.functions.get_mut(&id).ok_or(ModelError::NoFunction(id))?;
+                let old = std::mem::replace(&mut f.properties, properties);
+                if let Err(e) = self.check_plc(id) {
+                    if let Some(f) = self.functions.get_mut(&id) {
+                        f.properties = old;
+                    }
+                    return Err(e);
+                }
+                Ok(Command::SetProperties { id, properties: old })
+            }
             Command::SetDesignations { id, designations } => {
                 let f = self.functions.get_mut(&id).ok_or(ModelError::NoFunction(id))?;
                 let old = std::mem::replace(&mut f.designations, designations);
@@ -717,15 +840,44 @@ impl Project {
         }
     }
 
-    /// A terminal's number is non-empty and unique on its strip.
+    /// A terminal's or channel's number is non-empty and unique on its device.
     fn check_terminal(&self, f: FunctionId) -> Result<()> {
-        let Some(number) = self.terminal_number(f) else { return Ok(()) };
+        let Some(number) = self.drawing_number(f) else { return Ok(()) };
         if number.trim().is_empty() {
-            return Err(ModelError::EmptyTerminalNumber);
+            return Err(ModelError::EmptyNumber);
         }
-        let strip = self.function(f)?.device;
-        if self.terminals_of(strip).iter().any(|t| t.function != f && t.number == number) {
-            return Err(ModelError::DuplicateTerminal(self.device(strip)?.tag.clone(), number));
+        let device = self.function(f)?.device;
+        let taken = self
+            .functions_of(device)
+            .any(|g| g.id != f && self.drawing_number(g.id).as_deref() == Some(number.as_str()));
+        if taken {
+            return Err(ModelError::DuplicateNumber(self.device(device)?.tag.clone(), number));
+        }
+        Ok(())
+    }
+
+    /// A PLC channel's address and symbol, when set, are unique in the project.
+    fn check_plc(&self, f: FunctionId) -> Result<()> {
+        let func = self.function(f)?;
+        if !matches!(self.role(f)?, Role::PlcChannel { .. }) {
+            return Ok(());
+        }
+        for (key, is_address) in [(ADDRESS, true), (SYMBOL, false)] {
+            let value = func.property(key);
+            if value.is_empty() {
+                continue;
+            }
+            let other = self.functions.values().find(|g| {
+                g.id != f && matches!(self.role(g.id), Ok(Role::PlcChannel { .. })) && g.property(key) == value
+            });
+            if let Some(g) = other {
+                let by = format!("{}:{}", self.device(g.device)?.tag, self.drawing_number(g.id).unwrap_or_default());
+                return Err(if is_address {
+                    ModelError::DuplicateAddress(value.to_owned(), by)
+                } else {
+                    ModelError::DuplicatePlcSymbol(value.to_owned(), by)
+                });
+            }
         }
         Ok(())
     }

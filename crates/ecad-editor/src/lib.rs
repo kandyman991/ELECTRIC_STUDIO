@@ -721,6 +721,8 @@ impl Editor {
                 rotation: Rotation::R0,
                 // A new terminal strip starts at terminal 1; contacts keep their own numbers.
                 designations: self.project.next_designations(device, symbol),
+                // A PLC channel gets the next free address.
+                properties: self.project.new_drawing_properties(symbol),
             }),
         ]);
         let result = self.execute(&format!("Place {tag}"), cmd);
@@ -738,7 +740,10 @@ impl Editor {
         let designations = self.project.next_designations(device, symbol);
         let mut terminals: Vec<&String> = designations.values().collect();
         terminals.sort();
-        let what = if terminals.is_empty() {
+        let numbered = self.project.symbol(symbol).is_ok_and(|s| s.role.numbered());
+        let what = if numbered {
+            terminals.first().map(|n| format!(":{n}")).unwrap_or_default()
+        } else if terminals.is_empty() {
             String::new()
         } else {
             format!(" contact {}", terminals.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("-"))
@@ -752,6 +757,7 @@ impl Editor {
             position: at,
             rotation: Rotation::R0,
             designations,
+            properties: self.project.new_drawing_properties(symbol),
         });
         let result = self.execute(&format!("Place {tag}{what}"), cmd);
         if result.is_ok() {
@@ -761,10 +767,26 @@ impl Editor {
         self.report(result);
     }
 
-    /// Give the selected terminal another number (unique on its strip).
+    /// Set one property of the selected drawing (a PLC channel's `address`, `symbol` or
+    /// `comment`); blank clears it.
+    pub fn set_selected_property(&mut self, key: &str, value: &str) -> Result<(), ModelError> {
+        let Some(Selected::Function(f)) = self.selection else { return Ok(()) };
+        let func = self.project.function(f)?;
+        let value = value.trim();
+        if func.property(key) == value {
+            return Ok(());
+        }
+        let mut properties = func.properties.clone();
+        properties.insert(key.to_owned(), value.to_owned());
+        let n = self.project.drawing_number(f).unwrap_or_default();
+        let label = format!("Set {key} of {}:{n}", self.tag_of(f));
+        self.execute(&label, Command::SetProperties { id: f, properties })
+    }
+
+    /// Give the selected terminal or PLC channel another number (unique on its device).
     pub fn renumber_selected(&mut self, number: &str) -> Result<(), ModelError> {
         let Some(Selected::Function(f)) = self.selection else { return Ok(()) };
-        let Some(old) = self.project.terminal_number(f) else { return Ok(()) };
+        let Some(old) = self.project.drawing_number(f) else { return Ok(()) };
         let number = number.trim();
         if number == old {
             return Ok(());

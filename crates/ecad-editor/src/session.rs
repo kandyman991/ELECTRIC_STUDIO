@@ -150,9 +150,14 @@ pub enum UiEvent {
     ExportReports {
         path: PathBuf,
     },
-    /// Give the selected terminal another number.
+    /// Give the selected terminal or PLC channel another number.
     RenumberTerminal {
         number: String,
+    },
+    /// Set the selected PLC channel's `address`, `symbol` or `comment`; blank clears it.
+    SetPlcProperty {
+        key: String,
+        value: String,
     },
 }
 
@@ -197,6 +202,8 @@ pub enum SelectionInfo {
         parts: Vec<DevicePart>,
         /// For a terminal, its number on the strip.
         terminal: Option<String>,
+        /// For a PLC channel: its kind, number, address, symbol and comment.
+        plc: Option<PlcInfo>,
     },
     Wire {
         number: Option<String>,
@@ -207,6 +214,17 @@ pub enum SelectionInfo {
         /// Set when differently named potentials are connected on this wire's potential.
         warning: Option<String>,
     },
+}
+
+/// The selected PLC channel.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PlcInfo {
+    /// `DI`, `DO`, `AI` or `AO`.
+    pub kind: String,
+    pub channel: String,
+    pub address: String,
+    pub symbol: String,
+    pub comment: String,
 }
 
 /// A part of the selected device, with its catalogue description.
@@ -245,6 +263,8 @@ pub struct Frame {
     pub palette: Vec<PaletteItem>,
     /// Contact symbols, offered for adding contacts to the selected device.
     pub contact_palette: Vec<PaletteItem>,
+    /// PLC channel symbols, offered for adding channels to the selected card.
+    pub channel_palette: Vec<PaletteItem>,
     /// The parts catalogue, by part number.
     pub parts: Vec<Part>,
     /// All pages in order, and the one shown.
@@ -483,6 +503,10 @@ impl Session {
                 }
             }),
             UiEvent::ExportReports { path } => self.export_reports(&path),
+            UiEvent::SetPlcProperty { key, value } => {
+                let r = self.editor.set_selected_property(&key, &value);
+                self.report(r);
+            }
             UiEvent::RenumberTerminal { number } => {
                 let r = self.editor.renumber_selected(&number);
                 self.report(r);
@@ -639,6 +663,22 @@ impl Session {
                         .filter(|t| t.function != f.id)
                         .map(|t| Reference { label: format!("Terminal {} at {}", t.number, t.location), page: t.page })
                         .collect(),
+                    // A PLC channel: the card's other channels.
+                    Role::PlcChannel { .. } => project
+                        .plc_channels_of(d.id)
+                        .into_iter()
+                        .filter(|c| c.function != f.id)
+                        .map(|c| Reference {
+                            label: format!(
+                                "{} {} {}at {}",
+                                c.kind.short(),
+                                c.channel,
+                                if c.address.is_empty() { String::new() } else { format!("{} ", c.address) },
+                                c.location
+                            ),
+                            page: c.page,
+                        })
+                        .collect(),
                     Role::Single => Vec::new(),
                 };
                 Some(SelectionInfo::Device {
@@ -651,11 +691,22 @@ impl Session {
                         Role::Potential => "potential",
                         Role::Interruption => "interruption",
                         Role::Terminal => "terminal",
+                        Role::PlcChannel { .. } => "plc",
                         Role::Single => "single",
                     }
                     .into(),
                     references,
                     terminal: project.terminal_number(f.id),
+                    plc: match role {
+                        Role::PlcChannel { kind } => Some(PlcInfo {
+                            kind: kind.short().into(),
+                            channel: project.drawing_number(f.id).unwrap_or_default(),
+                            address: f.property(ecad_model::ADDRESS).to_owned(),
+                            symbol: f.property(ecad_model::SYMBOL).to_owned(),
+                            comment: f.property(ecad_model::COMMENT).to_owned(),
+                        }),
+                        _ => None,
+                    },
                     parts: d
                         .parts
                         .iter()
@@ -734,6 +785,12 @@ impl Session {
                 .symbols
                 .values()
                 .filter(|s| matches!(s.role, Role::Contact { .. }))
+                .map(|s| PaletteItem { id: s.id.0.clone(), description: s.description.clone() })
+                .collect(),
+            channel_palette: project
+                .symbols
+                .values()
+                .filter(|s| matches!(s.role, Role::PlcChannel { .. }))
                 .map(|s| PaletteItem { id: s.id.0.clone(), description: s.description.clone() })
                 .collect(),
             pages: project
@@ -861,7 +918,7 @@ mod tests {
         let f = s.frame(None, [0, 0, 0]);
         assert_eq!(f.title, "Panel A");
         assert_eq!(s.editor().project().functions.len(), 0);
-        assert_eq!(f.palette.len(), 7, "starter symbols are available");
+        assert_eq!(f.palette.len(), 11, "starter symbols are available");
         assert!(path.join("project.json").exists());
 
         // New into a folder that already has a project is refused.
@@ -1080,10 +1137,46 @@ mod tests {
         assert!(references[0].label.starts_with("Terminal 1 at 1."), "{references:?}");
         // Numbers are unique on the strip.
         s.handle(UiEvent::RenumberTerminal { number: "1".into() });
-        assert_eq!(s.frame(None, [0, 0, 0]).status, "terminal -X1:1 already exists");
+        assert_eq!(s.frame(None, [0, 0, 0]).status, "-X1:1 already exists");
         s.handle(UiEvent::RenumberTerminal { number: "10".into() });
         assert_eq!(device(&s).1.as_deref(), Some("10"));
         assert_eq!(s.editor().undo_label(), Some("Renumber -X1:2 to 10"));
+    }
+
+    #[test]
+    fn plc_channels_get_the_next_number_and_address_and_edit_their_properties() {
+        let (_dir, mut s) = session();
+        let click = |s: &mut Session, p: Point| {
+            let (x, y) = s.view().to_screen(p);
+            s.handle(UiEvent::PointerDown { x, y, button: Button::Primary });
+            s.handle(UiEvent::PointerUp { x, y, button: Button::Primary });
+        };
+        let plc = |s: &Session| match s.frame(None, [0, 0, 0]).selection {
+            Some(SelectionInfo::Device { tag, role, plc: Some(plc), references, .. }) => (tag, role, plc, references),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(s.frame(None, [0, 0, 0]).channel_palette.len(), 4);
+        s.handle(UiEvent::Tool { tool: "iec.plc_di".into() });
+        click(&mut s, Point::new(40.0, 40.0));
+        let (tag, role, info, _) = plc(&s);
+        assert_eq!((tag.as_str(), role.as_str()), ("-KF1", "plc"));
+        assert_eq!((info.kind.as_str(), info.channel.as_str(), info.address.as_str()), ("DI", "0", "I0.0"));
+        // "Add digital input" from the side panel: the card's next channel and address.
+        s.handle(UiEvent::AddContact { symbol: "iec.plc_di".into() });
+        click(&mut s, Point::new(80.0, 40.0));
+        let (_, _, info, references) = plc(&s);
+        assert_eq!((info.channel.as_str(), info.address.as_str()), ("1", "I0.1"));
+        assert_eq!(s.editor().undo_label(), Some("Place -KF1:1"));
+        assert!(references[0].label.starts_with("DI 0 I0.0 at 1."), "{references:?}");
+        // Symbol and comment are set from the panel; an address in use is refused.
+        s.handle(UiEvent::SetPlcProperty { key: "symbol".into(), value: " Door_Closed ".into() });
+        assert_eq!(plc(&s).2.symbol, "Door_Closed");
+        assert_eq!(s.editor().undo_label(), Some("Set symbol of -KF1:1"));
+        s.handle(UiEvent::SetPlcProperty { key: "address".into(), value: "I0.0".into() });
+        assert_eq!(s.frame(None, [0, 0, 0]).status, "PLC address I0.0 is already used by -KF1:0");
+        assert_eq!(plc(&s).2.address, "I0.1");
+        s.handle(UiEvent::RenumberTerminal { number: "7".into() });
+        assert_eq!(plc(&s).2.channel, "7");
     }
 
     #[test]

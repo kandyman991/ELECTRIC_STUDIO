@@ -37,7 +37,8 @@ Dependencies point downward only. The core never depends on the UI or on CADCraf
 | Part | Catalogue entry: part number (unique), manufacturer, description; kept in the project (`parts.json`), importable from CSV |
 | Device parts | The parts a device is built from, with quantities; the BOM adds them up |
 | Terminal strip | A device (`-X2`) whose drawings are its terminals, each with a number unique on the strip (`-X2:3`); both sides of a terminal are one potential; its parts count once per terminal |
-| Cable, PLC card | M3c and later |
+| PLC card | A device (`-KF1`) whose drawings are its channels: digital or analog input or output (DI, DO, AI, AO), numbered per card from 0 (`-KF1:3`). Each channel has an address (`I0.0`, `Q1.3`, `IW256`; new channels get the next free one), a PLC symbol and a comment. Addresses and symbols are unique in the project. The PLC I/O list reports them with what each channel is wired to |
+| Cable | Later |
 
 Every object has a stable UUID; tags and names are attributes. Implemented so far: project,
 page, symbol, device, function, connection point, connection, routing, commands and undo.

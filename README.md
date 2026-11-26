@@ -6,8 +6,8 @@ truth; schematics, panel layouts and manufacturing reports are generated from it
 Drawing, DXF/DWG/PDF output and rendering come from the Rust crates of
 [CADCraft](https://github.com/storytold/cadcraft) (MIT OR Apache-2.0), used as libraries.
 
-> Status: **M3b**: parts catalogue, bill of materials, terminal strips and terminal diagram.
-> Early development: a seven-symbol placeholder library, no PLC I/O or checks yet.
+> Status: **M3c**: parts catalogue, bill of materials, terminal strips and diagram, PLC channels
+> and PLC I/O list. Early development: an eleven-symbol placeholder library, no checks yet.
 
 ## Try it
 
@@ -22,9 +22,9 @@ Projects are folders of JSON files:
 
 ```sh
 cargo run -p ecad-cli -- new-sample my-project     # write the sample as a project folder
-cargo run -p ecad-cli -- new-sample my-project terminals    # or: start, contacts, potentials
+cargo run -p ecad-cli -- new-sample my-project plc    # or: start, contacts, potentials, terminals
 cargo run -p ecad-cli -- check my-project          # load it and summarise
-cargo run -p ecad-cli -- export my-project out     # DXF and PNG for every page, wire list, BOM, terminal diagram
+cargo run -p ecad-cli -- export my-project out     # DXF and PNG for every page, wire list, BOM, terminal diagram, PLC I/O list
 ```
 
 ## Try the editor
@@ -45,7 +45,7 @@ are attached to each CI run of the "Windows build" workflow (unsigned for now).
 | `ecad-project` | Loading and saving a project folder |
 | `ecad-view` | Model pages to CADCraft drawings; DXF, PNG and plain display primitives. The only CADCraft adapter |
 | `ecad-editor` | UI-independent editing controller and session: tools, hit-testing, snapping, undo, overlays, pan/zoom, saving |
-| `ecad-reports` | Reports as queries on the model (wire list so far) |
+| `ecad-reports` | Reports as queries on the model: wire list, BOM, terminal diagram, PLC I/O list |
 | `ecad-cli` | The `ecad` command |
 | `apps/ecad-app` | The editor application (`electric-studio`): a thin egui shell over `ecad_editor::Session` |
 
@@ -58,7 +58,7 @@ Planned: `ecad-rules`, `ecad-symbols`, `ecad-parts`, `ecad-mcp`. See [docs/ARCHI
 | M0 Foundation | Workspace, crates, CI, golden-file tests, feasibility test |
 | M1 One-page editor | M1a editing core · M1b UI chosen: egui · M1c Open/New, unsaved-changes prompt, readable labels, side-panel edits |
 | M2 Multi-page projects | M2a pages, sheet, title block · M2b cross-references · M2c potentials, junctions, interruption points |
-| **M3 Parts and reports** | M3a parts catalogue, BOM, report export · M3b terminal strips, terminal diagram (this) · M3c PLC I/O list |
+| **M3 Parts and reports** | M3a parts catalogue, BOM, report export · M3b terminal strips, terminal diagram · M3c PLC channels, PLC I/O list (this) |
 | M4 Checks and output | Live checks, PDF/DXF/DWG export, headless CLI |
 | *MVP release gate* | *One real panel drawn end to end; BOM and wire list match it; checks clean* |
 | M5 Panel layout | 2D mounting plate, DIN rails, ducts, parts at scale, cables |
