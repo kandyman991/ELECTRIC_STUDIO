@@ -155,6 +155,9 @@ pub enum UiEvent {
         spec: ecad_model::library::BlackBox,
     },
     /// How new tags and wire numbers are formed.
+    WireLengths {
+        settings: ecad_model::WireLengthSettings,
+    },
     Naming {
         naming: ecad_model::Naming,
     },
@@ -348,6 +351,9 @@ pub enum SelectionInfo {
         core: String,
         /// Whether its middle run was moved (it can be straightened).
         bent: bool,
+        /// The estimated length from the panel layout (`650 mm along ducts`), if both ends are
+        /// on a plate.
+        length: Option<String>,
     },
     /// A location box: its label and the devices drawn inside it.
     Box { label: String, devices: Vec<String> },
@@ -465,6 +471,7 @@ pub struct Frame {
     pub project_name: String,
     pub info: ecad_model::ProjectInfo,
     pub naming: ecad_model::Naming,
+    pub wire_lengths: ecad_model::WireLengthSettings,
     pub sheet: SheetGrid,
     /// The project's checks, errors first; updated on every change.
     pub checks: Vec<CheckInfo>,
@@ -729,6 +736,10 @@ impl Session {
             }
             UiEvent::CreateBlackBox { spec } => {
                 let r = self.editor.create_black_box(&spec);
+                self.report(r);
+            }
+            UiEvent::WireLengths { settings } => {
+                let r = self.editor.set_wire_lengths(settings);
                 self.report(r);
             }
             UiEvent::Naming { naming } => {
@@ -1184,6 +1195,9 @@ impl Session {
                         .unwrap_or_default(),
                     core: c.spec.cable.as_ref().map(|k| k.core.clone()).unwrap_or_default(),
                     bent: c.bend.is_some(),
+                    length: project.wire_lengths().get(&c.id).map(|l| {
+                        format!("{} mm {}", l.mm.round(), if l.direct { "measured straight" } else { "along ducts" })
+                    }),
                 })
             }
         }
@@ -1304,6 +1318,7 @@ impl Session {
             project_name: project.name.clone(),
             info: project.info.clone(),
             naming: project.naming.clone(),
+            wire_lengths: project.wire_length_settings,
             sheet: SheetGrid {
                 columns: project.sheet.columns,
                 first_column: project.sheet.first_column,
@@ -1483,6 +1498,7 @@ mod tests {
                 cable: String::new(),
                 core: String::new(),
                 bent: false,
+                length: None,
             })
         );
         s.handle(UiEvent::TidyWires);
@@ -1809,6 +1825,21 @@ mod tests {
         }
         let f = s.frame(None, [0, 0, 0]);
         assert_eq!((f.info.customer.as_str(), f.sheet.rows, f.pages[0].subtitle.as_str()), ("", 0, ""));
+    }
+
+    #[test]
+    fn wire_length_settings_are_set_undoably_and_checked() {
+        let (_dir, mut s) = session();
+        let settings = ecad_model::WireLengthSettings { spare_per_end: 100.0, round_to: 10.0 };
+        s.handle(UiEvent::WireLengths { settings });
+        assert_eq!(s.frame(None, [0, 0, 0]).wire_lengths, settings);
+        assert_eq!(s.editor().undo_label(), Some("Wire lengths"));
+        s.handle(UiEvent::WireLengths {
+            settings: ecad_model::WireLengthSettings { spare_per_end: -5.0, round_to: 10.0 },
+        });
+        assert!(s.frame(None, [0, 0, 0]).status.contains("0 or more"));
+        s.handle(UiEvent::Key { key: KeyName::Undo });
+        assert_eq!(s.frame(None, [0, 0, 0]).wire_lengths, ecad_model::WireLengthSettings::default());
     }
 
     #[test]

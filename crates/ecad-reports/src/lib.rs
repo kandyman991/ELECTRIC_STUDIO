@@ -16,11 +16,16 @@ pub struct WireListRow {
     /// The cable's tag and the core, when the wire runs in a cable.
     pub cable: String,
     pub core: String,
+    /// The estimated length in mm from the panel layout, empty when an end isn't on a plate.
+    pub length: String,
+    /// How the length was measured: `ducts`, `straight` (no ducts join the ends) or empty.
+    pub route: String,
 }
 
 /// One row per connection, sorted by wire number.
 pub fn wire_list(project: &Project) -> Result<Vec<WireListRow>, ModelError> {
     let potentials = project.potentials();
+    let lengths = project.wire_lengths();
     project
         .connections
         .values()
@@ -35,6 +40,10 @@ pub fn wire_list(project: &Project) -> Result<Vec<WireListRow>, ModelError> {
                 .as_ref()
                 .map(|k| (project.cables.get(&k.cable).map(|c| c.tag.clone()).unwrap_or_default(), k.core.clone()))
                 .unwrap_or_default();
+            let (length, route) = lengths
+                .get(&c.id)
+                .map(|l| (format!("{}", l.mm.round()), if l.direct { "straight" } else { "ducts" }.to_owned()))
+                .unwrap_or_default();
             Ok(WireListRow {
                 wire: c.wire_number.clone().unwrap_or_default(),
                 potential,
@@ -46,6 +55,8 @@ pub fn wire_list(project: &Project) -> Result<Vec<WireListRow>, ModelError> {
                 colour: c.spec.colour.clone(),
                 cable,
                 core,
+                length,
+                route,
             })
         })
         .collect::<Result<Vec<_>, _>>()
@@ -60,8 +71,9 @@ fn csv_field(s: &str) -> String {
 }
 
 pub fn wire_list_csv(rows: &[WireListRow]) -> String {
-    let mut out =
-        String::from("wire,potential,from_device,from_point,to_device,to_point,cross_section,colour,cable,core\n");
+    let mut out = String::from(
+        "wire,potential,from_device,from_point,to_device,to_point,cross_section,colour,cable,core,length_mm,route\n",
+    );
     for r in rows {
         let fields = [
             &r.wire,
@@ -74,6 +86,8 @@ pub fn wire_list_csv(rows: &[WireListRow]) -> String {
             &r.colour,
             &r.cable,
             &r.core,
+            &r.length,
+            &r.route,
         ];
         out += &fields.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(",");
         out.push('\n');
@@ -432,8 +446,59 @@ pub fn panel_cut_list_csv(rows: &[CutRow]) -> String {
     out
 }
 
+/// Wire to buy: the estimated lengths added up by cross-section and colour.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WireTotalRow {
+    pub cross_section: String,
+    pub colour: String,
+    pub wires: usize,
+    /// Metres, from the wires with an estimate.
+    pub metres: f64,
+    /// Wires of this kind without an estimate (an end isn't on a plate).
+    pub not_estimated: usize,
+}
+
+/// Wire totals by cross-section and colour, from the estimated lengths. Wires in a cable are
+/// left out: their cores come with the cable.
+pub fn wire_totals(project: &Project) -> Vec<WireTotalRow> {
+    let lengths = project.wire_lengths();
+    let mut rows: std::collections::BTreeMap<(String, String), WireTotalRow> = Default::default();
+    for c in project.connections.values().filter(|c| c.spec.cable.is_none()) {
+        let key = (c.spec.cross_section.clone(), c.spec.colour.clone());
+        let row = rows.entry(key.clone()).or_insert(WireTotalRow {
+            cross_section: key.0,
+            colour: key.1,
+            wires: 0,
+            metres: 0.0,
+            not_estimated: 0,
+        });
+        row.wires += 1;
+        match lengths.get(&c.id) {
+            Some(l) => row.metres += l.mm / 1000.0,
+            None => row.not_estimated += 1,
+        }
+    }
+    rows.into_values().collect()
+}
+
+pub fn wire_totals_csv(rows: &[WireTotalRow]) -> String {
+    let mut out = String::from("cross_section,colour,wires,metres,not_estimated\n");
+    for r in rows {
+        let fields = [
+            r.cross_section.clone(),
+            r.colour.clone(),
+            r.wires.to_string(),
+            format!("{:.1}", r.metres),
+            r.not_estimated.to_string(),
+        ];
+        out += &fields.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(",");
+        out.push('\n');
+    }
+    out
+}
+
 /// Report names, as `ecad report` takes them and as their file names (`<name>.csv`).
-pub const REPORTS: [&str; 8] = [
+pub const REPORTS: [&str; 9] = [
     "wire-list",
     "bom",
     "terminal-diagram",
@@ -442,6 +507,7 @@ pub const REPORTS: [&str; 8] = [
     "table-of-contents",
     "devices-without-parts",
     "panel-cut-list",
+    "wire-totals",
 ];
 
 /// One report as CSV, by name (see [`REPORTS`]); `None` for an unknown name. A report with no
@@ -456,6 +522,7 @@ pub fn csv(project: &Project, name: &str) -> Result<Option<String>, ModelError> 
         "table-of-contents" => table_of_contents_csv(project),
         "devices-without-parts" => devices_without_parts_csv(&devices_without_parts(project)),
         "panel-cut-list" => panel_cut_list_csv(&panel_cut_list(project)),
+        "wire-totals" => wire_totals_csv(&wire_totals(project)),
         _ => return Ok(None),
     }))
 }
@@ -484,6 +551,10 @@ pub fn all_csv(project: &Project) -> Result<Vec<(&'static str, String)>, ModelEr
     let cuts = panel_cut_list(project);
     if !cuts.is_empty() {
         files.push(("panel-cut-list.csv", panel_cut_list_csv(&cuts)));
+    }
+    // Totals only mean something once wires have lengths, i.e. with a panel layout.
+    if !project.wire_lengths().is_empty() {
+        files.push(("wire-totals.csv", wire_totals_csv(&wire_totals(project))));
     }
     Ok(files)
 }
@@ -523,11 +594,31 @@ mod tests {
         let csv = wire_list_csv(&wire_list(&start_circuit().unwrap()).unwrap());
         assert_eq!(
             csv,
-            "wire,potential,from_device,from_point,to_device,to_point,cross_section,colour,cable,core\n\
-             W1,L+,L+,1,-S1,13,,,,\n\
-             W2,,-S1,14,-K1,A1,,,,\n\
-             W3,M,-K1,A2,M,1,,,,\n"
+            "wire,potential,from_device,from_point,to_device,to_point,cross_section,colour,cable,core,length_mm,route\n\
+             W1,L+,L+,1,-S1,13,,,,,,\n\
+             W2,,-S1,14,-K1,A1,,,,,,\n\
+             W3,M,-K1,A2,M,1,,,,,,\n"
         );
+    }
+
+    #[test]
+    fn the_reference_wires_get_lengths_and_add_up_to_totals() {
+        let p = ecad_model::reference::reference_project().unwrap();
+        let rows = wire_list(&p).unwrap();
+        let p201 = rows.iter().find(|r| r.wire == "P201" && r.from_tag == "P2QS1").unwrap();
+        assert_eq!(p201.route, "ducts");
+        assert!(p201.length.parse::<f64>().unwrap() >= 300.0);
+        // A motor's wires leave the cabinet: no estimate.
+        assert!(rows.iter().filter(|r| r.to_tag == "M3").all(|r| r.length.is_empty()));
+        // Totals are the wire list's lengths added up, in metres; wires in cables are left out.
+        let totals = wire_totals(&p);
+        let listed: f64 =
+            rows.iter().filter(|r| r.cable.is_empty()).filter_map(|r| r.length.parse::<f64>().ok()).sum::<f64>()
+                / 1000.0;
+        let summed: f64 = totals.iter().map(|t| t.metres).sum();
+        assert!((listed - summed).abs() < 0.01, "{listed} {summed}");
+        let names: Vec<&str> = all_csv(&p).unwrap().iter().map(|(n, _)| *n).collect();
+        assert!(names.contains(&"panel-cut-list.csv") && names.contains(&"wire-totals.csv"), "{names:?}");
     }
 
     #[test]

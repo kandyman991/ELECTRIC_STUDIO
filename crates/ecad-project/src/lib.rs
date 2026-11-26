@@ -54,7 +54,13 @@ struct ProjectFile {
     /// Tag and wire number formats; missing in projects saved before G1b.
     #[serde(default, skip_serializing_if = "is_default_naming")]
     naming: Naming,
+    #[serde(default, skip_serializing_if = "is_default_wire_lengths")]
+    wire_lengths: ecad_model::WireLengthSettings,
     pages: Vec<Page>,
+}
+
+fn is_default_wire_lengths(s: &ecad_model::WireLengthSettings) -> bool {
+    *s == ecad_model::WireLengthSettings::default()
 }
 
 fn is_default_naming(n: &Naming) -> bool {
@@ -134,6 +140,7 @@ pub fn save(project: &Project, dir: &Path) -> Result<()> {
         sheet: Some(project.sheet),
         info: project.info.clone(),
         naming: project.naming.clone(),
+        wire_lengths: project.wire_length_settings,
         pages,
     };
     write_json(&dir.join("project.json"), &head)?;
@@ -184,6 +191,7 @@ pub fn load(dir: &Path) -> Result<Project> {
     project.info = head.info;
     // Before the wires load, so per-potential numbering allows shared numbers.
     project.naming = head.naming;
+    project.wire_length_settings = head.wire_lengths;
     for page in head.pages {
         project.add_page(page);
     }
@@ -282,7 +290,8 @@ mod tests {
         save(&plc, other.path()).unwrap();
         assert_eq!(load(other.path()).unwrap(), plc);
         // The reference project: contact blocks, bridges, mirrored drawings, the layout page.
-        let reference = ecad_model::reference::reference_project().unwrap();
+        let mut reference = ecad_model::reference::reference_project().unwrap();
+        reference.wire_length_settings = ecad_model::WireLengthSettings { spare_per_end: 200.0, round_to: 100.0 };
         let third = tempfile::tempdir().unwrap();
         save(&reference, third.path()).unwrap();
         assert_eq!(load(third.path()).unwrap(), reference);

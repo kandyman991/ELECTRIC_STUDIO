@@ -6,6 +6,7 @@
 pub mod geometry;
 pub mod history;
 pub mod layout;
+pub mod lengths;
 pub mod library;
 pub mod naming;
 pub mod panel;
@@ -19,6 +20,7 @@ pub mod symbol;
 
 pub use geometry::{Direction, Point, Rotation};
 pub use history::History;
+pub use lengths::{WireLength, WireLengthSettings};
 pub use naming::{Naming, WireNumbering};
 pub use panel::{Panel, PanelItem, PanelItemKind};
 pub use parts::{Part, PartRef};

@@ -348,6 +348,8 @@ pub enum Command {
     SetSheet(Sheet),
     /// How new tags and wire numbers are formed.
     SetNaming(crate::Naming),
+    /// How wire lengths are estimated.
+    SetWireLengthSettings(crate::WireLengthSettings),
     /// Put the pages in this order (every page, once).
     ReorderPages(Vec<PageId>),
     /// Make a function part of another device, with the designations it gets there.
@@ -420,6 +422,8 @@ pub enum ModelError {
     NoPage(PageId),
     #[error("a tag or wire number format needs one {{n}} (or {{n:02}}) and only {{page}} and {{letters}} (tags only)")]
     InvalidNaming,
+    #[error("a wire's spare length and rounding must be 0 or more")]
+    InvalidWireLengthSettings,
     #[error("the project name must not be empty")]
     EmptyProjectName,
     #[error("a sheet has 1 to 50 columns, numbered from 0 or 1, and up to 26 rows")]
@@ -534,6 +538,9 @@ pub struct Project {
     /// How new tags and wire numbers are formed.
     #[serde(default)]
     pub naming: crate::Naming,
+    /// How wire lengths are estimated from the panel layout.
+    #[serde(default)]
+    pub wire_length_settings: crate::WireLengthSettings,
     /// Cables, by id; wires refer to their cores.
     #[serde(default)]
     pub cables: BTreeMap<CableId, Cable>,
@@ -1088,6 +1095,12 @@ impl Project {
                     return Err(ModelError::InvalidNaming);
                 }
                 Ok(Command::SetNaming(std::mem::replace(&mut self.naming, naming)))
+            }
+            Command::SetWireLengthSettings(settings) => {
+                if !settings.is_valid() {
+                    return Err(ModelError::InvalidWireLengthSettings);
+                }
+                Ok(Command::SetWireLengthSettings(std::mem::replace(&mut self.wire_length_settings, settings)))
             }
             Command::SetSheet(sheet) => {
                 if !sheet.is_valid() {
