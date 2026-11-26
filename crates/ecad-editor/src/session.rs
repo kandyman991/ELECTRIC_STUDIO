@@ -164,6 +164,10 @@ pub enum SelectionInfo {
         number: Option<String>,
         from: String,
         to: String,
+        /// The potential's name (`L+`), if it has one.
+        potential: Option<String>,
+        /// Set when differently named potentials are connected on this wire's potential.
+        warning: Option<String>,
     },
 }
 
@@ -498,6 +502,15 @@ impl Session {
                             Some(vec![Reference { label: format!("Coil at {at}"), page: m.page }])
                         })
                         .unwrap_or_default(),
+                    // Potential and interruption points: the device's other drawings.
+                    Role::Potential | Role::Interruption => project
+                        .functions_of(d.id)
+                        .filter(|g| g.id != f.id)
+                        .filter_map(|g| {
+                            let at = project.function_location(g.id).ok()?;
+                            Some(Reference { label: format!("Also at {at}"), page: g.page })
+                        })
+                        .collect(),
                     Role::Single => Vec::new(),
                 };
                 Some(SelectionInfo::Device {
@@ -507,6 +520,8 @@ impl Session {
                     role: match role {
                         Role::Main => "main",
                         Role::Contact { .. } => "contact",
+                        Role::Potential => "potential",
+                        Role::Interruption => "interruption",
                         Role::Single => "single",
                     }
                     .into(),
@@ -516,7 +531,14 @@ impl Session {
             Selected::Connection(c) => {
                 let c = project.connection(c).ok()?;
                 let end = |r| project.describe(r).map(|(t, p)| format!("{t}:{p}")).unwrap_or_default();
-                Some(SelectionInfo::Wire { number: c.wire_number.clone(), from: end(&c.from), to: end(&c.to) })
+                let potential = self.editor.potential_of(c.id);
+                Some(SelectionInfo::Wire {
+                    number: c.wire_number.clone(),
+                    from: end(&c.from),
+                    to: end(&c.to),
+                    potential: potential.as_ref().and_then(|p| p.name()),
+                    warning: potential.as_ref().and_then(|p| p.conflict()),
+                })
             }
         }
     }
@@ -695,7 +717,7 @@ mod tests {
         let f = s.frame(None, [0, 0, 0]);
         assert_eq!(f.title, "Panel A");
         assert_eq!(s.editor().project().functions.len(), 0);
-        assert_eq!(f.palette.len(), 4, "starter symbols are available");
+        assert_eq!(f.palette.len(), 6, "starter symbols are available");
         assert!(path.join("project.json").exists());
 
         // New into a folder that already has a project is refused.
@@ -729,7 +751,13 @@ mod tests {
         s.handle(UiEvent::PointerUp { x, y, button: Button::Primary });
         assert_eq!(
             s.frame(None, [0, 0, 0]).selection,
-            Some(SelectionInfo::Wire { number: Some("W2".into()), from: "-S1:14".into(), to: "-K1:A1".into() })
+            Some(SelectionInfo::Wire {
+                number: Some("W2".into()),
+                from: "-S1:14".into(),
+                to: "-K1:A1".into(),
+                potential: None,
+                warning: None
+            })
         );
         s.handle(UiEvent::NumberWire { number: "W1".into() });
         assert_eq!(s.frame(None, [0, 0, 0]).status, "wire number `W1` is already used");
@@ -823,6 +851,32 @@ mod tests {
         let Some(SelectionInfo::Device { role, references, tag, .. }) = f.selection else { panic!("contact selected") };
         assert_eq!((role.as_str(), tag.as_str()), ("contact", "-K1"));
         assert!(references[0].label.starts_with("Coil at 1."), "{references:?}");
+    }
+
+    #[test]
+    fn wires_show_their_potential_and_points_list_their_other_drawings() {
+        let dir = tempfile::tempdir().unwrap();
+        ecad_project::save(&ecad_model::sample::with_potentials().unwrap(), dir.path()).unwrap();
+        let mut s = Session::open(dir.path()).unwrap();
+        s.handle(UiEvent::Resize { width: 800.0, height: 600.0 });
+        let click = |s: &mut Session, p: Point| {
+            let (x, y) = s.view().to_screen(p);
+            s.handle(UiEvent::PointerDown { x, y, button: Button::Primary });
+            s.handle(UiEvent::PointerUp { x, y, button: Button::Primary });
+        };
+        click(&mut s, Point::new(0.2, 56.0)); // W1, from L+
+        let Some(SelectionInfo::Wire { potential, warning, .. }) = s.frame(None, [0, 0, 0]).selection else {
+            panic!("wire selected")
+        };
+        assert_eq!((potential.as_deref(), warning), (Some("L+"), None));
+
+        click(&mut s, Point::new(0.0, 64.0)); // the L+ point itself
+        let Some(SelectionInfo::Device { role, references, .. }) = s.frame(None, [0, 0, 0]).selection else {
+            panic!("point selected")
+        };
+        assert_eq!(role, "potential");
+        assert_eq!(references.len(), 1, "L+ is also drawn on page 2");
+        assert!(references[0].label.starts_with("Also at 2."), "{references:?}");
     }
 
     #[test]

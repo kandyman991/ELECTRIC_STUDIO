@@ -37,6 +37,8 @@ if needed.
 | Pages | Left panel: click to show, Add, Delete, ▲ ▼ to reorder; PageUp / PageDown |
 | Contacts of a coil | Select the coil, "Add normally open/closed contact" in the right panel, then click on any page; click a listed contact to jump to it |
 | Move a contact to a coil | Select the contact, type the coil's tag in "Belongs to device" |
+| Potentials | Select a wire: its potential is highlighted on the page and named in the right panel |
+| Same potential or interruption point on another page | Select it, "Add another point", click on any page |
 | Pan, zoom, fit | Middle-drag, wheel, F |
 | Edit tag, description, wire number | Select, edit in the right panel; applied when the field loses focus (Enter, Tab or a click) |
 

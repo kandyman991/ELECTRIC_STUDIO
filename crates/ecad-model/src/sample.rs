@@ -20,6 +20,9 @@ pub fn symbols() -> Vec<SymbolDef> {
             description: "Relay or contactor coil".into(),
             tag_prefix: "-K".into(),
             role: Role::Main,
+            bridged: false,
+            hide_tag: false,
+            hide_point_labels: false,
             graphics: vec![
                 line(-5.0, -3.0, 5.0, -3.0),
                 line(5.0, -3.0, 5.0, 3.0),
@@ -35,6 +38,9 @@ pub fn symbols() -> Vec<SymbolDef> {
             description: "Normally open contact".into(),
             tag_prefix: "-S".into(),
             role: Role::Contact { kind: ContactKind::NormallyOpen },
+            bridged: false,
+            hide_tag: false,
+            hide_point_labels: false,
             graphics: vec![
                 line(0.0, 8.0, 0.0, 3.0),
                 line(0.0, 3.0, -3.0, -3.0),
@@ -48,6 +54,9 @@ pub fn symbols() -> Vec<SymbolDef> {
             description: "Normally closed contact".into(),
             tag_prefix: "-S".into(),
             role: Role::Contact { kind: ContactKind::NormallyClosed },
+            bridged: false,
+            hide_tag: false,
+            hide_point_labels: false,
             graphics: vec![
                 line(0.0, 8.0, 0.0, 3.0),
                 line(0.0, 3.0, 2.5, 3.0),
@@ -59,11 +68,52 @@ pub fn symbols() -> Vec<SymbolDef> {
         },
         SymbolDef {
             id: SymbolId::new("iec.supply"),
-            description: "Supply connection".into(),
-            tag_prefix: "-X".into(),
-            role: Role::Single,
+            description: "Potential point".into(),
+            tag_prefix: "P".into(),
+            role: Role::Potential,
+            bridged: false,
+            hide_tag: false,
+            hide_point_labels: true,
             graphics: vec![line(-2.0, 0.0, 2.0, 0.0)],
             connection_points: vec![cp("1", 0.0, 0.0, Direction::Down)],
+        },
+        SymbolDef {
+            id: SymbolId::new("iec.junction"),
+            description: "Junction".into(),
+            tag_prefix: "J".into(),
+            role: Role::Single,
+            bridged: true,
+            hide_tag: true,
+            hide_point_labels: true,
+            graphics: vec![
+                // Concentric rings read as a solid dot at drawing scale.
+                Graphic::Circle { center: Point::ZERO, radius: 0.2 },
+                Graphic::Circle { center: Point::ZERO, radius: 0.4 },
+                Graphic::Circle { center: Point::ZERO, radius: 0.6 },
+                Graphic::Circle { center: Point::ZERO, radius: 0.8 },
+            ],
+            connection_points: vec![
+                cp("1", 0.0, 0.0, Direction::Up),
+                cp("2", 0.0, 0.0, Direction::Down),
+                cp("3", 0.0, 0.0, Direction::Left),
+                cp("4", 0.0, 0.0, Direction::Right),
+            ],
+        },
+        SymbolDef {
+            id: SymbolId::new("iec.interruption"),
+            description: "Interruption point".into(),
+            tag_prefix: "I".into(),
+            role: Role::Interruption,
+            bridged: false,
+            hide_tag: false,
+            hide_point_labels: true,
+            graphics: vec![
+                line(0.0, 0.0, 0.0, -2.0),
+                line(-2.0, -2.0, 2.0, -2.0),
+                line(2.0, -2.0, 0.0, -5.0),
+                line(0.0, -5.0, -2.0, -2.0),
+            ],
+            connection_points: vec![cp("1", 0.0, 0.0, Direction::Up)],
         },
     ]
 }
@@ -80,10 +130,10 @@ pub fn start_circuit() -> Result<Project> {
     p.add_page(Page { id: PAGE_1, name: "1".into(), description: "Start circuit".into(), order: 0 });
 
     let devices = [
-        (0x101, "-X1:L+", "24 V DC supply", "iec.supply", 0x201, (0.0, 64.0), Rotation::R0),
+        (0x101, "L+", "24 V DC", "iec.supply", 0x201, (0.0, 64.0), Rotation::R0),
         (0x102, "-S1", "Start", "iec.contact_no", 0x202, (0.0, 40.0), Rotation::R0),
         (0x103, "-K1", "Motor contactor", "iec.coil", 0x203, (0.0, 12.0), Rotation::R0),
-        (0x104, "-X1:M", "0 V", "iec.supply", 0x204, (0.0, -12.0), Rotation::R180),
+        (0x104, "M", "0 V", "iec.supply", 0x204, (0.0, -12.0), Rotation::R180),
     ];
     for (dev, tag, desc, sym, fun, (x, y), rotation) in devices {
         let device =
@@ -141,6 +191,59 @@ pub fn with_contacts() -> Result<Project> {
             position: Point::new(coil.x + dx, coil.y),
             rotation: Rotation::R0,
             designations,
+        })?;
+    }
+    Ok(p)
+}
+
+pub const JUNCTION_1: FunctionId = FunctionId::from_u128(0x20b);
+
+/// [`with_contacts`] wired up across both pages, to show potentials:
+/// - page 2: L+ drawn again, feeding -K1's NO contact (W4); its other side (W5) ends in
+///   interruption point I1;
+/// - page 1: I1 continues (W6) into a second coil -K2, whose return (W7) meets -K1's at a
+///   junction on the way to M (W3, W8).
+pub fn with_potentials() -> Result<Project> {
+    let mut p = with_contacts()?;
+    let fid = FunctionId::from_u128;
+    let add = |p: &mut Project, dev: u128, tag: &str, sym: &str, f: u128, page, (x, y), rotation| -> Result<()> {
+        let device = DeviceId::from_u128(dev);
+        if p.device(device).is_err() {
+            p.add_device(Device { id: device, tag: tag.into(), description: String::new() })?;
+        }
+        p.place(Function {
+            id: fid(f),
+            device,
+            symbol: SymbolId::new(sym),
+            page,
+            position: Point::new(x, y),
+            rotation,
+            designations: Default::default(),
+        })?;
+        Ok(())
+    };
+    add(&mut p, 0x101, "L+", "iec.supply", 0x207, PAGE_2, (40.0, 36.0), Rotation::R0)?;
+    add(&mut p, 0x107, "I1", "iec.interruption", 0x208, PAGE_2, (40.0, -12.0), Rotation::R0)?;
+    add(&mut p, 0x107, "I1", "iec.interruption", 0x209, PAGE_1, (40.0, 40.0), Rotation::R180)?;
+    add(&mut p, 0x108, "-K2", "iec.coil", 0x20a, PAGE_1, (40.0, 12.0), Rotation::R0)?;
+    add(&mut p, 0x109, "J1", "iec.junction", 0x20b, PAGE_1, (0.0, -8.0), Rotation::R0)?;
+
+    // Re-route W3 through the junction.
+    p.apply(Command::Disconnect(ConnectionId::from_u128(0x303)))?;
+    let wires = [
+        (0x303, "W3", (0x203, "A2"), (0x20b, "1")),
+        (0x304, "W4", (0x207, "1"), (0x205, "13")),
+        (0x305, "W5", (0x205, "14"), (0x208, "1")),
+        (0x306, "W6", (0x209, "1"), (0x20a, "A1")),
+        (0x307, "W7", (0x20a, "A2"), (0x20b, "4")),
+        (0x308, "W8", (0x20b, "2"), (0x204, "1")),
+    ];
+    for (id, number, (fa, pa), (fb, pb)) in wires {
+        p.connect(Connection {
+            id: ConnectionId::from_u128(id),
+            from: ConnectionRef::new(fid(fa), pa),
+            to: ConnectionRef::new(fid(fb), pb),
+            wire_number: Some(number.into()),
         })?;
     }
     Ok(p)

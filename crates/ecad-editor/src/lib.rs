@@ -8,7 +8,7 @@
 
 use ecad_model::{
     Command, Connection, ConnectionId, ConnectionRef, Device, DeviceId, Direction, Function, FunctionId, History,
-    ModelError, Page, PageId, Point, Project, Rotation, SymbolId, route_between,
+    ModelError, Page, PageId, Point, Potential, Project, Rotation, SymbolId, route_between,
 };
 pub use ecad_view::{Primitive, Shape};
 pub use session::{Button, Choice, Frame, KeyName, PageInfo, PaletteItem, SelectionInfo, Session, UiEvent};
@@ -97,6 +97,10 @@ pub enum Overlay {
     Ghost {
         lines: Vec<(Point, Point)>,
     },
+    /// A wire on the same potential as the selected one.
+    Potential {
+        points: Vec<Point>,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -123,6 +127,8 @@ pub struct Editor {
     /// How close (mm) the pointer must be to hit something; shells set it from the zoom.
     pub hit_tolerance: f64,
     revision: u64,
+    /// Potentials computed for `revision`; recomputed only after a change.
+    potentials: std::cell::RefCell<Option<(u64, Vec<Potential>)>>,
     /// Undo depth at the last save; `None` once that state can't be reached by undo/redo.
     saved_at: Option<usize>,
     /// Increases on every model change and page switch: what the drawing depends on.
@@ -178,6 +184,7 @@ impl Editor {
             hit_tolerance: 1.5,
             revision: 0,
             saved_at: Some(0),
+            potentials: std::cell::RefCell::new(None),
             scene: 0,
             status: String::new(),
         })
@@ -473,6 +480,20 @@ impl Editor {
         self.forget_missing();
     }
 
+    /// The project's potentials, computed once per change.
+    pub fn with_potentials<R>(&self, f: impl FnOnce(&[Potential]) -> R) -> R {
+        let mut cache = self.potentials.borrow_mut();
+        if cache.as_ref().is_none_or(|(rev, _)| *rev != self.revision) {
+            *cache = Some((self.revision, self.project.potentials()));
+        }
+        f(cache.as_ref().map_or(&[], |(_, p)| p.as_slice()))
+    }
+
+    /// The potential of a wire.
+    pub fn potential_of(&self, c: ConnectionId) -> Option<Potential> {
+        self.with_potentials(|all| all.iter().find(|p| p.connections.contains(&c)).cloned())
+    }
+
     // ---- what to draw on top of the page ----
 
     pub fn overlays(&self) -> Vec<Overlay> {
@@ -514,6 +535,18 @@ impl Editor {
                 }
             }
             Some(Selected::Connection(c)) => {
+                // The rest of its potential on this page, under the selected wire.
+                if let Some(pot) = self.potential_of(c) {
+                    for other in pot.connections.iter().filter(|o| **o != c) {
+                        let on_page = self
+                            .project
+                            .connection(*other)
+                            .is_ok_and(|w| self.project.function(w.from.function).is_ok_and(|f| f.page == self.page));
+                        if on_page && let Some(points) = self.wire_points(*other) {
+                            out.push(Overlay::Potential { points });
+                        }
+                    }
+                }
                 if let Some(points) = self.wire_points(c) {
                     out.push(Overlay::Wire { points, selected: true });
                 }
@@ -554,11 +587,19 @@ impl Editor {
         let tol = self.hit_tolerance;
         let near = |q: Point| ((p.x - q.x).powi(2) + (p.y - q.y).powi(2)).sqrt() <= tol;
         let functions: Vec<&Function> = self.project.functions_on(self.page).collect();
+        // Several points can sit on one spot (a junction's four): prefer one without a wire.
+        let mut points = Vec::new();
         for f in &functions {
             let Ok(sym) = self.project.symbol(&f.symbol) else { continue };
-            if let Some(cp) = sym.connection_points.iter().find(|cp| near(f.to_page(cp.at))) {
-                return Some(Hit::Point(ConnectionRef::new(f.id, &cp.name)));
-            }
+            points.extend(
+                sym.connection_points
+                    .iter()
+                    .filter(|cp| near(f.to_page(cp.at)))
+                    .map(|cp| ConnectionRef::new(f.id, &cp.name)),
+            );
+        }
+        if let Some(free) = points.iter().find(|r| self.project.connection_at(r).is_none()).or(points.first()) {
+            return Some(Hit::Point(free.clone()));
         }
         for f in &functions {
             if let Some((lo, hi)) = self.function_box(f.id)

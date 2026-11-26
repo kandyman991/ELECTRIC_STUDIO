@@ -1,6 +1,8 @@
 //! `ecad`: headless commands.
 //!
-//! - `ecad new-sample <project-dir>`: write the sample project as a project folder
+//! - `ecad new-sample <project-dir> [start|contacts|potentials]`: write a sample project:
+//!   the start circuit (default), plus -K1's contacts on page 2, plus potentials and an
+//!   interruption point across both pages
 //! - `ecad check <project-dir>`: load a project and report what it contains
 //! - `ecad export <project-dir> <out-dir>`: each page as DXF and PNG, plus the wire list
 //! - `ecad demo <out-dir>`: `export` for the built-in sample, without a project folder
@@ -10,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const USAGE: &str = "usage:
-  ecad new-sample <project-dir>
+  ecad new-sample <project-dir> [start|contacts|potentials]
   ecad check <project-dir>
   ecad export <project-dir> <out-dir>
   ecad demo <out-dir>";
@@ -38,8 +40,15 @@ fn export(project: &Project, out: &Path) -> Result<(), String> {
 
 fn run(args: &[String]) -> Result<(), String> {
     match args {
-        [cmd, dir] if cmd == "new-sample" => {
-            let project = ecad_model::sample::start_circuit().map_err(|e| e.to_string())?;
+        [cmd, dir, rest @ ..] if cmd == "new-sample" && rest.len() <= 1 => {
+            use ecad_model::sample;
+            let project = match rest.first().map(String::as_str) {
+                None | Some("start") => sample::start_circuit(),
+                Some("contacts") => sample::with_contacts(),
+                Some("potentials") => sample::with_potentials(),
+                Some(other) => return Err(format!("unknown sample `{other}`\n{USAGE}")),
+            }
+            .map_err(|e| e.to_string())?;
             ecad_project::save(&project, Path::new(dir)).map_err(|e| e.to_string())?;
             println!("wrote project {dir}");
             Ok(())

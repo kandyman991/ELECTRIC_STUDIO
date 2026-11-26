@@ -90,6 +90,13 @@ fn cross_references_on_both_pages() {
 }
 
 #[test]
+fn potentials_across_both_pages() {
+    let p = ecad_model::sample::with_potentials().unwrap();
+    check(&p, "with_potentials_page1");
+    check_page(&p, ecad_model::sample::PAGE_2, "with_potentials_page2");
+}
+
+#[test]
 fn dxf_output_is_deterministic() {
     let p = start_circuit().unwrap();
     assert_eq!(ecad_view::page_dxf(&p, PAGE_1).unwrap(), ecad_view::page_dxf(&p, PAGE_1).unwrap());

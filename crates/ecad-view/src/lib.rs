@@ -108,7 +108,15 @@ fn cross_reference_lines(project: &Project, f: ecad_model::FunctionId, role: Rol
             Some(main) => vec![(0, format!("/{}", project.function_location(main.id)?))],
             None => Vec::new(),
         },
-        Role::Single => Vec::new(),
+        // An interruption point shows where its partners are.
+        Role::Interruption => project
+            .functions_of(device)
+            .filter(|g| g.id != f)
+            .filter_map(|g| project.function_location(g.id).ok())
+            .enumerate()
+            .map(|(i, at)| (i, format!("/{at}")))
+            .collect(),
+        Role::Single | Role::Potential => Vec::new(),
     })
 }
 
@@ -181,8 +189,10 @@ pub fn page_drawing(project: &Project, page: PageId) -> Result<Drawing> {
         for cp in &sym.connection_points {
             let (at, leaves) = project.connection_point(&ecad_model::ConnectionRef::new(f.id, &cp.name))?;
             sideways |= !leaves.is_vertical();
-            let label = point_label(at, leaves, f.designation(&cp.name));
-            d.add(&Space::Model, on(LAYER_TAGS), EntityKind::Text(label)).map_err(err)?;
+            if !sym.hide_point_labels {
+                let label = point_label(at, leaves, f.designation(&cp.name));
+                d.add(&Space::Model, on(LAYER_TAGS), EntityKind::Text(label)).map_err(err)?;
+            }
         }
         let (min, max) = project.function_bounds(f.id)?.unwrap_or((f.position, f.position));
         for line in cross_reference_lines(project, f.id, sym.role)? {
@@ -192,7 +202,8 @@ pub fn page_drawing(project: &Project, page: PageId) -> Result<Drawing> {
         let tag = Attrib {
             tag: "TAG".into(),
             text: tag_text(min, max, sideways, &device.tag),
-            invisible: false,
+            // Kept in the DXF even when not shown (junctions), so the drawing stays complete.
+            invisible: sym.hide_tag,
             constant: false,
             prompt: "Device tag".into(),
             props: Default::default(),
@@ -361,7 +372,7 @@ mod tests {
             })
             .collect();
         tags.sort();
-        assert_eq!(tags, ["-K1", "-S1", "-X1:L+", "-X1:M"]);
+        assert_eq!(tags, ["-K1", "-S1", "L+", "M"]);
         let wires = back.model.iter().filter(|e| e.common.layer == LAYER_WIRES).count();
         assert_eq!(wires, 3, "three straight wires in the unmoved sample");
     }
@@ -395,6 +406,25 @@ mod tests {
         // The contacts show their own terminal numbers.
         let labels = texts_on(&p, PAGE_2, LAYER_TAGS);
         assert!(["13", "14", "21", "22"].iter().all(|d| labels.contains(&d.to_string())), "{labels:?}");
+    }
+
+    #[test]
+    fn interruption_points_show_their_partner_and_junctions_hide_their_tag() {
+        use ecad_model::FunctionId;
+        use ecad_model::sample::{PAGE_2, with_potentials};
+        let p = with_potentials().unwrap();
+        let loc = |f: u128| p.function_location(FunctionId::from_u128(f)).unwrap();
+        // I1 on page 2 (0x208) points to page 1 (0x209) and back.
+        assert!(texts_on(&p, PAGE_2, LAYER_XREF).contains(&format!("/{}", loc(0x209))));
+        assert!(texts_on(&p, PAGE_1, LAYER_XREF).contains(&format!("/{}", loc(0x208))));
+        let d = page_drawing(&p, PAGE_1).unwrap();
+        let junction_tag = d.model.iter().find_map(|e| match &e.kind {
+            EntityKind::Insert(i) if i.block == "iec.junction" => {
+                i.attribs.first().map(|a| (a.text.value.clone(), a.invisible))
+            }
+            _ => None,
+        });
+        assert_eq!(junction_tag, Some(("J1".to_owned(), true)));
     }
 
     #[test]

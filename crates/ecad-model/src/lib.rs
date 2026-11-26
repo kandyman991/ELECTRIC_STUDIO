@@ -5,6 +5,7 @@
 
 pub mod geometry;
 pub mod history;
+pub mod potential;
 pub mod project;
 pub mod sample;
 pub mod sheet;
@@ -12,6 +13,7 @@ pub mod symbol;
 
 pub use geometry::{Direction, Point, Rotation};
 pub use history::History;
+pub use potential::Potential;
 pub use project::*;
 pub use sheet::Sheet;
 pub use symbol::*;

@@ -179,7 +179,7 @@ impl App {
         ui.heading("Selection");
         let key = frame.selection.as_ref().map(|sel| match sel {
             SelectionInfo::Device { tag, description, symbol, .. } => format!("device {tag} {description} {symbol}"),
-            SelectionInfo::Wire { number, from, to } => format!("wire {from} {to} {number:?}"),
+            SelectionInfo::Wire { number, from, to, .. } => format!("wire {from} {to} {number:?}"),
         });
         if key != self.fields.key {
             self.fields = Fields { key, ..Fields::default() };
@@ -243,12 +243,35 @@ impl App {
                         }
                         ui.small("Type a coil's tag, e.g. -K1, to make this one of its contacts.");
                     }
+                    "potential" | "interruption" => {
+                        ui.add_space(8.0);
+                        for r in references {
+                            if ui.link(&r.label).on_hover_text("Show this page").clicked() {
+                                events.push(UiEvent::ShowPage { id: r.page });
+                            }
+                        }
+                        if ui
+                            .button("Add another point")
+                            .on_hover_text(
+                                "Then click where it goes, on any page; all points of this name are connected",
+                            )
+                            .clicked()
+                        {
+                            events.push(UiEvent::AddContact { symbol: symbol.clone() });
+                        }
+                        let hint = if role == "potential" {
+                            "The tag is the potential's name: L+, M, L1…"
+                        } else {
+                            "Points with the same tag are connected across pages."
+                        };
+                        ui.small(hint);
+                    }
                     _ => {}
                 }
                 ui.add_space(8.0);
                 ui.label("R rotates, Delete removes.");
             }
-            Some(SelectionInfo::Wire { number, from, to }) => {
+            Some(SelectionInfo::Wire { number, from, to, potential, warning }) => {
                 ui.label("Wire number");
                 let edit = ui.text_edit_singleline(&mut self.fields.number);
                 if edit.lost_focus() && self.fields.number.trim() != number.as_deref().unwrap_or("") {
@@ -257,6 +280,12 @@ impl App {
                 ui.add_space(4.0);
                 ui.label(format!("From {from}"));
                 ui.label(format!("To {to}"));
+                ui.add_space(4.0);
+                ui.label(format!("Potential: {}", potential.as_deref().unwrap_or("unnamed")))
+                    .on_hover_text("Wires on the same potential are highlighted");
+                if let Some(w) = warning {
+                    ui.colored_label(Color32::from_rgb(255, 110, 90), format!("⚠ {w}"));
+                }
                 ui.add_space(8.0);
                 ui.label("Delete removes the wire.");
             }
@@ -440,6 +469,9 @@ fn paint(painter: &egui::Painter, rect: Rect, view: &Viewport, base: &[Primitive
             Overlay::Wire { points, selected } => {
                 let stroke = if *selected { Stroke::new(3.0, ACCENT) } else { Stroke::new(3.0, QUIET) };
                 painter.add(egui::Shape::line(points.iter().map(|p| at(*p)).collect(), stroke));
+            }
+            Overlay::Potential { points } => {
+                painter.add(egui::Shape::line(points.iter().map(|p| at(*p)).collect(), Stroke::new(2.5, TARGET)));
             }
             Overlay::RubberBand { points } => {
                 painter.add(egui::Shape::line(points.iter().map(|p| at(*p)).collect(), Stroke::new(1.5, TARGET)));
