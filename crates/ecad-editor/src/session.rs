@@ -160,6 +160,10 @@ pub enum UiEvent {
     },
     /// Number every wire again from the wire format.
     RenumberWires,
+    /// Move the page's wires off each other and out of symbols where a nearby route is clear.
+    TidyWires,
+    /// Put the selected wire's middle run back halfway.
+    StraightenWire,
     /// The sheet's columns (numbered from `first_column`, 0 or 1) and lettered rows (0: none).
     SheetGrid {
         columns: u32,
@@ -310,6 +314,8 @@ pub enum SelectionInfo {
         /// The cable's tag and the core, empty when the wire isn't in a cable.
         cable: String,
         core: String,
+        /// Whether its middle run was moved (it can be straightened).
+        bent: bool,
     },
     /// A location box: its label and the devices drawn inside it.
     Box { label: String, devices: Vec<String> },
@@ -632,6 +638,16 @@ impl Session {
             }
             UiEvent::Naming { naming } => {
                 let r = self.editor.set_naming(naming);
+                self.report(r);
+            }
+            UiEvent::TidyWires => match self.editor.tidy_wires() {
+                Ok(0) => self.message = Some("No wire needed moving".into()),
+                Ok(1) => self.message = Some("Moved 1 wire".into()),
+                Ok(n) => self.message = Some(format!("Moved {n} wires")),
+                Err(e) => self.report(Err(e)),
+            },
+            UiEvent::StraightenWire => {
+                let r = self.editor.straighten_selected_wire();
                 self.report(r);
             }
             UiEvent::RenumberWires => {
@@ -962,6 +978,7 @@ impl Session {
                         .map(|k| k.tag.clone())
                         .unwrap_or_default(),
                     core: c.spec.cable.as_ref().map(|k| k.core.clone()).unwrap_or_default(),
+                    bent: c.bend.is_some(),
                 })
             }
         }
@@ -1256,8 +1273,11 @@ mod tests {
                 colour: String::new(),
                 cable: String::new(),
                 core: String::new(),
+                bent: false,
             })
         );
+        s.handle(UiEvent::TidyWires);
+        assert_eq!(s.frame(None, [0, 0, 0]).status, "No wire needed moving");
         s.handle(UiEvent::NumberWire { number: "W1".into() });
         assert_eq!(s.frame(None, [0, 0, 0]).status, "wire number `W1` is already used");
         s.handle(UiEvent::NumberWire { number: "102".into() });

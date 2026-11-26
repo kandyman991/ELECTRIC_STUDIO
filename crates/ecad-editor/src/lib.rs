@@ -113,6 +113,19 @@ pub enum Overlay {
     },
 }
 
+/// A wire whose middle run is being dragged.
+#[derive(Clone, Copy, Debug)]
+struct BendDrag {
+    wire: ConnectionId,
+    /// The bend before the drag, for undo.
+    from: Option<f64>,
+    /// Whether the middle run is horizontal (the drag moves its y) or vertical (its x).
+    horizontal: bool,
+    /// Where the pointer went down: a click that barely moves only selects the wire.
+    start: Point,
+    moved: bool,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Drag {
     function: FunctionId,
@@ -130,6 +143,7 @@ pub struct Editor {
     selection: Option<Selected>,
     hover: Option<Hit>,
     drag: Option<Drag>,
+    bend_drag: Option<BendDrag>,
     /// A box being moved: the box as it was and where it was grabbed (from its corner).
     box_drag: Option<(ecad_model::LocationBox, Point, bool)>,
     /// The first corner of a box being drawn.
@@ -194,6 +208,7 @@ impl Editor {
             selection: None,
             hover: None,
             drag: None,
+            bend_drag: None,
             box_drag: None,
             box_start: None,
             wire_start: None,
@@ -565,6 +580,35 @@ impl Editor {
         self.execute("Renumber all wires", Command::Batch(cmds))
     }
 
+    /// Moves every wire on the page that runs on another wire or through a symbol to a clear
+    /// route where one is near; returns how many moved.
+    pub fn tidy_wires(&mut self) -> Result<usize, ModelError> {
+        let cmds = self.project.tidy_wires(self.page);
+        let n = cmds.len();
+        if n > 0 {
+            self.execute("Tidy wires", Command::Batch(cmds))?;
+        }
+        Ok(n)
+    }
+
+    /// Puts the selected wire's middle run back halfway.
+    pub fn straighten_selected_wire(&mut self) -> Result<(), ModelError> {
+        let Some(Selected::Connection(c)) = self.selection else { return Ok(()) };
+        if self.project.connection(c)?.bend.is_none() {
+            return Ok(());
+        }
+        let name = self.wire_name(c);
+        self.execute(&format!("Straighten wire {name}"), Command::SetWireBend { id: c, bend: None })
+    }
+
+    /// The middle run of a wire's route, the part a bend moves (`None` for a straight wire).
+    fn middle_run(&self, c: ConnectionId) -> Option<ecad_model::project::MiddleRun> {
+        let wire = self.project.connection(c).ok()?;
+        let (a, da) = self.project.connection_point(&wire.from).ok()?;
+        let (b, db) = self.project.connection_point(&wire.to).ok()?;
+        ecad_model::project::middle_run(a, da, b, db)
+    }
+
     pub fn pointer_move(&mut self, p: Point) {
         self.cursor = p;
         if let Some((from, grab, _)) = self.box_drag.clone() {
@@ -575,6 +619,22 @@ impl Editor {
             let now = self.project.boxes.get(&from.id).map(|b| b.min);
             if now != Some(min) && self.project.apply(Command::UpdateBox(moved)).is_ok() {
                 self.box_drag = Some((from, grab, true));
+                self.revision += 1;
+                self.scene += 1;
+            }
+            return;
+        }
+        if let Some(mut bend) = self.bend_drag {
+            let travel = if bend.horizontal { p.y - bend.start.y } else { p.x - bend.start.x };
+            if !bend.moved && travel.abs() < self.grid.max(1.0) / 2.0 {
+                return;
+            }
+            let at = snap(p, self.grid);
+            let to = Some(if bend.horizontal { at.y } else { at.x });
+            let now = self.project.connection(bend.wire).map(|c| c.bend).ok();
+            if now != Some(to) && self.project.apply(Command::SetWireBend { id: bend.wire, bend: to }).is_ok() {
+                bend.moved = true;
+                self.bend_drag = Some(bend);
                 self.revision += 1;
                 self.scene += 1;
             }
@@ -607,7 +667,21 @@ impl Editor {
                         self.drag = Some(Drag { function: f, from: func.position, grab, moved: false });
                     }
                 }
-                Some(Hit::Connection(c)) => self.selection = Some(Selected::Connection(c)),
+                Some(Hit::Connection(c)) => {
+                    self.selection = Some(Selected::Connection(c));
+                    // Dragging a wire moves its middle run, if it has one.
+                    if let Some(run) = self.middle_run(c)
+                        && let Ok(wire) = self.project.connection(c)
+                    {
+                        self.bend_drag = Some(BendDrag {
+                            wire: c,
+                            from: wire.bend,
+                            horizontal: run.horizontal,
+                            start: p,
+                            moved: false,
+                        });
+                    }
+                }
                 Some(Hit::Box(b)) => {
                     self.selection = Some(Selected::Box(b));
                     if let Some(from) = self.project.boxes.get(&b) {
@@ -645,6 +719,13 @@ impl Editor {
                 }
                 Err(e) => self.status = e.to_string(),
             }
+        }
+        if let Some(bend) = self.bend_drag.take()
+            && bend.moved
+        {
+            let name = self.wire_name(bend.wire);
+            self.forget_saved_branch();
+            self.history.record(&format!("Move wire {name}"), Command::SetWireBend { id: bend.wire, bend: bend.from });
         }
         if let Some(drag) = self.drag.take()
             && drag.moved
@@ -1086,14 +1167,22 @@ impl Editor {
                     .into_iter()
                     .map(|id| Command::SetWireNumber { id, number: Some(number.clone()) })
                     .collect();
+                let id = ConnectionId::new();
                 cmds.push(Command::Connect(Connection {
                     bend: None,
-                    id: ConnectionId::new(),
+                    id,
                     from: start,
                     to: point,
                     wire_number: Some(number.clone()),
                     spec: Default::default(),
                 }));
+                // The new wire keeps off other wires and symbols where a nearby route does.
+                let mut trial = self.project.clone();
+                if trial.apply(Command::Batch(cmds.clone())).is_ok()
+                    && let Some(bend) = trial.free_bend(id)
+                {
+                    cmds.push(Command::SetWireBend { id, bend: Some(bend) });
+                }
                 let result = self.execute(&format!("Draw wire {number}"), Command::Batch(cmds));
                 self.report(result);
             }

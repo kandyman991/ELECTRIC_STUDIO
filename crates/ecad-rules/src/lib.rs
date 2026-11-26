@@ -64,6 +64,12 @@ pub const RULES: &[(&str, Severity, &str)] = &[
     ("plc-no-address", Severity::Warning, "A PLC channel has no address"),
     ("cable-cores", Severity::Warning, "A cable carries more wires than it has cores"),
     ("overlap", Severity::Warning, "Two symbols overlap on a page"),
+    (
+        "wire-overlap",
+        Severity::Warning,
+        "Two wires run on top of each other, side by side too close, or line up end to end",
+    ),
+    ("wire-through-symbol", Severity::Warning, "A wire runs through or along a symbol it isn't connected to"),
 ];
 
 fn severity(rule: &str) -> Severity {
@@ -148,6 +154,7 @@ pub fn check(project: &Project) -> Vec<Check> {
         }
     }
     overlaps(&mut out);
+    wire_layout(&mut out);
     for cable in project.cables.values() {
         let wires: Vec<&ecad_model::Connection> = project
             .connections
@@ -276,6 +283,36 @@ fn lonely_interruptions(out: &mut Out) {
     }
 }
 
+/// Wires that a reader could take for one another or for part of a symbol ("Tidy wires" in the
+/// editor fixes most).
+fn wire_layout(out: &mut Out) {
+    let project = out.project;
+    let wire = |c: ConnectionId| {
+        project.connections.get(&c).map_or_else(String::new, |w| match &w.wire_number {
+            Some(n) => n.clone(),
+            None => format!("{} – {}", point(project, &w.from), point(project, &w.to)),
+        })
+    };
+    for page in project.pages.keys() {
+        for clash in project.wire_clashes(*page) {
+            match clash {
+                ecad_model::layout::WireClash::Overlap { a, b, .. } => {
+                    let message = format!("Wire {} runs on or close to wire {}", wire(a), wire(b));
+                    out.at_connection("wire-overlap", a, message);
+                }
+                ecad_model::layout::WireClash::ThroughSymbol { wire: w, function, .. } => {
+                    let tag = project
+                        .function(function)
+                        .and_then(|f| project.device(f.device))
+                        .map(|d| d.tag.clone())
+                        .unwrap_or_default();
+                    out.at_connection("wire-through-symbol", w, format!("Wire {} runs through {tag}", wire(w)));
+                }
+            }
+        }
+    }
+}
+
 fn overlaps(out: &mut Out) {
     let project = out.project;
     // Symbols may touch (a contact's stub on a terminal's) but not cross.
@@ -382,6 +419,21 @@ mod tests {
         assert!(r.iter().any(|r| r.contains("Wire number W1 is used on two potentials")), "{r:#?}");
         // The sample's per-wire numbers are fine per potential: each potential has one wire.
         assert!(!r.iter().any(|r| r.starts_with("wire-numbers-differ")), "{r:#?}");
+    }
+
+    #[test]
+    fn wires_on_top_of_each_other_are_reported() {
+        let mut p = sample::start_circuit().unwrap();
+        // Move the coil right so W2 and W3 bend, then put W2's middle run on W3's.
+        p.apply(Command::Move { id: sample::K1_COIL, to: Point::new(16.0, 12.0) }).unwrap();
+        assert!(!rules(&check(&p)).iter().any(|r| r.starts_with("wire-")), "tidy before");
+        let w = |n: &str| p.connections.values().find(|c| c.wire_number.as_deref() == Some(n)).unwrap().id;
+        let (w2, w3) = (w("W2"), w("W3"));
+        let route3 = p.route(p.connection(w3).unwrap()).unwrap();
+        let y = route3.windows(2).find(|s| s[0].y == s[1].y).unwrap()[0].y;
+        p.apply(Command::SetWireBend { id: w2, bend: Some(y) }).unwrap();
+        let r = rules(&check(&p));
+        assert!(r.iter().any(|r| r.starts_with("wire-overlap") && r.contains("W2") && r.contains("W3")), "{r:#?}");
     }
 
     #[test]

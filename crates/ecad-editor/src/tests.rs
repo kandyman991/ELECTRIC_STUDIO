@@ -237,3 +237,87 @@ fn wires_into_a_junction_take_its_free_points_and_a_selected_wire_shows_its_pote
     assert_eq!(highlighted, 2);
     assert_eq!(e.potential_of(w3).and_then(|p| p.name()).as_deref(), Some("M"));
 }
+
+/// The start circuit with the coil moved 16 mm right, so that its wires bend.
+fn editor_with_bends() -> Editor {
+    let mut e = editor();
+    drag(&mut e, (1.0, 12.0), (17.0, 12.0));
+    e
+}
+
+/// A wire with a middle run, and the middle of that run.
+fn bent_wire(e: &Editor) -> (ConnectionId, ecad_model::project::MiddleRun, Point) {
+    for c in e.project().connections.values() {
+        if let Some(run) = e.middle_run(c.id) {
+            let route = e.project().route(c).unwrap();
+            // The middle run is the segment at `run.at` along the run's direction.
+            let seg = route
+                .windows(2)
+                .find(|s| {
+                    if run.horizontal {
+                        s[0].y == run.at && s[1].y == run.at
+                    } else {
+                        s[0].x == run.at && s[1].x == run.at
+                    }
+                })
+                .unwrap();
+            let mid = Point::new((seg[0].x + seg[1].x) / 2.0, (seg[0].y + seg[1].y) / 2.0);
+            return (c.id, run, mid);
+        }
+    }
+    panic!("no bent wire");
+}
+
+#[test]
+fn dragging_a_wire_moves_its_middle_run_on_the_grid_as_one_undo_step() {
+    let mut e = editor_with_bends();
+    let (id, run, mid) = bent_wire(&e);
+    // A click with a little jitter only selects the wire.
+    e.pointer_move(mid);
+    e.pointer_down(mid);
+    let jitter = if run.horizontal { Point::new(mid.x, mid.y + 0.7) } else { Point::new(mid.x + 0.7, mid.y) };
+    e.pointer_move(jitter);
+    e.pointer_up(jitter);
+    assert_eq!(e.project().connection(id).unwrap().bend, None);
+    assert_eq!(e.selection(), Some(Selected::Connection(id)));
+
+    let to = if run.horizontal { (mid.x, mid.y - 7.3) } else { (mid.x - 7.3, mid.y) };
+    drag(&mut e, (mid.x, mid.y), to);
+    let bend = e.project().connection(id).unwrap().bend.unwrap();
+    let want = if run.horizontal { (to.1 / GRID).round() * GRID } else { (to.0 / GRID).round() * GRID };
+    assert_eq!(bend, want);
+    let route = e.project().route(e.project().connection(id).unwrap()).unwrap();
+    assert!(route.iter().any(|p| if run.horizontal { p.y == bend } else { p.x == bend }), "{route:?}");
+    assert!(e.undo_label().is_some_and(|l| l.starts_with("Move wire")), "{:?}", e.undo_label());
+
+    e.straighten_selected_wire().unwrap();
+    assert_eq!(e.project().connection(id).unwrap().bend, None);
+    e.key(Key::Undo);
+    assert_eq!(e.project().connection(id).unwrap().bend, Some(bend));
+    e.key(Key::Undo);
+    assert_eq!(e.project().connection(id).unwrap().bend, None, "the whole drag was one step");
+    assert_eq!(e.undo_label(), Some("Move -K1"));
+}
+
+#[test]
+fn tidy_wires_moves_a_wire_off_another_and_undo_puts_it_back() {
+    let mut e = editor_with_bends();
+    assert_eq!(e.tidy_wires().unwrap(), 0, "nothing clashes yet");
+    let (id, run, _) = bent_wire(&e);
+    // Push the middle run onto every other wire's line until one clashes, then tidy.
+    let page = e.page();
+    let clashing = (-40..=40).map(|k| run.at + f64::from(k) * GRID).find(|at| {
+        let mut p = e.project().clone();
+        p.apply(Command::SetWireBend { id, bend: Some(*at) }).unwrap();
+        !p.wire_clashes(page).is_empty()
+    });
+    let at = clashing.expect("some bend puts the wire on another");
+    e.execute("test", Command::SetWireBend { id, bend: Some(at) }).unwrap();
+    assert!(!e.project().wire_clashes(page).is_empty());
+    let moved = e.tidy_wires().unwrap();
+    assert!(moved >= 1);
+    assert!(e.project().wire_clashes(page).is_empty(), "{:?}", e.project().wire_clashes(page));
+    assert_eq!(e.undo_label(), Some("Tidy wires"));
+    e.key(Key::Undo);
+    assert_eq!(e.project().connection(id).unwrap().bend, Some(at));
+}
