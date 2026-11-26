@@ -80,15 +80,40 @@ fn point_label(at: Point, leaves: Direction, name: &str) -> Text {
     }
 }
 
-/// Where a device tag goes: right of a symbol whose wires leave up/down, above one whose wires
-/// leave sideways, so it never sits on a wire.
-fn tag_text(min: Point, max: Point, sideways: bool, tag: &str) -> Text {
-    if sideways {
-        let at = Point::new((min.x + max.x) / 2.0, max.y + TAG_GAP);
-        justified(at, TAG_HEIGHT, tag, HAlign::Center, VAlign::Bottom)
+/// Which side of a symbol its tag and cross-references go on: the first of right, left and
+/// above that no wire leaves from, so they never sit on a wire.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Right,
+    Left,
+    Above,
+}
+
+fn tag_side(leaving: &[Direction]) -> Side {
+    if !leaving.contains(&Direction::Right) {
+        Side::Right
+    } else if !leaving.contains(&Direction::Left) {
+        Side::Left
     } else {
-        let at = Point::new(max.x + TAG_GAP, (min.y + max.y) / 2.0);
-        justified(at, TAG_HEIGHT, tag, HAlign::Left, VAlign::Middle)
+        Side::Above
+    }
+}
+
+/// Where a device tag goes, on its symbol's free side.
+fn tag_text(min: Point, max: Point, side: Side, tag: &str) -> Text {
+    match side {
+        Side::Above => {
+            let at = Point::new((min.x + max.x) / 2.0, max.y + TAG_GAP);
+            justified(at, TAG_HEIGHT, tag, HAlign::Center, VAlign::Bottom)
+        }
+        Side::Right => {
+            let at = Point::new(max.x + TAG_GAP, (min.y + max.y) / 2.0);
+            justified(at, TAG_HEIGHT, tag, HAlign::Left, VAlign::Middle)
+        }
+        Side::Left => {
+            let at = Point::new(min.x - TAG_GAP, (min.y + max.y) / 2.0);
+            justified(at, TAG_HEIGHT, tag, HAlign::Right, VAlign::Middle)
+        }
     }
 }
 
@@ -166,14 +191,16 @@ fn contact_table(d: &mut Drawing, project: &Project, main: ecad_model::FunctionI
 
 /// Where cross-reference lines go: under the tag, which sits right of an upright symbol and
 /// above a sideways one (so the lines go below a sideways symbol instead, clear of the tag).
-fn line_text(min: Point, max: Point, sideways: bool, (i, s): &(usize, String)) -> Text {
+fn line_text(min: Point, max: Point, side: Side, (i, s): &(usize, String)) -> Text {
     let step = XREF_HEIGHT * 1.5;
-    let at = if sideways {
-        Point::new(min.x, min.y - TAG_GAP - step * *i as f64)
-    } else {
-        Point::new(max.x + TAG_GAP, (min.y + max.y) / 2.0 - TAG_HEIGHT - step * *i as f64)
-    };
-    justified(at, XREF_HEIGHT, s, HAlign::Left, VAlign::Top)
+    let under_tag = (min.y + max.y) / 2.0 - TAG_HEIGHT - step * *i as f64;
+    match side {
+        Side::Above => {
+            justified(Point::new(min.x, min.y - TAG_GAP - step * *i as f64), XREF_HEIGHT, s, HAlign::Left, VAlign::Top)
+        }
+        Side::Right => justified(Point::new(max.x + TAG_GAP, under_tag), XREF_HEIGHT, s, HAlign::Left, VAlign::Top),
+        Side::Left => justified(Point::new(min.x - TAG_GAP, under_tag), XREF_HEIGHT, s, HAlign::Right, VAlign::Top),
+    }
 }
 
 /// A wire number at the middle of the wire's longest segment: beside a vertical run, above a
@@ -254,21 +281,27 @@ pub fn page_drawing(project: &Project, page: PageId) -> Result<Drawing> {
         let sym = project.symbol(&f.symbol)?;
         // Labels are placed in page coordinates, not inside the block, so they stay upright
         // and readable whatever the symbol's rotation.
-        let mut sideways = false;
+        let mut leaving = Vec::new();
         for cp in &sym.connection_points {
             let (at, leaves) = project.connection_point(&ecad_model::ConnectionRef::new(f.id, &cp.name))?;
-            sideways |= !leaves.is_vertical();
+            leaving.push(leaves);
             if !sym.hide_point_labels {
                 let label = point_label(at, leaves, f.designation(&cp.name));
                 d.add(&Space::Model, on(LAYER_TAGS), EntityKind::Text(label)).map_err(err)?;
             }
         }
+        let side = tag_side(&leaving);
         let (min, max) = project.function_bounds(f.id)?.unwrap_or((f.position, f.position));
         if sym.role == Role::Main {
-            contact_table(&mut d, project, f.id, line_text(min, max, sideways, &(0, String::new())).insert)?;
+            let mut top = line_text(min, max, side, &(0, String::new())).insert;
+            if side == Side::Left {
+                // The table reads left to right; start it far enough left to end at the symbol.
+                top.x -= 24.0;
+            }
+            contact_table(&mut d, project, f.id, top)?;
         } else {
             for line in cross_reference_lines(project, f.id, sym.role)? {
-                d.add(&Space::Model, on(LAYER_XREF), EntityKind::Text(line_text(min, max, sideways, &line)))
+                d.add(&Space::Model, on(LAYER_XREF), EntityKind::Text(line_text(min, max, side, &line)))
                     .map_err(err)?;
             }
         }
@@ -278,7 +311,7 @@ pub fn page_drawing(project: &Project, page: PageId) -> Result<Drawing> {
             text: tag_text(
                 min,
                 max,
-                sideways,
+                side,
                 &match project.drawing_number(f.id) {
                     Some(n) => format!("{}:{n}", device.tag),
                     None => device.tag.clone(),
@@ -312,8 +345,72 @@ pub fn page_drawing(project: &Project, page: PageId) -> Result<Drawing> {
         if let Some(n) = &c.wire_number {
             d.add(&Space::Model, on(LAYER_TAGS), EntityKind::Text(wire_label(&route, n))).map_err(err)?;
         }
+        // Cross-section and colour go just after the number: `2,5 BU`.
+        let spec = [c.spec.cross_section.as_str(), c.spec.colour.as_str()]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !spec.is_empty() {
+            let mut t = wire_label(&route, &spec);
+            t.height = LABEL_HEIGHT * 0.8;
+            let below = if c.wire_number.is_some() { LABEL_HEIGHT * 1.5 } else { 0.0 };
+            t.insert.y -= below;
+            if let Some(a) = t.align_pt.as_mut() {
+                a.y -= below;
+            }
+            d.add(&Space::Model, on(LAYER_TAGS), EntityKind::Text(t)).map_err(err)?;
+        }
     }
+    draw_cables(&mut d, project, page)?;
     Ok(d)
+}
+
+/// Where a wire is marked as running in a cable: a third of the way along its longest segment.
+fn cable_mark(route: &[Point]) -> Option<(Point, bool)> {
+    let len = |s: &[Point]| (s[1].x - s[0].x).abs() + (s[1].y - s[0].y).abs();
+    let seg = route.windows(2).max_by(|a, b| len(a).total_cmp(&len(b)))?;
+    let at = Point::new(seg[0].x + (seg[1].x - seg[0].x) / 3.0, seg[0].y + (seg[1].y - seg[0].y) / 3.0);
+    Some((at, seg[0].x == seg[1].x))
+}
+
+/// Cables: a short slash across each wire that runs in one, a dashed line joining the slashes
+/// of the same cable on the page, and the cable's tag and type beside the first slash
+/// (`-WM10A 4x2,5 SCH`).
+fn draw_cables(d: &mut Drawing, project: &Project, page: PageId) -> Result<()> {
+    let layer = on(LAYER_WIRES);
+    for cable in project.cables.values() {
+        let mut marks: Vec<(Point, bool)> = project
+            .connections_on(page)
+            .filter(|c| c.spec.cable.as_ref().is_some_and(|k| k.cable == cable.id))
+            .filter_map(|c| project.route(c).ok().and_then(|r| cable_mark(&r)))
+            .collect();
+        if marks.is_empty() {
+            continue;
+        }
+        marks.sort_by(|a, b| (a.0.x, -a.0.y).partial_cmp(&(b.0.x, -b.0.y)).unwrap_or(std::cmp::Ordering::Equal));
+        for (at, vertical) in &marks {
+            let (dx, dy) = if *vertical { (1.2, 1.2) } else { (1.2, -1.2) };
+            add_line(d, &layer, Point::new(at.x - dx, at.y - dy), Point::new(at.x + dx, at.y + dy))?;
+        }
+        for w in marks.windows(2) {
+            for (a, b) in dashes(w[0].0, w[1].0) {
+                add_line(d, &layer, a, b)?;
+            }
+        }
+        let mut label = cable.tag.clone();
+        if !cable.kind.is_empty() {
+            label = format!("{label} {}", cable.kind);
+        }
+        if cable.shielded {
+            label.push_str(" SCH");
+        }
+        let (first, vertical) = marks[0];
+        let at = if vertical { Point::new(first.x - 2.5, first.y) } else { Point::new(first.x, first.y - 2.5) };
+        let (h, v) = if vertical { (HAlign::Right, VAlign::Middle) } else { (HAlign::Left, VAlign::Top) };
+        add_text(d, &on(LAYER_TAGS), justified(at, LABEL_HEIGHT, &label, h, v))?;
+    }
+    Ok(())
 }
 
 /// What a primitive draws, in page millimetres.

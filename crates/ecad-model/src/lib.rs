@@ -95,6 +95,7 @@ mod tests {
                 from: ConnectionRef::new(K1_COIL, "A1"),
                 to: ConnectionRef::new(K1_COIL, "A2"),
                 wire_number: None,
+                spec: Default::default(),
             })
             .unwrap_err();
         assert_eq!(err, ModelError::AlreadyConnected(("-K1".into(), "A1".into()), ("-S1".into(), "14".into())));
@@ -109,6 +110,7 @@ mod tests {
                 from: ConnectionRef::new(K1_COIL, "A3"),
                 to: ConnectionRef::new(K1_COIL, "A1"),
                 wire_number: None,
+                spec: Default::default(),
             })
             .unwrap_err();
         assert!(matches!(err, ModelError::NoConnectionPoint { .. }));
@@ -267,7 +269,12 @@ mod tests {
         let mut p = original.clone();
         let mut h = History::new();
         let k1 = DeviceId::from_u128(0x103);
-        let part = |n: &str| Part { number: n.into(), manufacturer: "M".into(), description: String::new() };
+        let part = |n: &str| Part {
+            number: n.into(),
+            manufacturer: "M".into(),
+            description: String::new(),
+            code: String::new(),
+        };
         assert_eq!(
             p.apply(Command::AddPart(part("EX-CT-24DC"))).unwrap_err(),
             ModelError::DuplicatePart("EX-CT-24DC".into())
@@ -320,6 +327,32 @@ mod tests {
             ModelError::DuplicateNumber("-X2".into(), "2".into())
         );
         assert_eq!(numbers(&p), ["2", "10"], "a refused renumber changes nothing");
+    }
+
+    #[test]
+    fn cables_have_unique_tags_and_cores() {
+        let mut p = start_circuit().unwrap();
+        let w = CableId::from_u128(1);
+        let cable = Cable { id: w, tag: "-W1".into(), kind: "3G1,5".into(), cores: 3, shielded: false };
+        p.apply(Command::AddCable(cable.clone())).unwrap();
+        assert_eq!(
+            p.apply(Command::AddCable(Cable { id: CableId::from_u128(2), ..cable.clone() })).unwrap_err(),
+            ModelError::DuplicateTag("-W1".into())
+        );
+        let wires: Vec<ConnectionId> = p.connections.keys().copied().collect();
+        let core = |n: &str| WireSpec { cable: Some(CableCore { cable: w, core: n.into() }), ..WireSpec::default() };
+        p.apply(Command::SetWireSpec { id: wires[0], spec: core("1") }).unwrap();
+        assert_eq!(
+            p.apply(Command::SetWireSpec { id: wires[1], spec: core("1") }).unwrap_err(),
+            ModelError::CoreInUse("-W1".into(), "1".into())
+        );
+        assert_eq!(p.apply(Command::RemoveCable(w)).unwrap_err(), ModelError::CableInUse("-W1".into()));
+        // Colours are upper case; undo puts the wire back.
+        let spec = WireSpec { colour: " bu ".into(), cross_section: "1,5".into(), cable: None };
+        let undo = p.apply(Command::SetWireSpec { id: wires[0], spec }).unwrap();
+        assert_eq!(p.connection(wires[0]).unwrap().spec.colour, "BU");
+        p.apply(undo).unwrap();
+        assert_eq!(p.connection(wires[0]).unwrap().spec, core("1"));
     }
 
     #[test]

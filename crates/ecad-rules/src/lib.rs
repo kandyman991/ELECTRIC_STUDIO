@@ -62,6 +62,7 @@ pub const RULES: &[(&str, Severity, &str)] = &[
     ("wire-unnumbered", Severity::Warning, "A wire has no number"),
     ("missing-part", Severity::Warning, "A device has no catalogue part, so it is missing from the BOM"),
     ("plc-no-address", Severity::Warning, "A PLC channel has no address"),
+    ("cable-cores", Severity::Warning, "A cable carries more wires than it has cores"),
     ("overlap", Severity::Warning, "Two symbols overlap on a page"),
 ];
 
@@ -147,6 +148,20 @@ pub fn check(project: &Project) -> Vec<Check> {
         }
     }
     overlaps(&mut out);
+    for cable in project.cables.values() {
+        let wires: Vec<&ecad_model::Connection> = project
+            .connections
+            .values()
+            .filter(|c| c.spec.cable.as_ref().is_some_and(|k| k.cable == cable.id))
+            .collect();
+        if cable.cores > 0
+            && wires.len() > cable.cores as usize
+            && let Some(w) = wires.first()
+        {
+            let message = format!("Cable {} has {} cores but carries {} wires", cable.tag, cable.cores, wires.len());
+            out.at_connection("cable-cores", w.id, message);
+        }
+    }
 
     let order: BTreeMap<PageId, usize> = project.pages_in_order().iter().enumerate().map(|(i, p)| (p.id, i)).collect();
     // Sorted by where they are: column, then row, as a reader scans a page.
@@ -325,6 +340,7 @@ mod tests {
             from: w1.from.clone(),
             to: m,
             wire_number: None,
+            spec: Default::default(),
         }))
         .unwrap();
         // An analog channel without an address.
@@ -334,7 +350,8 @@ mod tests {
         let found: BTreeSet<&str> = checks.iter().map(|c| c.rule).collect();
         for (rule, ..) in RULES {
             // Covered by their own tests.
-            let elsewhere = ["lonely-interruption", "overlap", "wire-number-shared", "wire-numbers-differ"];
+            let elsewhere =
+                ["lonely-interruption", "overlap", "wire-number-shared", "wire-numbers-differ", "cable-cores"];
             if !elsewhere.contains(rule) {
                 assert!(found.contains(rule), "{rule} missing from {:#?}", rules(&checks));
             }

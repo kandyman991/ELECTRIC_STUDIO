@@ -11,6 +11,9 @@ pub struct Part {
     pub manufacturer: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
+    /// The company's own article code for the part, if it has one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub code: String,
 }
 
 /// A part used by a device, e.g. a contactor plus its auxiliary block.

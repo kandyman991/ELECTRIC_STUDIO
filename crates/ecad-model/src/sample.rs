@@ -58,6 +58,7 @@ pub fn start_circuit() -> Result<Project> {
             from: ConnectionRef::new(FunctionId::from_u128(fa), pa),
             to: ConnectionRef::new(FunctionId::from_u128(fb), pb),
             wire_number: Some(number.into()),
+            spec: Default::default(),
         })?;
     }
     if let Some((min, max)) = p.content_bounds(PAGE_1) {
@@ -77,6 +78,7 @@ pub fn catalogue() -> Vec<Part> {
         number: number.into(),
         manufacturer: "Example".into(),
         description: description.into(),
+        code: String::new(),
     };
     vec![
         part("EX-CT-24DC", "Contactor 3 kW, 24 V DC coil, 1 NO auxiliary"),
@@ -169,6 +171,7 @@ pub fn with_potentials() -> Result<Project> {
             from: ConnectionRef::new(fid(fa), pa),
             to: ConnectionRef::new(fid(fb), pb),
             wire_number: Some(number.into()),
+            spec: Default::default(),
         })?;
     }
     Ok(p)
@@ -187,6 +190,7 @@ pub fn with_terminals() -> Result<Project> {
         number: "EX-TB-4".into(),
         manufacturer: "Example".into(),
         description: "Feed-through terminal 4 mm²".into(),
+        code: String::new(),
     }))?;
     p.add_device(Device { parts: vec![PartRef::new("EX-TB-4", 1)], ..Device::new(strip, "-X2", "Field connections") })?;
     let symbol = SymbolId::new("iec.terminal");
@@ -217,6 +221,7 @@ pub fn with_terminals() -> Result<Project> {
             from: ConnectionRef::new(FunctionId::from_u128(fa), pa),
             to: ConnectionRef::new(FunctionId::from_u128(fb), pb),
             wire_number: Some(number.into()),
+            spec: Default::default(),
         })?;
     }
     Ok(p)
@@ -315,6 +320,7 @@ pub fn with_plc() -> Result<Project> {
             from: ConnectionRef::new(fid(fa), pa),
             to: ConnectionRef::new(fid(fb), pb),
             wire_number: Some(number.into()),
+            spec: Default::default(),
         })?;
     }
     Ok(p)
@@ -398,7 +404,32 @@ pub fn with_power() -> Result<Project> {
             from: ConnectionRef::new(fid(fa), pa),
             to: ConnectionRef::new(fid(fb), pb),
             wire_number: None,
+            spec: Default::default(),
         })?;
+    }
+    // A motor on -K1's main contacts, through cable -WM1; the feed and motor wires carry their
+    // cross-section and colour.
+    let m1 = device(&mut p, 0x115, "-M1", "Conveyor motor")?;
+    place(&mut p, m1, "iec.motor_3", 0x22c, PAGE_4, (-92.0, -48.0))?;
+    let wm1 = CableId::from_u128(0x500);
+    p.apply(Command::AddCable(Cable { id: wm1, tag: "-WM1".into(), kind: "4G2,5".into(), cores: 4, shielded: true }))?;
+    for (i, (contact, motor)) in [("2", "U"), ("4", "V"), ("6", "W")].into_iter().enumerate() {
+        let id = ConnectionId::from_u128(0x330 + i as u128);
+        p.connect(Connection {
+            id,
+            from: ConnectionRef::new(fid(0x225), contact),
+            to: ConnectionRef::new(fid(0x22c), motor),
+            wire_number: None,
+            spec: WireSpec {
+                cross_section: "2,5".into(),
+                colour: "BK".into(),
+                cable: Some(CableCore { cable: wm1, core: (i + 1).to_string() }),
+            },
+        })?;
+    }
+    for i in 0..3u128 {
+        let spec = WireSpec { cross_section: "16".into(), colour: "BK".into(), cable: None };
+        p.apply(Command::SetWireSpec { id: ConnectionId::from_u128(0x320 + i), spec })?;
     }
     // Number every wire as the reference project does: one number per potential, named
     // potentials by their name, the others by page (101, 401…).
