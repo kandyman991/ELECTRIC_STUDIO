@@ -348,6 +348,7 @@ mod tests {
             rotation: Rotation::R0,
             designations,
             properties: Default::default(),
+            mirrored: false,
         })
         .unwrap();
         id

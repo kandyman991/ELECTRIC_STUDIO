@@ -100,6 +100,10 @@ pub struct Function {
     pub position: Point,
     #[serde(default)]
     pub rotation: Rotation,
+    /// Flipped left to right (before the rotation), e.g. a switch drawn the other way round on
+    /// a horizontal line.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mirrored: bool,
     /// Terminal designations shown for this drawing, by connection-point name, where they
     /// differ from the symbol's: a device's second NO contact shows `23`/`24` for the
     /// symbol's `13`/`14`.
@@ -128,7 +132,18 @@ impl Function {
 
     /// A symbol-local point in page coordinates.
     pub fn to_page(&self, local: Point) -> Point {
+        let local = if self.mirrored { Point::new(-local.x, local.y) } else { local };
         self.position.offset(self.rotation.apply(local))
+    }
+
+    /// A symbol-local direction on the page.
+    pub fn to_page_dir(&self, d: crate::Direction) -> crate::Direction {
+        let d = match (self.mirrored, d) {
+            (true, crate::Direction::Left) => crate::Direction::Right,
+            (true, crate::Direction::Right) => crate::Direction::Left,
+            (_, d) => d,
+        };
+        self.rotation.apply_dir(d)
     }
 }
 
@@ -291,6 +306,11 @@ pub enum Command {
     Rotate {
         id: FunctionId,
         to: Rotation,
+    },
+    /// Flip a drawing left to right (`to`: mirrored or not).
+    Mirror {
+        id: FunctionId,
+        to: bool,
     },
     Connect(Connection),
     Disconnect(ConnectionId),
@@ -958,6 +978,11 @@ impl Project {
                 let old = std::mem::replace(&mut f.rotation, to);
                 Ok(Command::Rotate { id, to: old })
             }
+            Command::Mirror { id, to } => {
+                let f = self.functions.get_mut(&id).ok_or(ModelError::NoFunction(id))?;
+                let old = std::mem::replace(&mut f.mirrored, to);
+                Ok(Command::Mirror { id, to: old })
+            }
             Command::Connect(c) => {
                 if self.connections.contains_key(&c.id) {
                     return Err(ModelError::DuplicateId(c.id.0));
@@ -1403,7 +1428,7 @@ impl Project {
         let cp = s
             .connection_point(&r.point)
             .ok_or_else(|| ModelError::NoConnectionPoint { symbol: s.id.0.clone(), point: r.point.clone() })?;
-        Ok((f.to_page(cp.at), f.rotation.apply_dir(cp.leaves)))
+        Ok((f.to_page(cp.at), f.to_page_dir(cp.leaves)))
     }
 
     /// A function's box on its page (`min`, `max`): its symbol's geometry and connection points,
@@ -1440,6 +1465,38 @@ impl Project {
     /// Orthogonal route from one end to the other. Straight when the ends face each other on one
     /// line; otherwise each end leaves along its own direction for [`ROUTE_STUB`] before the
     /// route turns, so a wire never doubles back through its own symbol.
+    /// The wires that are protective earth conductors, drawn dashed: green-yellow, numbered or
+    /// on a potential named PE or PEN, or ending on a point named PE (PE', PE1…).
+    pub fn protective_earth_wires(&self) -> std::collections::BTreeSet<ConnectionId> {
+        let pe_name = |s: &str| {
+            let s = s.trim().to_ascii_uppercase();
+            s == "PE" || s == "PEN"
+        };
+        let mut out: std::collections::BTreeSet<ConnectionId> = self
+            .potentials()
+            .into_iter()
+            .filter(|p| p.names.iter().any(|n| pe_name(n)))
+            .flat_map(|p| p.connections)
+            .collect();
+        let pe_point = |r: &ConnectionRef| {
+            let Ok(f) = self.function(r.function) else { return false };
+            let d = f.designation(&r.point).to_ascii_uppercase();
+            d.strip_prefix("PE").is_some_and(|rest| rest.chars().all(|ch| ch == '\'' || ch.is_ascii_digit()))
+        };
+        for c in self.connections.values() {
+            let colour = c.spec.colour.to_ascii_uppercase().replace(['-', '/', ' '], "");
+            if colour == "GNYE"
+                || colour == "YEGN"
+                || c.wire_number.as_deref().is_some_and(pe_name)
+                || pe_point(&c.from)
+                || pe_point(&c.to)
+            {
+                out.insert(c.id);
+            }
+        }
+        out
+    }
+
     pub fn route(&self, c: &Connection) -> Result<Vec<Point>> {
         let (a, da) = self.connection_point(&c.from)?;
         let (b, db) = self.connection_point(&c.to)?;

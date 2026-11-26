@@ -61,7 +61,9 @@ In rough order of how much they matter for drawing real machines:
 6. ~~**PLC wire numbers from the address**~~ — done in G5c: naming setting `{io}{byte}{bit:02}`.
 7. ~~**Vertical labels**~~ — done with the label placer: tags of arrows close together are written
    upwards.
-8. **Mirrored symbols** (a main switch on a horizontal line).
-9. **Dashed PE wires** aren't drawn dashed.
+8. ~~**Mirrored symbols**~~ — done in G6: any drawing can be mirrored (M); P2's main switch now
+   runs horizontally as on the original.
+9. ~~**Dashed PE wires**~~ — done in G6: protective earth conductors (GNYE, PE/PEN, PE points)
+   are drawn dashed.
 
-None of these blocked the MVP. Items 1–7 are done (G5); 8 and 9 remain.
+All nine are closed (G5, G6).

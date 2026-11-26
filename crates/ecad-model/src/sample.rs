@@ -44,6 +44,7 @@ pub fn start_circuit() -> Result<Project> {
             rotation,
             designations: Default::default(),
             properties: Default::default(),
+            mirrored: false,
         })?;
     }
 
@@ -119,6 +120,7 @@ pub fn with_contacts() -> Result<Project> {
             rotation: Rotation::R0,
             designations,
             properties: Default::default(),
+            mirrored: false,
         })?;
     }
     Ok(p)
@@ -148,6 +150,7 @@ pub fn with_potentials() -> Result<Project> {
             rotation,
             designations: Default::default(),
             properties: Default::default(),
+            mirrored: false,
         })?;
         Ok(())
     };
@@ -209,6 +212,7 @@ pub fn with_terminals() -> Result<Project> {
             rotation: Rotation::R0,
             designations,
             properties: Default::default(),
+            mirrored: false,
         })?;
     }
     p.apply(Command::Disconnect(ConnectionId::from_u128(0x301)))?;
@@ -287,6 +291,7 @@ pub fn with_plc() -> Result<Project> {
             rotation,
             designations,
             properties,
+            mirrored: false,
         })?;
         Ok(())
     };
@@ -368,6 +373,7 @@ pub fn with_power() -> Result<Project> {
             rotation: Rotation::R0,
             designations,
             properties: Default::default(),
+            mirrored: false,
         })
         .map(drop)
     };
@@ -517,6 +523,7 @@ pub fn library_overview() -> Result<Project> {
                 rotation: Rotation::R0,
                 designations,
                 properties: Default::default(),
+                mirrored: false,
             })?;
             x += cell_w;
         }

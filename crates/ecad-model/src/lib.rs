@@ -277,6 +277,7 @@ mod tests {
                 rotation: Default::default(),
                 designations,
                 properties: Default::default(),
+                mirrored: false,
             })
             .unwrap();
             id
@@ -340,6 +341,53 @@ mod tests {
         place(&mut p, "iec.contact_no", 150.0);
         let extra = place(&mut p, "iec.contact_no", 160.0);
         assert!(!numbers(&p, extra).is_empty());
+    }
+
+    #[test]
+    fn a_mirrored_drawing_flips_its_points_before_turning() {
+        let mut p = start_circuit().unwrap();
+        // A changeover's closed side 12 is left of its common; mirrored it is on the right.
+        let device = DeviceId::new();
+        p.add_device(Device::new(device, "-K9", "")).unwrap();
+        let f = FunctionId::new();
+        p.place(Function {
+            id: f,
+            device,
+            symbol: SymbolId::new("iec.contact_co"),
+            page: PAGE_1,
+            position: Point::new(100.0, 100.0),
+            rotation: Rotation::R0,
+            mirrored: false,
+            designations: Default::default(),
+            properties: Default::default(),
+        })
+        .unwrap();
+        let at = |p: &Project, point: &str| p.connection_point(&ConnectionRef::new(f, point)).unwrap();
+        assert_eq!(at(&p, "12").0, Point::new(92.0, 108.0));
+        let undo = p.apply(Command::Mirror { id: f, to: true }).unwrap();
+        assert_eq!(at(&p, "12"), (Point::new(108.0, 108.0), Direction::Up));
+        // Turned a quarter after the flip: 12 ends up below, wires leave it to the left.
+        p.apply(Command::Rotate { id: f, to: Rotation::R90 }).unwrap();
+        assert_eq!(at(&p, "12"), (Point::new(92.0, 108.0), Direction::Left));
+        p.apply(Command::Rotate { id: f, to: Rotation::R0 }).unwrap();
+        p.apply(undo).unwrap();
+        assert_eq!(at(&p, "12").0, Point::new(92.0, 108.0));
+        // A right-leaving point leaves left when mirrored.
+        let motor = FunctionId::new();
+        p.place(Function {
+            id: motor,
+            device,
+            symbol: SymbolId::new("iec.motor_3"),
+            page: PAGE_1,
+            position: Point::new(200.0, 100.0),
+            rotation: Rotation::R0,
+            mirrored: true,
+            designations: Default::default(),
+            properties: Default::default(),
+        })
+        .unwrap();
+        let (pe, leaves) = p.connection_point(&ConnectionRef::new(motor, "PE")).unwrap();
+        assert_eq!((pe, leaves), (Point::new(188.0, 92.0), Direction::Left));
     }
 
     #[test]

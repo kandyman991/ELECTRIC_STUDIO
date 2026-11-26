@@ -100,6 +100,21 @@ fn wiring_an_occupied_point_explains_why_and_changes_nothing() {
 }
 
 #[test]
+fn mirror_flips_the_selected_symbol_and_undoes() {
+    let mut e = editor();
+    click(&mut e, 2.0, 12.0);
+    e.key(Key::Mirror);
+    assert!(e.project().function(K1_COIL).unwrap().mirrored);
+    assert_eq!(e.undo_label(), Some("Mirror -K1"));
+    e.key(Key::Mirror);
+    assert!(!e.project().function(K1_COIL).unwrap().mirrored);
+    assert_eq!(e.undo_label(), Some("Unmirror -K1"));
+    e.key(Key::Undo);
+    e.key(Key::Undo);
+    assert_eq!(e.project(), &start_circuit().unwrap());
+}
+
+#[test]
 fn rotate_and_delete_act_on_the_selected_symbol() {
     let mut e = editor();
     click(&mut e, 2.0, 12.0);

@@ -93,6 +93,7 @@ impl Builder {
             rotation,
             designations,
             properties,
+            mirrored: false,
         })?;
         Ok(id)
     }
@@ -148,6 +149,11 @@ impl Builder {
         let (from, to) = (self.pin(a.0, a.1)?, self.pin(b.0, b.1)?);
         self.p.connect(Connection { bend: None, id, from, to, wire_number: number.map(str::to_owned), spec })?;
         Ok(id)
+    }
+
+    /// Flips a drawing left to right.
+    fn mirror(&mut self, f: F) -> Result<()> {
+        self.p.apply(Command::Mirror { id: f, to: true }).map(drop)
     }
 
     /// Puts a wire's middle run at `at` (its y when horizontal, its x when vertical).
@@ -368,13 +374,18 @@ fn number_wires(p: &mut Project) -> Result<()> {
 /// (-QF3, -A3KM5).
 fn power_distribution(b: &mut Builder) -> Result<()> {
     b.page("P2", "Power supply distribution", "Derivazione potenza")?;
+    // As on the original, the supply runs left to right on one line per conductor: through
+    // the main switch (turned and mirrored, so L1 stays on top) and the distribution block, on
+    // to the right edge as busbars P201-P204, tapped by the two branches below.
     let phases = ["L1", "L2", "L3", "N"];
+    let rows = [256.0, 248.0, 240.0, 232.0];
     let mut supply = Vec::new();
-    for (i, name) in phases.iter().enumerate() {
-        supply.push(b.put(name, "iec.supply", 24.0 + 8.0 * i as f64, 256.0 - 4.0 * i as f64)?);
+    for (name, y) in phases.iter().zip(rows) {
+        supply.push(b.put_r(name, "iec.supply", 28.0, y, Rotation::R90)?);
     }
     b.describe("L1", "400 V 50 Hz")?;
-    let qs1 = b.put("P2QS1", "iec.disconnector_fuse_3", 24.0, 216.0)?;
+    let qs1 = b.put_r("P2QS1", "iec.disconnector_fuse_3", 64.0, rows[0], Rotation::R90)?;
+    b.mirror(qs1)?;
     b.describe("P2QS1", "Main switch with fuses 63 A")?;
     b.parts(
         "P2QS1",
@@ -387,37 +398,34 @@ fn power_distribution(b: &mut Builder) -> Result<()> {
             ("14001050", 1, "Socomec", "Shaft extension S1-S2 500 mm 10x10"),
         ],
     )?;
-    // The distribution block: a black box with each pole's input on top joined inside to its
-    // outlet below.
+    // The distribution block: a black box with each pole's input on the left joined inside to
+    // its outlet on the right.
     let poles = ["L1", "L2", "L3", "N"];
     let outs = ["L1'", "L2'", "L3'", "N'"];
     let block = BlackBox {
         description: String::new(),
         tag_prefix: "-WB".into(),
-        top: names(&poles),
-        bottom: names(&outs),
-        left: Vec::new(),
-        right: Vec::new(),
+        top: Vec::new(),
+        bottom: Vec::new(),
+        left: names(&poles),
+        right: names(&outs),
         bridges: poles.iter().zip(outs).map(|(a, b)| names(&[a, b])).collect(),
     };
-    let wb1 = b.black("P2WB1", block, 16.0, 194.0)?;
+    let wb1 = b.black("P2WB1", block, 100.0, rows[0] + 8.0)?;
     b.describe("P2WB1", "Distribution block 4P 80 A")?;
     let wb: Vec<(F, &str, &str)> = poles.iter().zip(outs).map(|(p, o)| (wb1, *p, o)).collect();
     b.parts("P2WB1", &[("563930", 1, "Example", "Power distribution block 4P 80 A, 10 outlets")])?;
-    for (i, (top, bottom)) in [("1", "2"), ("3", "4"), ("5", "6")].iter().enumerate() {
-        b.ws((supply[i], "1"), (qs1, top), phases[i], "16", "BK")?;
-        b.ws((qs1, bottom), (wb[i].0, wb[i].1), &format!("P20{}", i + 1), "16", "BK")?;
+    for (i, (input, output)) in [("1", "2"), ("3", "4"), ("5", "6")].iter().enumerate() {
+        b.ws((supply[i], "1"), (qs1, input), phases[i], "16", "BK")?;
+        b.ws((qs1, output), (wb[i].0, wb[i].1), &format!("P20{}", i + 1), "16", "BK")?;
     }
     b.ws((supply[3], "1"), (wb[3].0, wb[3].1), "N", "16", "BU")?;
 
-    // Busbars P201-P204 to the right edge, tapped by the two branches.
-    let rows = [160.0, 152.0, 144.0, 136.0];
     let (qf1_x, qf3_x) = (216.0, 296.0);
     let mut taps = BTreeMap::new();
     for (i, y) in rows.iter().enumerate() {
         let number = format!("P20{}", i + 1);
         let mut last = (wb[i].0, wb[i].2.to_owned());
-        let mut first = true;
         let mut xs = vec![qf1_x + 8.0 * i as f64];
         if i == 0 {
             xs.push(qf3_x);
@@ -427,44 +435,39 @@ fn power_distribution(b: &mut Builder) -> Result<()> {
         }
         for x in xs {
             let j = b.junction(x, *y)?;
-            let wire = b.wn((last.0, &last.1), (j, "3"), &number)?;
-            if first {
-                // Down from the block's outlet and straight along the busbar's line.
-                b.bend(wire, *y)?;
-                first = false;
-            }
+            b.wn((last.0, &last.1), (j, "3"), &number)?;
             taps.insert((i, x as i64), j);
             last = (j, "4".to_owned());
         }
         let out = b.arrow(&number, 368.0, *y, Left)?;
         b.wn((last.0, &last.1), (out, "1"), &number)?;
     }
-    let qf1 = b.put("P2QF1", "iec.breaker_3pn_rcd", qf1_x, 104.0)?;
+    let qf1 = b.put("P2QF1", "iec.breaker_3pn_rcd", qf1_x, 192.0)?;
     b.describe("P2QF1", "Defrost resistors 80 A, 300 mA")?;
     b.parts("P2QF1", &[("5SU1344-1KK80", 1, SIEMENS, "RCBO 3P+N C80 300 mA")])?;
     for (i, pin) in ["1", "3", "5", "N"].iter().enumerate() {
         let tap = taps[&(i, (qf1_x + 8.0 * i as f64) as i64)];
         b.w((tap, "2"), (qf1, pin))?;
     }
-    let km4 = b.put("A3KM4", "iec.contact_main_3", qf1_x, 68.0)?;
+    let km4 = b.put("A3KM4", "iec.contact_main_3", qf1_x, 148.0)?;
     for (i, (from, to)) in [("2", "1"), ("4", "3"), ("6", "5")].iter().enumerate() {
         b.ws((qf1, from), (km4, to), &format!("P23{}", 6 + i), "16", "BK")?;
     }
     for (i, pin) in ["2", "4", "6"].iter().enumerate() {
-        let out = b.arrow(&format!("P21{}", i + 1), qf1_x + 8.0 * i as f64, 42.0, Up)?;
+        let out = b.arrow(&format!("P21{}", i + 1), qf1_x + 8.0 * i as f64, 112.0, Up)?;
         b.ws((km4, pin), (out, "1"), &format!("P21{}", i + 1), "10", "BK")?;
     }
-    let qf3 = b.put("P2QF3", "iec.breaker_1pn_rcd", qf3_x, 104.0)?;
+    let qf3 = b.put("P2QF3", "iec.breaker_1pn_rcd", qf3_x, 192.0)?;
     b.describe("P2QF3", "Heating cables 25 A, 300 mA")?;
     b.parts("P2QF3", &[("5SU1356-1KK25", 1, SIEMENS, "RCBO 1P+N C25 300 mA")])?;
     b.w((taps[&(0, qf3_x as i64)], "2"), (qf3, "1"))?;
     b.w((taps[&(3, (qf3_x + 8.0) as i64)], "2"), (qf3, "N"))?;
-    let km5 = b.put("A3KM5", "iec.contact_main_3", qf3_x, 68.0)?;
+    let km5 = b.put("A3KM5", "iec.contact_main_3", qf3_x, 148.0)?;
     b.ws((qf3, "2"), (km5, "1"), "P242", "4", "BK")?;
     b.ws((qf3, "N'"), (km5, "3"), "P243", "4", "BK")?;
     for (pin, n) in [("2", "P220"), ("4", "P221")] {
         let x = if pin == "2" { qf3_x } else { qf3_x + 8.0 };
-        let out = b.arrow(n, x, 42.0, Up)?;
+        let out = b.arrow(n, x, 112.0, Up)?;
         b.ws((km5, pin), (out, "1"), n, "4", "BK")?;
     }
     Ok(())
@@ -1164,6 +1167,18 @@ fn outputs_card(b: &mut Builder) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn protective_earth_wires_are_found() {
+        let p = reference_project().unwrap();
+        let earth = p.protective_earth_wires();
+        let numbered = |n: &str| p.connections.values().filter(|c| c.wire_number.as_deref() == Some(n)).count();
+        assert_eq!(numbered("PE"), 2, "inverter to -X0:PE, -X0:PE to the motor");
+        for c in p.connections.values() {
+            let pe = c.wire_number.as_deref() == Some("PE");
+            assert_eq!(earth.contains(&c.id), pe, "{:?}", c.wire_number);
+        }
+    }
 
     #[test]
     fn the_reference_project_builds_and_has_its_pages() {

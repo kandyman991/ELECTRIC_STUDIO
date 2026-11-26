@@ -517,6 +517,7 @@ mod tests {
             rotation: Default::default(),
             designations,
             properties: Default::default(),
+            mirrored: false,
         })
         .unwrap();
         for number in ["EX-PE-4", "EX-END"] {

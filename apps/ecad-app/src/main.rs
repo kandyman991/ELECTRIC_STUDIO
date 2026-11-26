@@ -163,6 +163,9 @@ impl App {
             if i.key_pressed(egui::Key::R) && !cmd {
                 events.push(UiEvent::Key { key: KeyName::Rotate });
             }
+            if i.key_pressed(egui::Key::M) && !cmd {
+                events.push(UiEvent::Key { key: KeyName::Mirror });
+            }
             if i.key_pressed(egui::Key::F) && !cmd {
                 events.push(UiEvent::Fit);
             }
@@ -564,7 +567,15 @@ impl App {
                     _ => {}
                 }
                 ui.add_space(8.0);
-                ui.label("R rotates, Delete removes.");
+                ui.horizontal(|ui| {
+                    if ui.small_button("Rotate").on_hover_text("Quarter turn (R)").clicked() {
+                        events.push(UiEvent::Key { key: KeyName::Rotate });
+                    }
+                    if ui.small_button("Mirror").on_hover_text("Flip left to right (M)").clicked() {
+                        events.push(UiEvent::Key { key: KeyName::Mirror });
+                    }
+                });
+                ui.small("R rotates, M mirrors, Delete removes.");
             }
             Some(SelectionInfo::Wire {
                 number,
