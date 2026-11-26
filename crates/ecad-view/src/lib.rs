@@ -367,6 +367,85 @@ pub fn page_dxf(project: &Project, page: PageId) -> Result<String> {
     Ok(cadcraft_io::write_dxf(&page_drawing(project, page)?))
 }
 
+/// The page as a DWG file (AutoCAD 2004 format or later, as CADCraft chooses).
+pub fn page_dwg(project: &Project, page: PageId) -> Result<Vec<u8>> {
+    // The DWG writer runs third-party code that should be isolated from untrusted input; this
+    // input is a drawing this process just built, which is the case the in-process path is for.
+    cadcraft_io::dwg_worker::allow_in_process();
+    cadcraft_io::write(&page_drawing(project, page)?, "page.dwg").map_err(|e| ViewError::Drawing(e.to_string()))
+}
+
+/// Gap between pages laid side by side in [`project_pdf`]'s working drawing, in mm.
+const PDF_PAGE_GAP: f64 = 50.0;
+
+/// The whole project as one PDF: every page in order, one A3 landscape sheet each, at 1:1
+/// (the sheet is 420 × 297 mm). Drawing layers become PDF layers. Text is drawn as outlines
+/// (CADCraft's stroke font), so it prints exactly as on screen but can't be searched yet.
+pub fn project_pdf(project: &Project) -> Result<Vec<u8>> {
+    use cadcraft_doc::geom::{Bounds2, Mat3, Vec2};
+    use cadcraft_io::pdf::PdfOptions;
+    let pages = project.pages_in_order();
+    // CADCraft plots sheets of one drawing, so the pages are laid side by side in one drawing
+    // and each PDF page plots its window.
+    let mut d = Drawing::new_metric();
+    let mut items = Vec::new();
+    let (lo, hi) = project.sheet.bounds();
+    let step = (hi.x - lo.x) + PDF_PAGE_GAP;
+    let err = |e: cadcraft_doc::DocError| ViewError::Drawing(e.to_string());
+    for (i, page) in pages.iter().enumerate() {
+        let dx = step * i as f64;
+        let part = page_drawing(project, page.id)?;
+        for (name, block) in &part.blocks {
+            d.blocks.entry(name.clone()).or_insert_with(|| block.clone());
+        }
+        for layer in &part.layers {
+            if !d.layers.iter().any(|l| l.name == layer.name) {
+                d.layers.push(layer.clone());
+            }
+        }
+        let shift = Mat3::translate(Vec2::new(dx, 0.0));
+        for e in part.model.iter() {
+            let mut kind = e.kind.clone();
+            kind.transform(&shift);
+            d.add(&Space::Model, e.common.clone(), kind).map_err(err)?;
+        }
+        let window = Bounds2::new(Vec2::new(lo.x + dx, lo.y), Vec2::new(hi.x + dx, hi.y));
+        let sheet = PdfOptions {
+            paper_mm: Some((project.sheet.height, project.sheet.width)),
+            landscape: Some(true),
+            fit: Some(true),
+            margins: Some([0.0; 4]),
+            window: Some(window),
+            title: page.name.clone(),
+            ..PdfOptions::default()
+        };
+        items.push((Space::Model, sheet));
+    }
+    let file = PdfOptions { title: project.name.clone(), compress: true, ..PdfOptions::default() };
+    cadcraft_io::pdf::pdf_items(&d, &items, &file).map_err(|e| ViewError::Drawing(e.to_string()))
+}
+
+/// Safe file-name stem for a page: its number, with anything but letters, digits, `-`, `_` and
+/// `.` replaced by `_` (page `3/a` → `page-3_a`).
+pub fn page_file_stem(name: &str) -> String {
+    let clean: String =
+        name.chars().map(|c| if c.is_ascii_alphanumeric() || "-_.".contains(c) { c } else { '_' }).collect();
+    format!("page-{clean}")
+}
+
+/// Every drawing output, as (file name, contents): `<project>.pdf` with all pages, plus a DXF,
+/// a DWG and a PNG preview per page (`page-1.dxf`…).
+pub fn drawing_files(project: &Project) -> Result<Vec<(String, Vec<u8>)>> {
+    let mut files = vec![("drawings.pdf".to_owned(), project_pdf(project)?)];
+    for page in project.pages_in_order() {
+        let stem = page_file_stem(&page.name);
+        files.push((format!("{stem}.dxf"), page_dxf(project, page.id)?.into_bytes()));
+        files.push((format!("{stem}.dwg"), page_dwg(project, page.id)?));
+        files.push((format!("{stem}.png"), page_png(project, page.id, 1200, 1200)?));
+    }
+    Ok(files)
+}
+
 /// The page as a PNG image, fitted to its extents.
 pub fn page_png(project: &Project, page: PageId, width: u32, height: u32) -> Result<Vec<u8>> {
     let d = page_drawing(project, page)?;
@@ -394,6 +473,50 @@ mod tests {
         assert_eq!(tags, ["-K1", "-S1", "L+", "M"]);
         let wires = back.model.iter().filter(|e| e.common.layer == LAYER_WIRES).count();
         assert_eq!(wires, 3, "three straight wires in the unmoved sample");
+    }
+
+    #[test]
+    fn dwg_round_trip_keeps_device_tags() {
+        let p = start_circuit().unwrap();
+        let back = cadcraft_io::read(&page_dwg(&p, PAGE_1).unwrap(), "page.dwg").unwrap();
+        let mut tags: Vec<String> = back
+            .model
+            .iter()
+            .filter_map(|e| match &e.kind {
+                EntityKind::Insert(i) => i.attribs.first().map(|a| a.text.value.clone()),
+                _ => None,
+            })
+            .collect();
+        tags.sort();
+        assert_eq!(tags, ["-K1", "-S1", "L+", "M"]);
+    }
+
+    #[test]
+    fn the_project_pdf_has_one_a3_page_per_page_in_order() {
+        use cadcraft_io::pdf_read::{PdfImportOptions, read};
+        let p = ecad_model::sample::with_plc().unwrap();
+        let pdf = project_pdf(&p).unwrap();
+        assert!(pdf.starts_with(b"%PDF"));
+        for page in 1..=3 {
+            let (d, pages) = read(&pdf, &PdfImportOptions { page, ..PdfImportOptions::default() }).unwrap();
+            assert_eq!(pages, 3);
+            // The sheet's outer edge fills the A3 page (420 x 297 mm) at 1:1.
+            let b = d.extents(&Space::Model);
+            let size = b.max - b.min;
+            assert!((size.x - 420.0).abs() < 1.0 && (size.y - 297.0).abs() < 1.0, "page {page}: {b:?}");
+        }
+        assert_eq!(project_pdf(&p).unwrap(), pdf, "same project, same bytes");
+    }
+
+    #[test]
+    fn drawing_files_cover_every_page_with_safe_names() {
+        assert_eq!(page_file_stem("3/a b"), "page-3_a_b");
+        let p = ecad_model::sample::with_contacts().unwrap();
+        let names: Vec<String> = drawing_files(&p).unwrap().into_iter().map(|(n, _)| n).collect();
+        assert_eq!(
+            names,
+            ["drawings.pdf", "page-1.dxf", "page-1.dwg", "page-1.png", "page-2.dxf", "page-2.dwg", "page-2.png"]
+        );
     }
 
     fn texts_on(project: &Project, page: PageId, layer: &str) -> Vec<String> {

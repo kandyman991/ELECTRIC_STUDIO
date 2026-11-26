@@ -65,6 +65,22 @@ Some mistakes can't be made at all, because the model refuses the command: dupli
 tags, wire numbers, terminal or channel numbers, PLC addresses or symbols, and a second wire on
 one connection point.
 
+## Drawing output
+
+`ecad-view` turns each page into a CADCraft drawing and writes it with `cadcraft-io`:
+
+- **PDF**: the whole project in one file (`drawings.pdf`), one A3 landscape page per page, in
+  page order, at 1:1. CADCraft plots sheets of one drawing, so the pages are laid side by side
+  in a working drawing and each PDF page plots its sheet's window. Text is CADCraft's stroke
+  font drawn as outlines: it prints like the screen but isn't searchable yet.
+- **DXF** and **DWG** per page, with symbols as blocks and the device tag as a `TAG`
+  attribute. DWG goes through CADCraft's DWG bridge (the `acadrust` crate, MPL-2.0, used
+  unmodified). That bridge is meant to run untrusted input in a child process; we only write
+  drawings this process just built, so it runs in process.
+- **PNG** per page, as a preview.
+
+File > Export drawings… and `ecad export` write all of them.
+
 ## Editing
 
 `ecad-editor` holds all editing behaviour without any UI toolkit: Select (click, drag with
