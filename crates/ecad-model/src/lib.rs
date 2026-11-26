@@ -10,6 +10,7 @@ pub mod naming;
 pub mod parts;
 pub mod potential;
 pub mod project;
+pub mod reference;
 pub mod sample;
 pub mod sheet;
 pub mod symbol;

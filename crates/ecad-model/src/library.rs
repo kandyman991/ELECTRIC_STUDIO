@@ -248,6 +248,10 @@ fn power_symbols() -> Vec<SymbolDef> {
     // Thermal and magnetic releases: one box across the poles, marked I>.
     motor.extend(rect(-2.0, -4.0, POLE * 2.0 + 2.0, -6.5));
     motor.push(Graphic::Text { at: Point::new(-7.5, -6.2), height: 2.0, value: "I>".into() });
+    let mut rcd2 = poles(2, &cross);
+    rcd2.push(link(2));
+    rcd2.extend(rect(-2.0, -4.0, POLE + 2.0, -6.5));
+    rcd2.push(Graphic::Text { at: Point::new(-7.5, -6.2), height: 2.0, value: "ID".into() });
     let mut rcd = poles(4, &cross);
     rcd.push(link(4));
     rcd.extend(rect(-2.0, -4.0, POLE * 3.0 + 2.0, -6.5));
@@ -288,6 +292,14 @@ fn power_symbols() -> Vec<SymbolDef> {
             Role::Main,
             rcd,
             pole_points(&[("1", "2"), ("3", "4"), ("5", "6"), ("N", "N'")]),
+        ),
+        def(
+            "iec.breaker_1pn_rcd",
+            "Residual-current circuit breaker, 1P+N",
+            "-QF",
+            Role::Main,
+            rcd2,
+            pole_points(&[("1", "2"), ("N", "N'")]),
         ),
         def(
             "iec.disconnector_fuse_3",

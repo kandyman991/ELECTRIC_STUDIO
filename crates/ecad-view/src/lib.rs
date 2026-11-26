@@ -81,6 +81,17 @@ fn point_label(at: Point, leaves: Direction, name: &str) -> Text {
     }
 }
 
+/// Whether a terminal or channel has one of the same device just left of it on the same page,
+/// 8 mm away at the same height: then its label leaves out the strip's name.
+fn continues_row(project: &Project, f: &ecad_model::Function) -> bool {
+    project.functions_of(f.device).any(|g| {
+        g.id != f.id
+            && g.page == f.page
+            && (g.position.y - f.position.y).abs() < 0.01
+            && (f.position.x - g.position.x - 8.0).abs() < 0.01
+    })
+}
+
 /// Which side of a symbol its tag and cross-references go on: the first of right, left and
 /// above that no wire leaves from, so they never sit on a wire.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -131,12 +142,18 @@ fn cross_reference_lines(project: &Project, f: ecad_model::FunctionId, role: Rol
             None => Vec::new(),
         },
         // An interruption point shows where its partners are.
-        Role::Interruption => project
-            .functions_of(device)
-            .filter(|g| g.id != f)
-            .filter_map(|g| project.reference(g.id).ok())
-            .enumerate()
-            .collect(),
+        // An interruption point shows where its potential goes on: the next page that has a
+        // partner (or, from the last such page, the first), not every page that uses it.
+        Role::Interruption => {
+            let order: Vec<PageId> = project.pages_in_order().iter().map(|p| p.id).collect();
+            let rank = |page: PageId| order.iter().position(|p| *p == page).unwrap_or(usize::MAX);
+            let here = rank(project.function(f)?.page);
+            let mut others: Vec<&ecad_model::Function> =
+                project.functions_of(device).filter(|g| g.id != f && rank(g.page) != here).collect();
+            others.sort_by_key(|g| rank(g.page));
+            let next = others.iter().find(|g| rank(g.page) > here).or_else(|| others.first());
+            next.and_then(|g| project.reference(g.id).ok()).map(|r| vec![(0, r)]).unwrap_or_default()
+        }
         // A PLC channel shows its address and symbol: `I0.0 Door_Closed`.
         Role::PlcChannel { .. } => {
             let g = project.function(f)?;
@@ -314,6 +331,8 @@ pub fn page_drawing(project: &Project, page: PageId) -> Result<Drawing> {
                 max,
                 side,
                 &match project.drawing_number(f.id) {
+                    // In a row of terminals of one strip, only the first names the strip.
+                    Some(n) if continues_row(project, f) => format!(":{n}"),
                     Some(n) => format!("{}:{n}", device.tag),
                     None => device.tag.clone(),
                 },
