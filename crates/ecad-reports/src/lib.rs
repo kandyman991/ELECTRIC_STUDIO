@@ -97,13 +97,22 @@ pub struct BomRow {
 }
 
 /// The bill of materials: every part used by a device, with the total quantity, sorted by part
-/// number. Parts of a terminal strip count once per terminal, unless marked per strip.
+/// number. Parts of a terminal strip count once per terminal, once per terminal of one kind
+/// (`only`), or once for the strip.
 pub fn bom(project: &Project) -> Vec<BomRow> {
     let mut rows: std::collections::BTreeMap<&str, BomRow> = std::collections::BTreeMap::new();
     for d in project.devices.values() {
-        let terminals = project.terminals_of(d.id).len() as u32;
+        let terminals = project.terminals_of(d.id);
         for r in &d.parts {
-            let per = if r.per_strip { 1 } else { terminals.max(1) };
+            let per = match (&r.only, r.per_strip) {
+                (_, true) => 1,
+                // Only the terminals drawn with that symbol (may be none).
+                (Some(symbol), false) => {
+                    terminals.iter().filter(|t| project.function(t.function).is_ok_and(|f| f.symbol == *symbol)).count()
+                        as u32
+                }
+                (None, false) => (terminals.len() as u32).max(1),
+            };
             let part = project.parts.get(&r.number);
             let row = rows.entry(&r.number).or_insert_with(|| BomRow {
                 number: r.number.clone(),
@@ -492,6 +501,42 @@ mod tests {
         assert_eq!((tb.quantity, tb.devices), (2, vec!["-X2".to_owned()]));
         let names: Vec<&str> = all_csv(&p).unwrap().iter().map(|(n, _)| *n).collect();
         assert!(names.contains(&"terminal-diagram.csv"), "{names:?}");
+
+        // A PE terminal on the same strip: parts can count per kind, or once for the strip.
+        let mut p = p;
+        let strip = p.function(ecad_model::sample::X2_1).unwrap().device;
+        let symbol = ecad_model::SymbolId::new("iec.terminal_pe");
+        let designations = p.next_designations(strip, &symbol);
+        let page = p.function(ecad_model::sample::X2_1).unwrap().page;
+        p.place(ecad_model::Function {
+            id: ecad_model::FunctionId::new(),
+            device: strip,
+            symbol,
+            page,
+            position: ecad_model::Point::new(80.0, 80.0),
+            rotation: Default::default(),
+            designations,
+            properties: Default::default(),
+        })
+        .unwrap();
+        for number in ["EX-PE-4", "EX-END"] {
+            p.apply(ecad_model::Command::AddPart(ecad_model::Part {
+                number: number.into(),
+                manufacturer: String::new(),
+                description: String::new(),
+                code: String::new(),
+                contacts: Vec::new(),
+            }))
+            .unwrap();
+        }
+        let parts = vec![
+            ecad_model::PartRef::per_terminal_of("EX-TB-4", 1, "iec.terminal"),
+            ecad_model::PartRef::per_terminal_of("EX-PE-4", 1, "iec.terminal_pe"),
+            ecad_model::PartRef::per_strip("EX-END", 2),
+        ];
+        p.apply(ecad_model::Command::SetDeviceParts { id: strip, parts }).unwrap();
+        let count = |n: &str| bom(&p).into_iter().find(|r| r.number == n).map(|r| r.quantity);
+        assert_eq!((count("EX-TB-4"), count("EX-PE-4"), count("EX-END")), (Some(2), Some(1), Some(2)));
     }
 
     #[test]

@@ -84,6 +84,7 @@ struct BoxFields {
     bottom: String,
     left: String,
     right: String,
+    bridges: String,
 }
 
 impl Default for BoxFields {
@@ -96,6 +97,7 @@ impl Default for BoxFields {
             bottom: String::new(),
             left: String::new(),
             right: String::new(),
+            bridges: String::new(),
         }
     }
 }
@@ -345,6 +347,7 @@ impl App {
                 role,
                 references,
                 parts,
+                terminal_kinds,
                 terminal,
                 plc,
                 location,
@@ -368,7 +371,7 @@ impl App {
                 }
                 if role != "potential" && role != "interruption" && !symbol.ends_with("junction") {
                     ui.add_space(8.0);
-                    ui.strong(if role == "terminal" { "Parts (per terminal unless per strip)" } else { "Parts" });
+                    ui.strong("Parts");
                     if parts.is_empty() {
                         ui.small("None yet: this device is missing from the BOM.");
                     }
@@ -380,17 +383,33 @@ impl App {
                             }
                             ui.label(&p.number).on_hover_text(&p.description);
                             if role == "terminal" {
-                                let mut once = p.per_strip;
-                                if ui
-                                    .checkbox(&mut once, "per strip")
-                                    .on_hover_text("Count once for the strip (end plate, bracket), not per terminal")
-                                    .changed()
-                                {
-                                    events.push(UiEvent::SetDevicePartPerStrip {
-                                        number: p.number.clone(),
-                                        per_strip: once,
-                                    });
+                                let label = |count: &str| match count {
+                                    "terminal" => "each terminal".to_owned(),
+                                    "strip" => "once per strip".to_owned(),
+                                    id => terminal_kinds
+                                        .iter()
+                                        .find(|(k, _)| k == id)
+                                        .map_or_else(|| format!("each {id}"), |(_, d)| format!("each {}", d.to_lowercase())),
+                                };
+                                let mut options = vec!["terminal".to_owned(), "strip".to_owned()];
+                                // Per kind only when the strip mixes kinds (or the part already counts that way).
+                                if terminal_kinds.len() > 1 || !matches!(p.count.as_str(), "terminal" | "strip") {
+                                    options.extend(terminal_kinds.iter().map(|(k, _)| k.clone()));
                                 }
+                                egui::ComboBox::from_id_salt(("part-count", &p.number))
+                                    .selected_text(label(&p.count))
+                                    .show_ui(ui, |ui| {
+                                        for o in &options {
+                                            if ui.selectable_label(*o == p.count, label(o)).clicked() && *o != p.count {
+                                                events.push(UiEvent::SetDevicePartCount {
+                                                    number: p.number.clone(),
+                                                    count: o.clone(),
+                                                });
+                                            }
+                                        }
+                                    })
+                                    .response
+                                    .on_hover_text("How the BOM counts this part on the strip: per terminal, once for the strip (end plate, bracket), or per terminal of one kind (feed-through, PE)");
                             }
                             if ui.small_button("✕").on_hover_text("Remove from this device").clicked() {
                                 events.push(UiEvent::RemoveDevicePart { number: p.number.clone() });
@@ -740,13 +759,14 @@ impl App {
             let b = &mut self.black_box;
             ui.small("For devices such as inverters, safety modules or power supplies: a box with the terminals named as on the device. Names are separated by commas.");
             egui::Grid::new("black-box").num_columns(2).show(ui, |ui| {
-                let fields: [(&str, &mut String, &str); 6] = [
+                let fields: [(&str, &mut String, &str); 7] = [
                     ("Description", &mut b.description, "Inverter"),
                     ("Letter code", &mut b.prefix, "-A"),
                     ("Top terminals", &mut b.top, "L1, L2, L3, PE"),
                     ("Bottom terminals", &mut b.bottom, "U, V, W"),
                     ("Left terminals", &mut b.left, ""),
                     ("Right terminals", &mut b.right, "DI0, DI1, 0V"),
+                    ("Joined inside", &mut b.bridges, "L1, L1.1, L1.2; N, N.1"),
                 ];
                 for (label, value, hint) in fields {
                     ui.label(label);
@@ -761,10 +781,12 @@ impl App {
                 bottom: names(&b.bottom),
                 left: names(&b.left),
                 right: names(&b.right),
+                // Groups separated by semicolons.
+                bridges: b.bridges.split(';').map(names).filter(|g| !g.is_empty()).collect(),
             };
             let valid = spec.is_valid();
             if !valid {
-                ui.small("Give it at least one terminal; names must be unique.");
+                ui.small("Give it at least one terminal; names must be unique. Each joined group needs two or more of the box's terminals.");
             }
             if ui.add_enabled(valid, egui::Button::new("Create and place")).clicked() {
                 create = Some(spec);
@@ -928,6 +950,10 @@ impl App {
                 ui.label("Wire number format");
                 ui.add(egui::TextEdit::singleline(&mut f.naming.wire_format).desired_width(200.0))
                     .on_hover_text("{page} page name, {n} or {n:02} the next number: W{n} gives W1, {page}{n:02} gives P201. Per potential, a named potential (L+, +A100) uses its name");
+                ui.end_row();
+                ui.label("PLC wires");
+                ui.add(egui::TextEdit::singleline(&mut f.naming.plc_wire_format).hint_text("off").desired_width(200.0))
+                    .on_hover_text("Wires on a PLC channel numbered from its address: {io}{byte}{bit:02} gives I005 for I0.5 and O306 for Q3.6. {address} is the whole address. Empty: off");
                 ui.end_row();
             });
             let naming_changed = f.naming != frame.naming;

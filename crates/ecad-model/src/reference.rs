@@ -311,9 +311,8 @@ pub fn reference_project() -> Result<Project> {
     Ok(b.p)
 }
 
-/// Feed-through terminals per terminal; end brackets and end plates once per strip. The
-/// reference's PE terminals (ZPE) on -X0 aren't modelled: a strip has one part list for all its
-/// terminals.
+/// Feed-through terminals per terminal; end brackets and end plates once per strip; on -X0 the
+/// PE terminals (ZPE) per PE terminal.
 fn terminal_strips(b: &mut Builder) -> Result<()> {
     let zdu = [("1608510000", 1, WEIDMULLER, "Feed-through terminal ZDU 2.5")];
     for (strip, plates) in [("X0", 1), ("X22", 1), ("X31", 4), ("X32", 4), ("X33", 4), ("X90", 1)] {
@@ -326,7 +325,17 @@ fn terminal_strips(b: &mut Builder) -> Result<()> {
             ],
         )?;
     }
-    Ok(())
+    // -X0 mixes kinds: feed-through terminals count per normal terminal, ZPE per PE terminal.
+    b.parts("X0", &[("1608640000", 1, WEIDMULLER, "Modular PE terminal ZPE 2.5")])?;
+    let x0 = b.device("X0")?;
+    let mut parts = vec![
+        PartRef::per_terminal_of("1608510000", 1, "iec.terminal"),
+        PartRef::per_terminal_of("1608640000", 1, "iec.terminal_pe"),
+        PartRef::per_strip("0383560000", 2),
+        PartRef::per_strip("1608740000", 1),
+    ];
+    parts.retain(|r| b.p.parts.contains_key(&r.number));
+    b.p.apply(Command::SetDeviceParts { id: x0, parts }).map(drop)
 }
 
 /// Every potential without a number gets one, as drawing it in the editor would: its name, or
@@ -378,18 +387,28 @@ fn power_distribution(b: &mut Builder) -> Result<()> {
             ("14001050", 1, "Socomec", "Shaft extension S1-S2 500 mm 10x10"),
         ],
     )?;
-    // The distribution block: four bridged poles, one per busbar.
-    let mut wb = Vec::new();
-    for (i, n) in ["1", "2", "3", "4"].iter().enumerate() {
-        wb.push(b.terminal("P2WB1", "iec.terminal", n, 24.0 + 8.0 * i as f64, 180.0)?);
-    }
+    // The distribution block: a black box with each pole's input on top joined inside to its
+    // outlet below.
+    let poles = ["L1", "L2", "L3", "N"];
+    let outs = ["L1'", "L2'", "L3'", "N'"];
+    let block = BlackBox {
+        description: String::new(),
+        tag_prefix: "-WB".into(),
+        top: names(&poles),
+        bottom: names(&outs),
+        left: Vec::new(),
+        right: Vec::new(),
+        bridges: poles.iter().zip(outs).map(|(a, b)| names(&[a, b])).collect(),
+    };
+    let wb1 = b.black("P2WB1", block, 16.0, 194.0)?;
     b.describe("P2WB1", "Distribution block 4P 80 A")?;
+    let wb: Vec<(F, &str, &str)> = poles.iter().zip(outs).map(|(p, o)| (wb1, *p, o)).collect();
     b.parts("P2WB1", &[("563930", 1, "Example", "Power distribution block 4P 80 A, 10 outlets")])?;
     for (i, (top, bottom)) in [("1", "2"), ("3", "4"), ("5", "6")].iter().enumerate() {
         b.ws((supply[i], "1"), (qs1, top), phases[i], "16", "BK")?;
-        b.ws((qs1, bottom), (wb[i], "1"), &format!("P20{}", i + 1), "16", "BK")?;
+        b.ws((qs1, bottom), (wb[i].0, wb[i].1), &format!("P20{}", i + 1), "16", "BK")?;
     }
-    b.ws((supply[3], "1"), (wb[3], "1"), "N", "16", "BU")?;
+    b.ws((supply[3], "1"), (wb[3].0, wb[3].1), "N", "16", "BU")?;
 
     // Busbars P201-P204 to the right edge, tapped by the two branches.
     let rows = [160.0, 152.0, 144.0, 136.0];
@@ -397,7 +416,8 @@ fn power_distribution(b: &mut Builder) -> Result<()> {
     let mut taps = BTreeMap::new();
     for (i, y) in rows.iter().enumerate() {
         let number = format!("P20{}", i + 1);
-        let mut last = (wb[i], "2".to_owned());
+        let mut last = (wb[i].0, wb[i].2.to_owned());
+        let mut first = true;
         let mut xs = vec![qf1_x + 8.0 * i as f64];
         if i == 0 {
             xs.push(qf3_x);
@@ -407,7 +427,12 @@ fn power_distribution(b: &mut Builder) -> Result<()> {
         }
         for x in xs {
             let j = b.junction(x, *y)?;
-            b.wn((last.0, &last.1), (j, "3"), &number)?;
+            let wire = b.wn((last.0, &last.1), (j, "3"), &number)?;
+            if first {
+                // Down from the block's outlet and straight along the busbar's line.
+                b.bend(wire, *y)?;
+                first = false;
+            }
             taps.insert((i, x as i64), j);
             last = (j, "4".to_owned());
         }
@@ -587,9 +612,11 @@ fn spiral_motor(b: &mut Builder) -> Result<()> {
             description: "Inverter 1,1 kW".into(),
             tag_prefix: "-T".into(),
             top: names(&["U1", "V1", "W1", "PE", "69", "34", "16", "17"]),
-            bottom: names(&["U2", "V2", "W2"]),
+            // PE' is the motor-side earth.
+            bottom: names(&["U2", "V2", "W2", "PE'"]),
             left: Vec::new(),
             right: Vec::new(),
+            bridges: Vec::new(),
         },
         52.0,
         180.0,
@@ -618,6 +645,18 @@ fn spiral_motor(b: &mut Builder) -> Result<()> {
         let c = b.w((t, "2"), (m3, motor))?;
         b.core(c, wm3, &(i + 1).to_string(), "1,5")?;
     }
+    // The motor's earth through PE terminal -X0:PE on the cable's fourth core; the shield on
+    // -X0:SC-M3, a PE terminal too.
+    let pe = b.terminal("X0", "iec.terminal_pe", "PE", 84.0, 128.0)?;
+    b.wn((mu3, "PE'"), (pe, "1"), "PE")?;
+    let c = b.wn((pe, "2"), (m3, "PE"), "PE")?;
+    let spec = WireSpec {
+        cross_section: "1,5".into(),
+        colour: "GNYE".into(),
+        cable: Some(CableCore { cable: wm3, core: "PE".into() }),
+    };
+    b.p.apply(Command::SetWireSpec { id: c, spec })?;
+    b.terminal("X0", "iec.terminal_pe", "SC-M3", 92.0, 128.0)?;
     Ok(())
 }
 
@@ -670,6 +709,7 @@ fn supply_24v(b: &mut Builder) -> Result<()> {
             bottom: names(&["0V", "1", "2", "3", "4"]),
             left: Vec::new(),
             right: Vec::new(),
+            bridges: Vec::new(),
         },
         92.0,
         200.0,
@@ -796,6 +836,7 @@ fn safety_module(b: &mut Builder) -> Result<()> {
             bottom: names(&["A2", "O01", "O02", "O03", "OS1", "OS2", "OS3", "I21"]),
             left: Vec::new(),
             right: Vec::new(),
+            bridges: Vec::new(),
         },
         120.0,
         176.0,
