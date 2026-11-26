@@ -141,6 +141,9 @@ pub struct SymbolDef {
     /// Don't print connection-point designations (junctions, potential and interruption points).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hide_point_labels: bool,
+    /// Where the symbol is listed in the library, e.g. "Contacts"; empty for "Other".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub category: String,
     pub graphics: Vec<Graphic>,
     pub connection_points: Vec<ConnectionPointDef>,
 }

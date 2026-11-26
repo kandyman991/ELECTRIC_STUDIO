@@ -1,297 +1,13 @@
-//! A small built-in project, on the 4 mm grid, used by tests, golden files and `ecad demo`.
-//! The three symbols here are placeholders until the IEC 60617 library lands.
+//! Small built-in projects, on the 4 mm grid, used by tests, golden files and `ecad demo`.
 
-use crate::geometry::{Direction, Point, Rotation};
+use crate::geometry::{Point, Rotation};
 use crate::parts::{Part, PartRef};
 use crate::project::*;
 use crate::symbol::*;
 
-fn line(ax: f64, ay: f64, bx: f64, by: f64) -> Graphic {
-    Graphic::Line { a: Point::new(ax, ay), b: Point::new(bx, by) }
-}
-
-fn cp(name: &str, x: f64, y: f64, leaves: Direction) -> ConnectionPointDef {
-    ConnectionPointDef { name: name.to_owned(), at: Point::new(x, y), leaves }
-}
-
+/// The symbols the samples use: the built-in library.
 pub fn symbols() -> Vec<SymbolDef> {
-    vec![
-        SymbolDef {
-            id: SymbolId::new("iec.coil"),
-            description: "Relay or contactor coil".into(),
-            tag_prefix: "-K".into(),
-            role: Role::Main,
-            bridged: false,
-            hide_tag: false,
-            hide_point_labels: false,
-            graphics: vec![
-                line(-5.0, -3.0, 5.0, -3.0),
-                line(5.0, -3.0, 5.0, 3.0),
-                line(5.0, 3.0, -5.0, 3.0),
-                line(-5.0, 3.0, -5.0, -3.0),
-                line(0.0, 3.0, 0.0, 8.0),
-                line(0.0, -3.0, 0.0, -8.0),
-            ],
-            connection_points: vec![cp("A1", 0.0, 8.0, Direction::Up), cp("A2", 0.0, -8.0, Direction::Down)],
-        },
-        SymbolDef {
-            id: SymbolId::new("iec.contact_no"),
-            description: "Normally open contact".into(),
-            tag_prefix: "-S".into(),
-            role: Role::Contact { kind: ContactKind::NormallyOpen },
-            bridged: false,
-            hide_tag: false,
-            hide_point_labels: false,
-            graphics: vec![
-                line(0.0, 8.0, 0.0, 3.0),
-                line(0.0, 3.0, -3.0, -3.0),
-                line(0.0, -3.0, 0.0, -8.0),
-                line(-6.0, 0.0, -2.0, 0.0),
-            ],
-            connection_points: vec![cp("13", 0.0, 8.0, Direction::Up), cp("14", 0.0, -8.0, Direction::Down)],
-        },
-        SymbolDef {
-            id: SymbolId::new("iec.contact_nc"),
-            description: "Normally closed contact".into(),
-            tag_prefix: "-S".into(),
-            role: Role::Contact { kind: ContactKind::NormallyClosed },
-            bridged: false,
-            hide_tag: false,
-            hide_point_labels: false,
-            graphics: vec![
-                line(0.0, 8.0, 0.0, 3.0),
-                line(0.0, 3.0, 2.5, 3.0),
-                line(0.0, -3.0, 3.5, 4.0),
-                line(0.0, -3.0, 0.0, -8.0),
-                line(-6.0, 0.0, 1.0, 0.0),
-            ],
-            connection_points: vec![cp("11", 0.0, 8.0, Direction::Up), cp("12", 0.0, -8.0, Direction::Down)],
-        },
-        SymbolDef {
-            id: SymbolId::new("iec.supply"),
-            description: "Potential point".into(),
-            tag_prefix: "P".into(),
-            role: Role::Potential,
-            bridged: false,
-            hide_tag: false,
-            hide_point_labels: true,
-            graphics: vec![line(-2.0, 0.0, 2.0, 0.0)],
-            connection_points: vec![cp("1", 0.0, 0.0, Direction::Down)],
-        },
-        SymbolDef {
-            id: SymbolId::new("iec.terminal"),
-            description: "Terminal".into(),
-            tag_prefix: "-X".into(),
-            role: Role::Terminal,
-            // A feed-through terminal: both sides are the same potential.
-            bridged: true,
-            hide_tag: false,
-            hide_point_labels: true,
-            graphics: vec![
-                Graphic::Circle { center: Point::ZERO, radius: 1.2 },
-                line(0.0, 1.2, 0.0, 4.0),
-                line(0.0, -1.2, 0.0, -4.0),
-            ],
-            // Top is the inside of the cabinet, bottom the field side.
-            connection_points: vec![cp("1", 0.0, 4.0, Direction::Up), cp("2", 0.0, -4.0, Direction::Down)],
-        },
-        SymbolDef {
-            id: SymbolId::new("iec.junction"),
-            description: "Junction".into(),
-            tag_prefix: "J".into(),
-            role: Role::Single,
-            bridged: true,
-            hide_tag: true,
-            hide_point_labels: true,
-            graphics: vec![
-                // Concentric rings read as a solid dot at drawing scale.
-                Graphic::Circle { center: Point::ZERO, radius: 0.2 },
-                Graphic::Circle { center: Point::ZERO, radius: 0.4 },
-                Graphic::Circle { center: Point::ZERO, radius: 0.6 },
-                Graphic::Circle { center: Point::ZERO, radius: 0.8 },
-            ],
-            connection_points: vec![
-                cp("1", 0.0, 0.0, Direction::Up),
-                cp("2", 0.0, 0.0, Direction::Down),
-                cp("3", 0.0, 0.0, Direction::Left),
-                cp("4", 0.0, 0.0, Direction::Right),
-            ],
-        },
-        SymbolDef {
-            id: SymbolId::new("iec.interruption"),
-            description: "Interruption point".into(),
-            tag_prefix: "I".into(),
-            role: Role::Interruption,
-            bridged: false,
-            hide_tag: false,
-            hide_point_labels: true,
-            graphics: vec![
-                line(0.0, 0.0, 0.0, -2.0),
-                line(-2.0, -2.0, 2.0, -2.0),
-                line(2.0, -2.0, 0.0, -5.0),
-                line(0.0, -5.0, -2.0, -2.0),
-            ],
-            connection_points: vec![cp("1", 0.0, 0.0, Direction::Up)],
-        },
-    ]
-    .into_iter()
-    .chain(plc_channel_symbols())
-    .chain(power_symbols())
-    .collect()
-}
-
-fn dashed(ax: f64, ay: f64, bx: f64, by: f64) -> Graphic {
-    Graphic::Dashed { a: Point::new(ax, ay), b: Point::new(bx, by) }
-}
-
-fn rect(ax: f64, ay: f64, bx: f64, by: f64) -> Vec<Graphic> {
-    vec![line(ax, ay, bx, ay), line(bx, ay, bx, by), line(bx, by, ax, by), line(ax, by, ax, ay)]
-}
-
-/// Pole spacing of multi-pole symbols, in mm.
-pub const POLE: f64 = 8.0;
-
-/// Connection points of `n` poles: top names leave up at y = 10, bottom names leave down at
-/// y = -10 (room for the point labels clear of release boxes and fuses), pole `i` at x = 8·i. Listed top, bottom, top, bottom… so pairs are poles.
-fn pole_points(names: &[(&str, &str)]) -> Vec<ConnectionPointDef> {
-    names
-        .iter()
-        .enumerate()
-        .flat_map(|(i, (top, bottom))| {
-            let x = POLE * i as f64;
-            [cp(top, x, 10.0, Direction::Up), cp(bottom, x, -10.0, Direction::Down)]
-        })
-        .collect()
-}
-
-/// An open switching pole at `x`: terminals, and a blade from the lower contact up to the left.
-fn open_pole(x: f64) -> Vec<Graphic> {
-    vec![line(x, 10.0, x, 3.0), line(x, -3.0, x - 3.0, 3.0), line(x, -3.0, x, -10.0)]
-}
-
-/// Multi-pole switching devices drawn as one symbol, with the dashed link between their
-/// blades: contactor main contacts, circuit breakers, a motor-protection breaker, a residual-
-/// current breaker and a switch-disconnector with fuses.
-fn power_symbols() -> Vec<SymbolDef> {
-    let three = [("1", "2"), ("3", "4"), ("5", "6")];
-    let poles = |n: usize, extra: &dyn Fn(f64) -> Vec<Graphic>| -> Vec<Graphic> {
-        (0..n)
-            .flat_map(|i| {
-                let x = POLE * i as f64;
-                let mut g = open_pole(x);
-                g.extend(extra(x));
-                g
-            })
-            .collect()
-    };
-    // The breaker mark: a small cross on the fixed contact.
-    let cross = |x: f64| vec![line(x - 0.8, 2.2, x + 0.8, 3.8), line(x - 0.8, 3.8, x + 0.8, 2.2)];
-    let link = |n: usize| dashed(-6.0, 0.0, POLE * (n - 1) as f64 - 1.5, 0.0);
-    let def = |id: &str, description: &str, prefix: &str, role: Role, graphics: Vec<Graphic>, points| SymbolDef {
-        id: SymbolId::new(id),
-        description: description.into(),
-        tag_prefix: prefix.into(),
-        role,
-        bridged: false,
-        hide_tag: false,
-        hide_point_labels: false,
-        graphics,
-        connection_points: points,
-    };
-    let mut contactor = poles(3, &|_| Vec::new());
-    contactor.push(link(3));
-    let mut breaker = poles(3, &cross);
-    breaker.push(link(3));
-    let mut motor = poles(3, &cross);
-    motor.push(link(3));
-    // Thermal and magnetic releases: one box across the poles, marked I>.
-    motor.extend(rect(-2.0, -4.0, POLE * 2.0 + 2.0, -6.5));
-    motor.push(Graphic::Text { at: Point::new(-7.5, -6.2), height: 2.0, value: "I>".into() });
-    let mut rcd = poles(4, &cross);
-    rcd.push(link(4));
-    rcd.extend(rect(-2.0, -4.0, POLE * 3.0 + 2.0, -6.5));
-    rcd.push(Graphic::Text { at: Point::new(-7.5, -6.2), height: 2.0, value: "ID".into() });
-    // Switch-disconnector: a bar on each fixed contact, and a fuse below each blade.
-    let mut disconnector: Vec<Graphic> = (0..3)
-        .flat_map(|i| {
-            let x = POLE * i as f64;
-            let mut g = vec![line(x, 10.0, x, 4.0), line(x - 1.0, 4.0, x + 1.0, 4.0), line(x, -0.5, x - 3.0, 4.0)];
-            g.extend(rect(x - 1.0, -1.5, x + 1.0, -6.5));
-            g.push(line(x, -0.5, x, -10.0));
-            g
-        })
-        .collect();
-    disconnector.push(dashed(-6.0, 2.0, POLE * 2.0 - 1.5, 2.0));
-    vec![
-        def(
-            "iec.contact_main_3",
-            "Main contacts, 3 poles",
-            "-K",
-            Role::Contact { kind: ContactKind::Power },
-            contactor,
-            pole_points(&three),
-        ),
-        def("iec.breaker_3", "Circuit breaker, 3 poles", "-QF", Role::Main, breaker, pole_points(&three)),
-        def(
-            "iec.motor_protection_3",
-            "Motor-protection circuit breaker, 3 poles",
-            "-QF",
-            Role::Main,
-            motor,
-            pole_points(&three),
-        ),
-        def(
-            "iec.breaker_3pn_rcd",
-            "Residual-current circuit breaker, 3 poles + N",
-            "-QF",
-            Role::Main,
-            rcd,
-            pole_points(&[("1", "2"), ("3", "4"), ("5", "6"), ("N", "N'")]),
-        ),
-        def(
-            "iec.disconnector_fuse_3",
-            "Switch-disconnector with fuses, 3 poles",
-            "-QS",
-            Role::Main,
-            disconnector,
-            pole_points(&three),
-        ),
-    ]
-}
-
-/// One symbol per PLC channel kind: a box with the kind written in it. Inputs are fed from
-/// above (the sensor sits on the path above), outputs drive the load below.
-fn plc_channel_symbols() -> Vec<SymbolDef> {
-    [
-        ("iec.plc_di", "PLC digital input", IoKind::DigitalIn),
-        ("iec.plc_do", "PLC digital output", IoKind::DigitalOut),
-        ("iec.plc_ai", "PLC analog input", IoKind::AnalogIn),
-        ("iec.plc_ao", "PLC analog output", IoKind::AnalogOut),
-    ]
-    .into_iter()
-    .map(|(id, description, kind)| {
-        let input = matches!(kind, IoKind::DigitalIn | IoKind::AnalogIn);
-        let (y, leaves): (f64, _) = if input { (6.0, Direction::Up) } else { (-6.0, Direction::Down) };
-        SymbolDef {
-            id: SymbolId::new(id),
-            description: description.into(),
-            tag_prefix: "-KF".into(),
-            role: Role::PlcChannel { kind },
-            bridged: false,
-            hide_tag: false,
-            hide_point_labels: true,
-            graphics: vec![
-                line(-4.0, -3.0, 4.0, -3.0),
-                line(4.0, -3.0, 4.0, 3.0),
-                line(4.0, 3.0, -4.0, 3.0),
-                line(-4.0, 3.0, -4.0, -3.0),
-                line(0.0, y.signum() * 3.0, 0.0, y),
-                Graphic::Text { at: Point::new(-1.8, -1.25), height: 2.5, value: kind.short().into() },
-            ],
-            connection_points: vec![cp("1", 0.0, y, leaves)],
-        }
-    })
-    .collect()
+    crate::library::iec()
 }
 
 pub const PAGE_1: PageId = PageId::from_u128(0x1);
@@ -654,14 +370,14 @@ pub fn with_power() -> Result<Project> {
     // Feed 1: L1-L3 → -QS1 → -QF1 → -K1 main contacts.
     for (i, (dev, f)) in [(l1, 0x220), (l2, 0x221), (l3, 0x222)].into_iter().enumerate() {
         // Stepped down, so each name stays clear of the next phase's wire.
-        place(&mut p, dev, "iec.supply", f, PAGE_4, (-100.0 + POLE * i as f64, 72.0 - 4.0 * i as f64))?;
+        place(&mut p, dev, "iec.supply", f, PAGE_4, (-100.0 + crate::library::POLE * i as f64, 72.0 - 4.0 * i as f64))?;
     }
     place(&mut p, qs1, "iec.disconnector_fuse_3", 0x223, PAGE_4, (-100.0, 44.0))?;
     place(&mut p, qf1, "iec.motor_protection_3", 0x224, PAGE_4, (-100.0, 16.0))?;
     place(&mut p, k1, "iec.contact_main_3", 0x225, PAGE_4, (-100.0, -12.0))?;
     // Feed 2: L1-L3 and N → -QF2.
     for (i, (dev, f)) in [(l1, 0x226), (l2, 0x227), (l3, 0x228), (n, 0x229)].into_iter().enumerate() {
-        place(&mut p, dev, "iec.supply", f, PAGE_4, (-20.0 + POLE * i as f64, 72.0 - 4.0 * i as f64))?;
+        place(&mut p, dev, "iec.supply", f, PAGE_4, (-20.0 + crate::library::POLE * i as f64, 72.0 - 4.0 * i as f64))?;
     }
     place(&mut p, qf2, "iec.breaker_3pn_rcd", 0x22a, PAGE_4, (-20.0, 44.0))?;
     // -QF1's auxiliary contact, on the PLC page.
@@ -688,5 +404,75 @@ pub fn with_power() -> Result<Project> {
     // potentials by their name, the others by page (101, 401…).
     p.apply(Command::SetNaming(crate::Naming::by_page()))?;
     p.apply(Command::Batch(p.renumber_all_wires()))?;
+    Ok(p)
+}
+
+/// Every library symbol placed once, category by category, one page per few categories: for
+/// reviewing the library and as a golden file.
+pub fn library_overview() -> Result<Project> {
+    let mut p = Project::new("Symbol library");
+    for s in symbols() {
+        p.add_symbol(s);
+    }
+    p.sheet = crate::Sheet { columns: 8, first_column: 0, rows: 6, ..crate::Sheet::default() };
+    let (lo, hi) = p.sheet.frame();
+    let mut categories: Vec<String> = p.symbols.values().map(|s| s.category.clone()).collect();
+    categories.sort();
+    categories.dedup();
+    let mut page_no = 0u32;
+    let mut x: f64;
+    let mut y = f64::MIN;
+    // Fixed ids, so the output is the same every time (golden files).
+    let mut page = PageId::from_u128(0);
+    let mut next_id = 0x1000u128;
+    let new_page = |p: &mut Project, n: u32, title: &str| -> Result<PageId> {
+        let id = PageId::from_u128(u128::from(n));
+        p.apply(Command::AddPage(Page {
+            id,
+            name: n.to_string(),
+            description: title.into(),
+            subtitle: String::new(),
+            order: n,
+        }))?;
+        Ok(id)
+    };
+    // 48 mm cells, 40 mm rows, from the top-left of the drawing area.
+    let (cell_w, cell_h) = (48.0, 40.0);
+    let left = lo.x + 20.0;
+    let top = hi.y - crate::sheet::COLUMN_BAND - 24.0;
+    let bottom = lo.y + crate::sheet::TITLE_BLOCK_HEIGHT + 20.0;
+    for cat in &categories {
+        let ids: Vec<SymbolId> = p.symbols.values().filter(|s| &s.category == cat).map(|s| s.id.clone()).collect();
+        // Each category starts on a new row.
+        x = f64::MAX;
+        for id in ids {
+            if x + cell_w > hi.x - 10.0 {
+                x = left;
+                y -= cell_h;
+            }
+            if y < bottom || page_no == 0 {
+                page_no += 1;
+                page = new_page(&mut p, page_no, &format!("Symbol library from {cat}"))?;
+                y = top;
+                x = left;
+            }
+            let tag = p.new_tag(&id, page);
+            next_id += 1;
+            let device = DeviceId::from_u128(next_id);
+            p.add_device(Device::new(device, &tag, ""))?;
+            let designations = p.next_designations(device, &id);
+            p.place(Function {
+                id: FunctionId::from_u128(next_id),
+                device,
+                symbol: id.clone(),
+                page,
+                position: Point::new(x, y),
+                rotation: Rotation::R0,
+                designations,
+                properties: Default::default(),
+            })?;
+            x += cell_w;
+        }
+    }
     Ok(p)
 }

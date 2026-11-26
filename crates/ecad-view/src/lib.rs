@@ -432,7 +432,11 @@ fn title_block(
     let (t_lo, t_hi) = project.sheet.title_block();
     add_rect(d, lines, t_lo, t_hi)?;
     let caption = |x: f64, y: f64, s: &str| justified(Point::new(x, y), 1.6, s, HAlign::Left, VAlign::Top);
-    let value = |x: f64, y: f64, h: f64, s: &str| justified(Point::new(x, y), h, s, HAlign::Left, VAlign::Bottom);
+    // Text shrinks to fit its cell (stroke-font characters are about 0.7 of their height wide).
+    let value = |x: f64, y: f64, h: f64, s: &str, width: f64| {
+        let fit = width / (s.chars().count().max(1) as f64 * 0.7);
+        justified(Point::new(x, y), h.min(fit), s, HAlign::Left, VAlign::Bottom)
+    };
     // Column edges, left to right; the title takes what is left.
     let width = t_hi.x - t_lo.x;
     let rev_w = 90.0;
@@ -484,14 +488,14 @@ fn title_block(
         for (i, (label, text)) in pair.iter().enumerate() {
             let top = if i == 0 { t_hi.y } else { mid };
             add_text(d, words, caption(left + 1.5, top - 1.0, label))?;
-            add_text(d, words, value(left + 1.5, top - height / 2.0 + 1.5, 2.8, text))?;
+            add_text(d, words, value(left + 1.5, top - height / 2.0 + 1.5, 2.8, text, right - left - 3.0))?;
         }
     }
 
     // The page title: description over subtitle.
     add_text(d, words, caption(edges[4] + 1.5, t_hi.y - 1.0, "Title"))?;
-    add_text(d, words, value(edges[4] + 3.0, mid + 0.5, 3.5, &this.description))?;
-    add_text(d, words, value(edges[4] + 3.0, t_lo.y + 3.0, 3.0, &this.subtitle))?;
+    add_text(d, words, value(edges[4] + 3.0, mid + 0.5, 3.5, &this.description, edges[5] - edges[4] - 6.0))?;
+    add_text(d, words, value(edges[4] + 3.0, t_lo.y + 3.0, 3.0, &this.subtitle, edges[5] - edges[4] - 6.0))?;
 
     // Page number and the next page.
     let (left, right) = (edges[5], t_hi.x);
@@ -503,7 +507,7 @@ fn title_block(
     let index = order.iter().position(|p| p.id == page);
     let next = index.and_then(|i| order.get(i + 1)).map_or(String::new(), |p| p.name.clone());
     add_text(d, words, caption(left + 1.5, mid - 1.0, "Next"))?;
-    add_text(d, words, value(left + 12.0, t_lo.y + 5.5, 2.8, &next))?;
+    add_text(d, words, value(left + 12.0, t_lo.y + 5.5, 2.8, &next, right - left - 14.0))?;
     let count = format!("{} of {}", index.map_or(0, |i| i + 1), project.pages.len());
     add_text(d, words, justified(Point::new(right - 1.5, t_lo.y + 1.2), 1.8, &count, HAlign::Right, VAlign::Bottom))?;
     Ok(())

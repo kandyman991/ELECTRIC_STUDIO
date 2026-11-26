@@ -6,6 +6,7 @@
 //! tools, hit-testing, snapping, undo — lives here, so it is tested without a window and any
 //! shell gets the same editor.
 
+pub use ecad_model::library::BlackBox;
 use ecad_model::{
     Command, Connection, ConnectionId, ConnectionRef, Device, DeviceId, Direction, Function, FunctionId, History,
     ModelError, Page, PageId, Point, Potential, Project, Rotation, SymbolId, route_between,
@@ -461,6 +462,22 @@ impl Editor {
         self.execute(&label, Command::Batch(cmds))
     }
 
+    /// Make a black-box symbol from `spec` and pick it for placing.
+    pub fn create_black_box(&mut self, spec: &ecad_model::library::BlackBox) -> Result<(), ModelError> {
+        if !spec.is_valid() {
+            return Err(ModelError::InvalidBlackBox);
+        }
+        let id = (1..)
+            .map(|n| SymbolId::new(&format!("box.{n}")))
+            .find(|id| !self.project.symbols.contains_key(id))
+            .unwrap_or_else(|| SymbolId::new("box.new"));
+        let symbol = ecad_model::library::black_box(&id.0, spec);
+        self.execute(&format!("New black box {}", symbol.description), Command::AddSymbol(symbol))?;
+        self.set_tool(Tool::Place(id));
+        self.status = "Click where the black box goes".into();
+        Ok(())
+    }
+
     /// Set how new tags and wire numbers are formed.
     pub fn set_naming(&mut self, naming: ecad_model::Naming) -> Result<(), ModelError> {
         if naming == self.project.naming {
@@ -771,10 +788,15 @@ impl Editor {
         }
         // The project's tag format: -K1, or A2SB1 with the page in front.
         let tag = self.project.new_tag(symbol, self.page);
+        // A black box is one particular device: it starts with the box's description.
+        let description = match self.project.symbol(symbol) {
+            Ok(s) if s.id.0.starts_with("box.") => s.description.clone(),
+            _ => String::new(),
+        };
         let device = DeviceId::new();
         let function = FunctionId::new();
         let cmd = Command::Batch(vec![
-            Command::AddDevice(Device::new(device, &tag, "")),
+            Command::AddDevice(Device::new(device, &tag, &description)),
             Command::Place(Function {
                 id: function,
                 device,

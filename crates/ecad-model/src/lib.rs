@@ -5,6 +5,7 @@
 
 pub mod geometry;
 pub mod history;
+pub mod library;
 pub mod naming;
 pub mod parts;
 pub mod potential;
