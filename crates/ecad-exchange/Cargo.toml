@@ -1,0 +1,16 @@
+[package]
+name = "ecad-exchange"
+description = "Tag exchange with PLC and HMI tools: the TIA Portal PLC tag table."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+ecad-model = { workspace = true }
+rust_xlsxwriter = { workspace = true }
+calamine = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

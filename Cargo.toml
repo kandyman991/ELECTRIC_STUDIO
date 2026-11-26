@@ -15,6 +15,7 @@ ecad-reports = { path = "crates/ecad-reports" }
 ecad-rules = { path = "crates/ecad-rules" }
 ecad-project = { path = "crates/ecad-project" }
 ecad-editor = { path = "crates/ecad-editor" }
+ecad-exchange = { path = "crates/ecad-exchange" }
 # float_roundtrip: saved coordinates read back exactly (projects compare equal after a round trip).
 serde_json = { version = "1", features = ["float_roundtrip"] }
 eframe = "0.37"
@@ -24,6 +25,9 @@ serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 png = "0.18"
+# The TIA Portal tag table is an Excel file: written and read without Excel.
+rust_xlsxwriter = { version = "0.104", default-features = false }
+calamine = { version = "0.38", default-features = false }
 
 # CADCraft, used as a library and pinned to one upstream commit (see docs/CADCRAFT.md).
 # Only ecad-view may depend on these crates.

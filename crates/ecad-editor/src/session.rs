@@ -227,6 +227,10 @@ pub enum UiEvent {
     ImportParts {
         path: PathBuf,
     },
+    /// Take PLC symbols and comments from a TIA Portal tag table (.xlsx), by address.
+    ImportTiaTags {
+        path: PathBuf,
+    },
     /// Give the selected symbol's device one of this part (or one more).
     AddDevicePart {
         number: String,
@@ -824,6 +828,7 @@ impl Session {
                 self.report(r);
             }
             UiEvent::ImportParts { path } => self.import_parts(&path),
+            UiEvent::ImportTiaTags { path } => self.import_tia_tags(&path),
             UiEvent::AddDevicePart { number } => {
                 self.edit_device_parts(|parts| match parts.iter_mut().find(|p| p.number == number) {
                     Some(p) => p.quantity += 1,
@@ -945,6 +950,30 @@ impl Session {
         });
     }
 
+    fn import_tia_tags(&mut self, path: &Path) {
+        let result = std::fs::read(path)
+            .map_err(|e| format!("{}: {e}", path.display()))
+            .and_then(|bytes| ecad_exchange::tia::read_xlsx(&bytes).map_err(|e| format!("{}: {e}", path.display())))
+            .and_then(|tags| self.editor.import_tia_tags(&tags).map_err(|e| e.to_string()));
+        self.message = Some(match result {
+            Ok(i) => {
+                let mut text = match i.updated {
+                    0 => "Nothing to change: the PLC channels already match".to_owned(),
+                    1 => "Updated 1 PLC channel".to_owned(),
+                    n => format!("Updated {n} PLC channels"),
+                };
+                if !i.unknown.is_empty() {
+                    text += &format!("; {} tags at addresses no channel has", i.unknown.len());
+                }
+                if !i.duplicates.is_empty() {
+                    text += &format!("; {} addresses listed twice (first kept)", i.duplicates.len());
+                }
+                text
+            }
+            Err(e) => format!("Import failed: {e}"),
+        });
+    }
+
     fn export_drawings(&mut self, dir: &Path) {
         let result = ecad_view::drawing_files(self.editor.project(), ecad_view::Formats::ALL)
             .map_err(|e| e.to_string())
@@ -967,7 +996,14 @@ impl Session {
             for (name, text) in &files {
                 std::fs::write(dir.join(name), text).map_err(|e| format!("{}: {e}", dir.join(name).display()))?;
             }
-            Ok(files.len())
+            let (tags, _) = ecad_exchange::tia::tags(self.editor.project());
+            if tags.is_empty() {
+                return Ok(files.len());
+            }
+            let path = dir.join(ecad_exchange::tia::FILE_NAME);
+            let bytes = ecad_exchange::tia::to_xlsx(&tags).map_err(|e| e.to_string())?;
+            std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+            Ok(files.len() + 1)
         });
         let missing = ecad_reports::devices_without_parts(self.editor.project()).len();
         self.message = Some(match result {
@@ -1827,6 +1863,36 @@ mod tests {
         }
         let f = s.frame(None, [0, 0, 0]);
         assert_eq!((f.info.customer.as_str(), f.sheet.rows, f.pages[0].subtitle.as_str()), ("", 0, ""));
+    }
+
+    #[test]
+    fn tia_tags_import_from_a_file_in_one_undo_step_and_go_out_with_the_reports() {
+        let dir = tempfile::tempdir().unwrap();
+        ecad_project::save(&ecad_model::sample::with_plc().unwrap(), dir.path()).unwrap();
+        let mut s = Session::open(dir.path()).unwrap();
+        let out = dir.path().join("reports");
+        s.handle(UiEvent::ExportReports { path: out.clone() });
+        let file = out.join(ecad_exchange::tia::FILE_NAME);
+        let mut tags = ecad_exchange::tia::read_xlsx(&std::fs::read(&file).unwrap()).unwrap();
+        for t in &mut tags {
+            t.name = format!("{}_x", t.name);
+        }
+        std::fs::write(&file, ecad_exchange::tia::to_xlsx(&tags).unwrap()).unwrap();
+        s.handle(UiEvent::ImportTiaTags { path: file.clone() });
+        assert_eq!(s.frame(None, [0, 0, 0]).status, format!("Updated {} PLC channels", tags.len()));
+        assert_eq!(s.editor().undo_label(), Some("Import TIA Portal tags"));
+        let symbols = |s: &Session| {
+            let p = s.editor().project();
+            let mut v: Vec<String> = p.functions.values().map(|f| f.property(ecad_model::SYMBOL).to_owned()).collect();
+            v.retain(|x| !x.is_empty());
+            v.sort();
+            v
+        };
+        assert!(symbols(&s).iter().all(|x| x.ends_with("_x")), "{:?}", symbols(&s));
+        s.handle(UiEvent::Key { key: KeyName::Undo });
+        assert!(symbols(&s).iter().all(|x| !x.ends_with("_x")));
+        s.handle(UiEvent::ImportTiaTags { path: out.join("bom.csv") });
+        assert!(s.frame(None, [0, 0, 0]).status.starts_with("Import failed:"));
     }
 
     #[test]

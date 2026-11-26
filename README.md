@@ -37,6 +37,7 @@ ecad check my-project                      # exit 1 on errors
 ecad check my-project --strict             # exit 1 on warnings too
 ecad check my-project --json               # the findings as JSON, each with its page, location and target
 ecad export my-project out --only pdf,reports   # any of pdf, dxf, dwg, png, reports
+ecad import-tia my-project tags.xlsx       # PLC symbols and comments renamed in TIA Portal, by address
 ecad report my-project bom > bom.csv       # one report on stdout: wire-list, bom, terminal-diagram,
                                            # plc-io-list, cable-list, table-of-contents,
                                            # devices-without-parts, panel-cut-list, wire-totals
@@ -67,6 +68,7 @@ are attached to each CI run of the "Windows build" workflow (unsigned for now).
 | `ecad-editor` | UI-independent editing controller and session: tools, hit-testing, snapping, undo, overlays, pan/zoom, saving |
 | `ecad-rules` | Checks on the model (unconnected points, potential clashes, missing parts…), live in the editor and in `ecad check` |
 | `ecad-reports` | Reports as queries on the model: wire list, BOM, terminal diagram, PLC I/O list |
+| `ecad-exchange` | Tag exchange with PLC tools: the TIA Portal PLC tag table (.xlsx), out and back |
 | `ecad-cli` | The `ecad` command: check, export and reports for scripts and CI |
 | `apps/ecad-app` | The editor application (`electric-studio`): a thin egui shell over `ecad_editor::Session` |
 
@@ -84,8 +86,8 @@ Planned: `ecad-symbols`, `ecad-parts`, `ecad-mcp`. See [docs/ARCHITECTURE.md](do
 | *MVP release gate* | *G1a sheet grid with rows, references like `A3/2F`, full title block · G1b tag format and wire numbers per potential · G2 multi-pole devices and contact tables · G3 symbol library and black boxes · G4a wire details, cables, cable list, BOM code and pages, table of contents · G4b connectors and location boxes · reference project redrawn end to end (`ecad new-sample <dir> reference`)* |
 | *Gate check* | *One real panel drawn end to end; BOM and wire list match it; checks clean. Done: 0 errors, 28 devices match the BOM exactly; gaps listed in [docs/MVP-GATE.md](docs/MVP-GATE.md)* |
 | *G5 Gate gaps* | *G5a wire tidying: drag a wire's middle run, Straighten, Tidy wires, new wires avoid clashes, wire-overlap checks · G5b changeover contacts, contact numbers from the parts' contact blocks · G5c parts per terminal type, black-box bridges, PLC wire numbers · G6 mirrored symbols, dashed PE wires* |
-| **M5 Panel layout** | M5a layout pages: mounting plate at scale, DIN rails, ducts, device footprints from part sizes, checks, cut list, reference layout L7 · M5b editing the layout: place unplaced devices, snap to rails, draw rails and ducts, layout pages in the app · M5c wire lengths through the ducts in the wire list, wire totals, cut list in the exports (this) |
-| M6 Integrations | HMI Studio tag exchange, TIA Portal tag table, MCP server, DXF import |
+| **M5 Panel layout** | M5a layout pages: mounting plate at scale, DIN rails, ducts, device footprints from part sizes, checks, cut list, reference layout L7 · M5b editing the layout: place unplaced devices, snap to rails, draw rails and ducts, layout pages in the app · M5c wire lengths through the ducts in the wire list, wire totals, cut list in the exports |
+| M6 Integrations | M6a TIA Portal PLC tag table: export, symbols and comments back by address (this) · HMI Studio tag exchange · MCP server · DXF import |
 
 ## Contributing
 
