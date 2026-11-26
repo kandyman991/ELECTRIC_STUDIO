@@ -6,8 +6,8 @@ truth; schematics, panel layouts and manufacturing reports are generated from it
 Drawing, DXF/DWG/PDF output and rendering come from the Rust crates of
 [CADCraft](https://github.com/storytold/cadcraft) (MIT OR Apache-2.0), used as libraries.
 
-> Status: **M2b**: multi-page projects with cross-references between coils and their contacts.
-> Early development: no potentials or interruption points yet, a four-symbol placeholder library.
+> Status: **M2 done**: multi-page projects with cross-references, potentials, junctions and
+> interruption points. Early development: a six-symbol placeholder library, no parts or checks yet.
 
 ## Try it
 
@@ -22,6 +22,7 @@ Projects are folders of JSON files:
 
 ```sh
 cargo run -p ecad-cli -- new-sample my-project     # write the sample as a project folder
+cargo run -p ecad-cli -- new-sample my-project potentials   # or: start, contacts
 cargo run -p ecad-cli -- check my-project          # load it and summarise
 cargo run -p ecad-cli -- export my-project out     # DXF, PNG and wire list for every page
 ```
@@ -56,7 +57,7 @@ Planned: `ecad-rules`, `ecad-symbols`, `ecad-parts`, `ecad-mcp`. See [docs/ARCHI
 | --- | --- |
 | M0 Foundation | Workspace, crates, CI, golden-file tests, feasibility test |
 | M1 One-page editor | M1a editing core · M1b UI chosen: egui · M1c Open/New, unsaved-changes prompt, readable labels, side-panel edits |
-| **M2 Multi-page projects** | M2a pages, sheet, title block · M2b cross-references (this) · M2c potentials, interruption points |
+| M2 Multi-page projects | M2a pages, sheet, title block · M2b cross-references · M2c potentials, junctions, interruption points |
 | M3 Parts and reports | Parts catalogue, BOM, wire list, terminal diagram, PLC I/O list |
 | M4 Checks and output | Live checks, PDF/DXF/DWG export, headless CLI |
 | *MVP release gate* | *One real panel drawn end to end; BOM and wire list match it; checks clean* |

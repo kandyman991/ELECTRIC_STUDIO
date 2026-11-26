@@ -56,6 +56,19 @@ pub enum Role {
     Main,
     /// A contact of a device; it refers back to the device's main function.
     Contact { kind: ContactKind },
+    /// A potential definition point: its device's tag is the potential's name (`L+`, `M`,
+    /// `L1`), and all its drawings, on any page, are the same potential.
+    Potential,
+    /// An interruption point: all drawings of its device are connected, so a potential
+    /// continues on another page. Each shows where its partners are.
+    Interruption,
+}
+
+impl Role {
+    /// Whether all drawings of a device with this role are one potential.
+    pub fn joins_drawings(self) -> bool {
+        matches!(self, Role::Potential | Role::Interruption)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -67,6 +80,15 @@ pub struct SymbolDef {
     pub tag_prefix: String,
     #[serde(default)]
     pub role: Role,
+    /// All connection points are internally connected (a junction).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bridged: bool,
+    /// Don't print the device tag beside the symbol (junctions).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hide_tag: bool,
+    /// Don't print connection-point designations (junctions, potential and interruption points).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hide_point_labels: bool,
     pub graphics: Vec<Graphic>,
     pub connection_points: Vec<ConnectionPointDef>,
 }

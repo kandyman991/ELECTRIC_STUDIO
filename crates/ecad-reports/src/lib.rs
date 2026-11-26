@@ -5,6 +5,8 @@ use ecad_model::{ModelError, Project};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WireListRow {
     pub wire: String,
+    /// The potential's name (`L+`), empty when unnamed.
+    pub potential: String,
     pub from_tag: String,
     pub from_point: String,
     pub to_tag: String,
@@ -13,13 +15,23 @@ pub struct WireListRow {
 
 /// One row per connection, sorted by wire number.
 pub fn wire_list(project: &Project) -> Result<Vec<WireListRow>, ModelError> {
+    let potentials = project.potentials();
     project
         .connections
         .values()
         .map(|c| {
             let (from_tag, from_point) = project.describe(&c.from)?;
             let (to_tag, to_point) = project.describe(&c.to)?;
-            Ok(WireListRow { wire: c.wire_number.clone().unwrap_or_default(), from_tag, from_point, to_tag, to_point })
+            let potential =
+                potentials.iter().find(|p| p.connections.contains(&c.id)).and_then(|p| p.name()).unwrap_or_default();
+            Ok(WireListRow {
+                wire: c.wire_number.clone().unwrap_or_default(),
+                potential,
+                from_tag,
+                from_point,
+                to_tag,
+                to_point,
+            })
         })
         .collect::<Result<Vec<_>, _>>()
         .map(|mut rows| {
@@ -33,9 +45,9 @@ fn csv_field(s: &str) -> String {
 }
 
 pub fn wire_list_csv(rows: &[WireListRow]) -> String {
-    let mut out = String::from("wire,from_device,from_point,to_device,to_point\n");
+    let mut out = String::from("wire,potential,from_device,from_point,to_device,to_point\n");
     for r in rows {
-        let fields = [&r.wire, &r.from_tag, &r.from_point, &r.to_tag, &r.to_point];
+        let fields = [&r.wire, &r.potential, &r.from_tag, &r.from_point, &r.to_tag, &r.to_point];
         out += &fields.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(",");
         out.push('\n');
     }
@@ -52,10 +64,10 @@ mod tests {
         let csv = wire_list_csv(&wire_list(&start_circuit().unwrap()).unwrap());
         assert_eq!(
             csv,
-            "wire,from_device,from_point,to_device,to_point\n\
-             W1,-X1:L+,1,-S1,13\n\
-             W2,-S1,14,-K1,A1\n\
-             W3,-K1,A2,-X1:M,1\n"
+            "wire,potential,from_device,from_point,to_device,to_point\n\
+             W1,L+,L+,1,-S1,13\n\
+             W2,,-S1,14,-K1,A1\n\
+             W3,M,-K1,A2,M,1\n"
         );
     }
 

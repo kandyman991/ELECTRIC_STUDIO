@@ -31,8 +31,9 @@ Dependencies point downward only. The core never depends on the UI or on CADCraf
 | Symbol role | Main function (coil: lists its contacts), contact (NO/NC: refers back to the coil), or single (terminal, supply) |
 | Connection point | A designated terminal (`A1`, `13`) with the direction a wire leaves in |
 | Connection | A wire between two connection points, with wire number, cross-section, colour |
-| Potential | Calculated from the wiring (M2), named at potential-definition points |
-| Interruption point | A potential continuing on another page (M2) |
+| Potential | Calculated from the wiring: points joined by wires, inside junctions, and across all drawings of a potential or interruption device. Named by its potential points (device tag `L+`, `M`); two names on one potential is flagged |
+| Interruption point | An arrow; all arrows of one device (same tag) are connected, so a potential continues on another page. Each shows where its partners are |
+| Junction | A dot whose four connection points are one potential, so wiring can branch |
 | Cable, terminal strip, PLC card | M2 to M3 |
 
 Every object has a stable UUID; tags and names are attributes. Implemented so far: project,

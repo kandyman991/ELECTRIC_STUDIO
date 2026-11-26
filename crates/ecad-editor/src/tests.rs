@@ -219,3 +219,21 @@ fn a_stray_contact_can_join_a_coil_and_its_old_device_goes() {
     e.key(Key::Undo);
     assert!(e.project().device_by_tag("-S2").is_some());
 }
+
+#[test]
+fn wires_into_a_junction_take_its_free_points_and_a_selected_wire_shows_its_potential() {
+    use ecad_model::sample::{JUNCTION_1, with_potentials};
+    let mut e = Editor::new(with_potentials().unwrap(), PAGE_1).unwrap();
+    // The junction at (0,-8) has W3 on point 1, W8 on 2 and W7 on 4: hovering it offers 3.
+    e.set_tool(Tool::Wire);
+    e.pointer_move(Point::new(0.1, -8.1));
+    assert_eq!(e.hover(), Some(&Hit::Point(ConnectionRef::new(JUNCTION_1, "3"))));
+    // Selecting W3 highlights the other M wires on this page (W7, W8), not W1.
+    e.set_tool(Tool::Select);
+    click(&mut e, 0.2, -2.0);
+    let w3 = e.project().connections.values().find(|c| c.wire_number.as_deref() == Some("W3")).unwrap().id;
+    assert_eq!(e.selection(), Some(Selected::Connection(w3)));
+    let highlighted = e.overlays().iter().filter(|o| matches!(o, Overlay::Potential { .. })).count();
+    assert_eq!(highlighted, 2);
+    assert_eq!(e.potential_of(w3).and_then(|p| p.name()).as_deref(), Some("M"));
+}
