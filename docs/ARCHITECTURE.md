@@ -44,7 +44,8 @@ Dependencies point downward only. The core never depends on the UI or on CADCraf
 | Device parts | The parts a device is built from, with quantities; the BOM adds them up |
 | Terminal strip | A device (`-X2`) whose drawings are its terminals, each with a number unique on the strip (`-X2:3`); both sides of a terminal are one potential; its parts count once per terminal |
 | PLC card | A device (`-KF1`) whose drawings are its channels: digital or analog input or output (DI, DO, AI, AO), numbered per card from 0 (`-KF1:3`). Each channel has an address (`I0.0`, `Q1.3`, `IW256`; new channels get the next free one), a PLC symbol and a comment. Addresses and symbols are unique in the project. The PLC I/O list reports them with what each channel is wired to |
-| Cable | Later |
+| Wire details | Each wire can carry its cross-section (`2,5`) and colour (`BK`, upper case), shown under its number, and the cable core it is |
+| Cable | Tag (`-WM1`), type (`4G2,5`), number of cores and shield. Its wires are marked with a slash and joined by a dashed line, with the tag and type beside them. A core is used once per cable; a cable with wires can't be removed. Saved in `cables.json` |
 
 Every object has a stable UUID; tags and names are attributes. Implemented so far: project,
 page, symbol, device, function, connection point, connection, routing, commands and undo.
@@ -67,6 +68,7 @@ same list and exits with 1 when there are errors, for use in CI.
 | `wire-unnumbered` | warning | A wire without a number |
 | `missing-part` | warning | A device without a catalogue part (missing from the BOM) |
 | `plc-no-address` | warning | A PLC channel without an address |
+| `cable-cores` | warning | A cable carrying more wires than it has cores |
 | `overlap` | warning | Two symbols overlapping on a page |
 
 Some mistakes can't be made at all, because the model refuses the command: duplicate device

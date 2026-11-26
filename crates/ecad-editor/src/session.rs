@@ -74,6 +74,31 @@ pub enum UiEvent {
     Describe {
         text: String,
     },
+    /// The selected wire's cross-section, colour, and cable (by tag, empty for none) and core.
+    WireSpec {
+        cross_section: String,
+        colour: String,
+        cable: String,
+        core: String,
+    },
+    /// A new cable.
+    AddCable {
+        tag: String,
+        kind: String,
+        cores: u32,
+        shielded: bool,
+    },
+    UpdateCable {
+        id: ecad_model::CableId,
+        tag: String,
+        kind: String,
+        cores: u32,
+        shielded: bool,
+    },
+    /// Remove a cable no wire runs in.
+    RemoveCable {
+        id: ecad_model::CableId,
+    },
     /// New number for the selected wire; blank clears it.
     NumberWire {
         number: String,
@@ -268,7 +293,24 @@ pub enum SelectionInfo {
         potential: Option<String>,
         /// Set when differently named potentials are connected on this wire's potential.
         warning: Option<String>,
+        cross_section: String,
+        colour: String,
+        /// The cable's tag and the core, empty when the wire isn't in a cable.
+        cable: String,
+        core: String,
     },
+}
+
+/// A cable, for the cables window and the wire panel.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct CableInfo {
+    pub id: ecad_model::CableId,
+    pub tag: String,
+    pub kind: String,
+    pub cores: u32,
+    pub shielded: bool,
+    /// How many wires run in it.
+    pub used: usize,
 }
 
 /// The selected PLC channel.
@@ -324,6 +366,7 @@ pub struct Frame {
     pub parts: Vec<Part>,
     /// All pages in order, and the one shown.
     pub pages: Vec<PageInfo>,
+    pub cables: Vec<CableInfo>,
     /// The project name as the settings edit it (the title adds a `*` when unsaved).
     pub project_name: String,
     pub info: ecad_model::ProjectInfo,
@@ -494,6 +537,23 @@ impl Session {
             }
             UiEvent::Describe { text } => {
                 let r = self.editor.describe_selected(&text);
+                self.report(r);
+            }
+            UiEvent::WireSpec { cross_section, colour, cable, core } => {
+                let r = self.editor.set_selected_wire_spec(&cross_section, &colour, &cable, &core);
+                self.report(r);
+            }
+            UiEvent::AddCable { tag, kind, cores, shielded } => {
+                let cable = ecad_model::Cable { id: ecad_model::CableId::new(), tag, kind, cores, shielded };
+                let r = self.editor.add_cable(cable);
+                self.report(r);
+            }
+            UiEvent::UpdateCable { id, tag, kind, cores, shielded } => {
+                let r = self.editor.update_cable(ecad_model::Cable { id, tag, kind, cores, shielded });
+                self.report(r);
+            }
+            UiEvent::RemoveCable { id } => {
+                let r = self.editor.remove_cable(id);
                 self.report(r);
             }
             UiEvent::NumberWire { number } => {
@@ -854,6 +914,16 @@ impl Session {
                     to: end(&c.to),
                     potential: potential.as_ref().and_then(|p| p.name()),
                     warning: potential.as_ref().and_then(|p| p.conflict()),
+                    cross_section: c.spec.cross_section.clone(),
+                    colour: c.spec.colour.clone(),
+                    cable: c
+                        .spec
+                        .cable
+                        .as_ref()
+                        .and_then(|k| project.cables.get(&k.cable))
+                        .map(|k| k.tag.clone())
+                        .unwrap_or_default(),
+                    core: c.spec.cable.as_ref().map(|k| k.core.clone()).unwrap_or_default(),
                 })
             }
         }
@@ -946,6 +1016,26 @@ impl Session {
                 })
                 .collect(),
             page: editor.page(),
+            cables: {
+                let mut cables: Vec<CableInfo> = project
+                    .cables
+                    .values()
+                    .map(|c| CableInfo {
+                        id: c.id,
+                        tag: c.tag.clone(),
+                        kind: c.kind.clone(),
+                        cores: c.cores,
+                        shielded: c.shielded,
+                        used: project
+                            .connections
+                            .values()
+                            .filter(|w| w.spec.cable.as_ref().is_some_and(|k| k.cable == c.id))
+                            .count(),
+                    })
+                    .collect();
+                cables.sort_by(|a, b| a.tag.cmp(&b.tag));
+                cables
+            },
             project_name: project.name.clone(),
             info: project.info.clone(),
             naming: project.naming.clone(),
@@ -1122,7 +1212,11 @@ mod tests {
                 from: "-S1:14".into(),
                 to: "-K1:A1".into(),
                 potential: None,
-                warning: None
+                warning: None,
+                cross_section: String::new(),
+                colour: String::new(),
+                cable: String::new(),
+                core: String::new(),
             })
         );
         s.handle(UiEvent::NumberWire { number: "W1".into() });
@@ -1272,7 +1366,7 @@ mod tests {
 
         let out = dir.path().join("reports");
         s.handle(UiEvent::ExportReports { path: out.clone() });
-        assert_eq!(s.frame(None, [0, 0, 0]).status, format!("Wrote 2 reports to {}", out.display()));
+        assert_eq!(s.frame(None, [0, 0, 0]).status, format!("Wrote 3 reports to {}", out.display()));
         let bom = std::fs::read_to_string(out.join("bom.csv")).unwrap();
         assert!(bom.contains("EX-AUX-1NO1NC,Example,Auxiliary contact block 1 NO + 1 NC,1,-K1"), "{bom}");
     }
@@ -1460,6 +1554,35 @@ mod tests {
         s.handle(UiEvent::Key { key: KeyName::Undo });
         s.handle(UiEvent::Key { key: KeyName::Undo });
         assert!(!s.frame(None, [0, 0, 0]).palette.iter().any(|i| i.id == "box.1"));
+    }
+
+    #[test]
+    fn wires_get_a_cross_section_colour_and_cable_core() {
+        let (_dir, mut s) = session();
+        s.handle(UiEvent::AddCable { tag: "-W1".into(), kind: "3G1,5".into(), cores: 3, shielded: false });
+        assert_eq!(s.frame(None, [0, 0, 0]).cables.len(), 1);
+        // Select W2 (-S1 to -K1) and put it in the cable.
+        let (x, y) = s.view().to_screen(Point::new(0.0, 26.0));
+        s.handle(UiEvent::PointerDown { x, y, button: Button::Primary });
+        s.handle(UiEvent::PointerUp { x, y, button: Button::Primary });
+        let spec = |cable: &str, core: &str| UiEvent::WireSpec {
+            cross_section: "1,5".into(),
+            colour: "bu".into(),
+            cable: cable.into(),
+            core: core.into(),
+        };
+        s.handle(spec("-W9", "1"));
+        assert_eq!(s.frame(None, [0, 0, 0]).status, "there is no cable `-W9`");
+        s.handle(spec("-W1", "1"));
+        let f = s.frame(None, [0, 0, 0]);
+        let Some(SelectionInfo::Wire { cross_section, colour, cable, core, .. }) = f.selection else { panic!("wire") };
+        assert_eq!((cross_section.as_str(), colour.as_str(), cable.as_str(), core.as_str()), ("1,5", "BU", "-W1", "1"));
+        assert_eq!(f.cables[0].used, 1);
+        let id = f.cables[0].id;
+        s.handle(UiEvent::RemoveCable { id });
+        assert_eq!(s.frame(None, [0, 0, 0]).status, "cable -W1 still has wires in it");
+        s.handle(UiEvent::UpdateCable { id, tag: "-W2".into(), kind: "3G1,5".into(), cores: 3, shielded: true });
+        assert_eq!(s.frame(None, [0, 0, 0]).cables[0].tag, "-W2");
     }
 
     #[test]

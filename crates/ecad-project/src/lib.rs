@@ -6,6 +6,7 @@
 //!   project.json          format version, name, pages
 //!   devices.json          all devices, sorted by tag
 //!   parts.json            the parts catalogue, sorted by part number
+//!   cables.json           cables, sorted by tag
 //!   symbols/<id>.json     one file per symbol used by the project
 //!   pages/<page-id>.json  the functions and connections on that page
 //! ```
@@ -14,7 +15,7 @@
 //! a rule (duplicate tag, wire to a missing point) is rejected with the file named.
 
 use ecad_model::{
-    Command, Connection, Device, Function, ModelError, Naming, Page, Part, Point, Project, ProjectInfo, Sheet,
+    Cable, Command, Connection, Device, Function, ModelError, Naming, Page, Part, Point, Project, ProjectInfo, Sheet,
     SymbolDef,
 };
 
@@ -132,6 +133,10 @@ pub fn save(project: &Project, dir: &Path) -> Result<()> {
     let parts: Vec<&Part> = project.parts.values().collect();
     write_json(&dir.join("parts.json"), &parts)?;
 
+    let mut cables: Vec<&Cable> = project.cables.values().collect();
+    cables.sort_by(|a, b| a.tag.cmp(&b.tag));
+    write_json(&dir.join("cables.json"), &cables)?;
+
     let mut devices: Vec<&Device> = project.devices.values().collect();
     devices.sort_by(|a, b| a.tag.cmp(&b.tag));
     write_json(&dir.join("devices.json"), &devices)?;
@@ -189,6 +194,14 @@ pub fn load(dir: &Path) -> Result<Project> {
     if path.exists() {
         for part in read_json::<Vec<Part>>(&path)? {
             project.apply(Command::AddPart(part)).map_err(model(&path))?;
+        }
+    }
+
+    // Cables before the wires that run in them; projects saved before G4 have none.
+    let path = dir.join("cables.json");
+    if path.exists() {
+        for c in read_json::<Vec<Cable>>(&path)? {
+            project.apply(Command::AddCable(c)).map_err(model(&path))?;
         }
     }
 

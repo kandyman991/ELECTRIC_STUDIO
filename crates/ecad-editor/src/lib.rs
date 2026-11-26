@@ -14,7 +14,8 @@ use ecad_model::{
 pub use ecad_model::{Naming, Part, PartRef, ProjectInfo, Revision, WireNumbering};
 pub use ecad_view::{Primitive, Shape};
 pub use session::{
-    Button, Choice, DevicePart, Frame, KeyName, PageInfo, PaletteItem, SelectionInfo, Session, SheetGrid, UiEvent,
+    Button, CableInfo, Choice, DevicePart, Frame, KeyName, PageInfo, PaletteItem, SelectionInfo, Session, SheetGrid,
+    UiEvent,
 };
 pub use view::Viewport;
 
@@ -460,6 +461,64 @@ impl Editor {
         // Per potential, every wire of the potential changes with it.
         let cmds = self.project.set_wire_number_commands(c, Some(number.to_owned()));
         self.execute(&label, Command::Batch(cmds))
+    }
+
+    /// Add a cable; its tag must be new.
+    pub fn add_cable(&mut self, cable: ecad_model::Cable) -> Result<(), ModelError> {
+        let label = format!("Add cable {}", cable.tag.trim());
+        self.execute(&label, Command::AddCable(cable))
+    }
+
+    /// Change a cable's tag, type, cores or shield.
+    pub fn update_cable(&mut self, cable: ecad_model::Cable) -> Result<(), ModelError> {
+        if self.project.cables.get(&cable.id) == Some(&cable) {
+            return Ok(());
+        }
+        let label = format!("Edit cable {}", cable.tag.trim());
+        self.execute(&label, Command::UpdateCable(cable))
+    }
+
+    /// Remove a cable no wire runs in.
+    pub fn remove_cable(&mut self, id: ecad_model::CableId) -> Result<(), ModelError> {
+        let tag = self.project.cables.get(&id).map(|c| c.tag.clone()).unwrap_or_default();
+        self.execute(&format!("Remove cable {tag}"), Command::RemoveCable(id))
+    }
+
+    /// Set the selected wire's cross-section and colour, and put it in `cable` (by tag; empty
+    /// for none) as core `core`.
+    pub fn set_selected_wire_spec(
+        &mut self,
+        cross_section: &str,
+        colour: &str,
+        cable: &str,
+        core: &str,
+    ) -> Result<(), ModelError> {
+        let Some(Selected::Connection(c)) = self.selection else { return Ok(()) };
+        let cable = cable.trim();
+        let core = if cable.is_empty() {
+            None
+        } else {
+            let id = self
+                .project
+                .cables
+                .values()
+                .find(|k| k.tag == cable)
+                .map(|k| k.id)
+                .ok_or_else(|| ModelError::UnknownCable(cable.to_owned()))?;
+            Some(ecad_model::CableCore { cable: id, core: core.to_owned() })
+        };
+        let spec =
+            ecad_model::WireSpec { cross_section: cross_section.to_owned(), colour: colour.to_owned(), cable: core };
+        let current = &self.project.connection(c)?.spec;
+        if current.cross_section == spec.cross_section.trim()
+            && current.colour == spec.colour.trim().to_uppercase()
+            && current.cable.as_ref().map(|k| (k.cable, k.core.as_str()))
+                == spec.cable.as_ref().map(|k| (k.cable, k.core.trim()))
+        {
+            return Ok(());
+        }
+        let label = format!("Wire {} details", self.wire_name(c));
+        self.execute(&label, Command::SetWireSpec { id: c, spec })
     }
 
     /// Make a black-box symbol from `spec` and pick it for placing.
@@ -932,6 +991,7 @@ impl Editor {
                     from: start,
                     to: point,
                     wire_number: Some(number.clone()),
+                    spec: Default::default(),
                 }));
                 let result = self.execute(&format!("Draw wire {number}"), Command::Batch(cmds));
                 self.report(result);

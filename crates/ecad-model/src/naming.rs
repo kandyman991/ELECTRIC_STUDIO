@@ -261,7 +261,14 @@ mod tests {
         for id in renumber {
             p.apply(Command::SetWireNumber { id, number: Some(number.clone()) }).unwrap();
         }
-        p.connect(Connection { id: ConnectionId::new(), from, to, wire_number: Some(number.clone()) }).unwrap();
+        p.connect(Connection {
+            id: ConnectionId::new(),
+            from,
+            to,
+            wire_number: Some(number.clone()),
+            spec: Default::default(),
+        })
+        .unwrap();
         number
     }
 
@@ -293,6 +300,7 @@ mod tests {
             from: ConnectionRef::new(k4, "A1"),
             to: ConnectionRef::new(j2, "1"),
             wire_number: Some("X9".into()),
+            spec: Default::default(),
         })
         .unwrap();
         assert_eq!(wire(&mut p, (j, "2"), (j2, "2")), "102");

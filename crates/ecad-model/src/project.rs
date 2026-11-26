@@ -48,6 +48,7 @@ id_type!(
     FunctionId
 );
 id_type!(ConnectionId);
+id_type!(CableId);
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Page {
@@ -150,6 +151,47 @@ pub struct Connection {
     pub to: ConnectionRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wire_number: Option<String>,
+    /// Cross-section, colour and cable core, as far as they are known.
+    #[serde(default, flatten)]
+    pub spec: WireSpec,
+}
+
+/// What a wire is made of.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireSpec {
+    /// e.g. `1,5` or `2.5` (mm²), as the user writes it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cross_section: String,
+    /// IEC 60757 colour code, e.g. `BU`, `BK`, `GNYE`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub colour: String,
+    /// The cable core this wire is, if it runs in a cable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cable: Option<CableCore>,
+}
+
+/// A core of a cable: the cable and the core's name (`1`, `BN`, `GNYE`…).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CableCore {
+    pub cable: CableId,
+    pub core: String,
+}
+
+/// A physical cable: its tag, type and cores.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cable {
+    pub id: CableId,
+    /// e.g. `-WM10A`.
+    pub tag: String,
+    /// e.g. `4G2,5` or `H07RN-F 4x2,5`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kind: String,
+    /// Number of cores.
+    #[serde(default)]
+    pub cores: u32,
+    /// The cable has a shield (drawn as SCH).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shielded: bool,
 }
 
 /// Compare terminal numbers naturally: numbers as numbers, then text.
@@ -265,6 +307,17 @@ pub enum Command {
         device: DeviceId,
         designations: BTreeMap<String, String>,
     },
+    /// Add a cable (its tag must be new).
+    AddCable(Cable),
+    /// Change a cable's tag, type, cores or shield.
+    UpdateCable(Cable),
+    /// Remove a cable no wire runs in.
+    RemoveCable(CableId),
+    /// Set a wire's cross-section, colour and cable core.
+    SetWireSpec {
+        id: ConnectionId,
+        spec: WireSpec,
+    },
     /// Add a symbol to the project's library (its id must be new), e.g. a black box.
     AddSymbol(SymbolDef),
     /// Remove a symbol nothing is drawn with.
@@ -338,6 +391,8 @@ pub enum ModelError {
     BadPageOrder,
     #[error("there is no device `{0}`")]
     UnknownTag(String),
+    #[error("there is no cable `{0}`")]
+    UnknownCable(String),
     #[error("part `{0}` is already in the catalogue")]
     DuplicatePart(String),
     #[error("part `{0}` is not in the catalogue")]
@@ -346,6 +401,14 @@ pub enum ModelError {
     PartInUse(String, String),
     #[error("a black box needs at least one terminal, and every terminal a unique, non-empty name")]
     InvalidBlackBox,
+    #[error("no cable {0:?}")]
+    NoCable(CableId),
+    #[error("cable {0} still has wires in it")]
+    CableInUse(String),
+    #[error("a cable core needs a name, e.g. 1 or BN")]
+    EmptyCore,
+    #[error("core {1} of cable {0} is already used")]
+    CoreInUse(String, String),
     #[error("symbol `{0}` already exists")]
     DuplicateSymbol(String),
     #[error("symbol `{0}` is used by {1}")]
@@ -388,6 +451,9 @@ pub struct Project {
     /// How new tags and wire numbers are formed.
     #[serde(default)]
     pub naming: crate::Naming,
+    /// Cables, by id; wires refer to their cores.
+    #[serde(default)]
+    pub cables: BTreeMap<CableId, Cable>,
 }
 
 /// Title-block fields of a project. All free text.
@@ -870,6 +936,40 @@ impl Project {
                 let old_designations = std::mem::replace(&mut f.designations, designations);
                 Ok(Command::Reassign { id, device: old_device, designations: old_designations })
             }
+            Command::AddCable(cable) => {
+                let cable = Cable { tag: cable.tag.trim().to_owned(), ..cable };
+                self.check_cable(&cable)?;
+                if self.cables.contains_key(&cable.id) {
+                    return Err(ModelError::DuplicateId(cable.id.0));
+                }
+                let id = cable.id;
+                self.cables.insert(id, cable);
+                Ok(Command::RemoveCable(id))
+            }
+            Command::UpdateCable(cable) => {
+                let cable = Cable { tag: cable.tag.trim().to_owned(), ..cable };
+                self.check_cable(&cable)?;
+                let slot = self.cables.get_mut(&cable.id).ok_or(ModelError::NoCable(cable.id))?;
+                Ok(Command::UpdateCable(std::mem::replace(slot, cable)))
+            }
+            Command::RemoveCable(id) => {
+                if self.connections.values().any(|c| c.spec.cable.as_ref().is_some_and(|k| k.cable == id)) {
+                    let tag = self.cables.get(&id).map(|c| c.tag.clone()).unwrap_or_default();
+                    return Err(ModelError::CableInUse(tag));
+                }
+                let cable = self.cables.remove(&id).ok_or(ModelError::NoCable(id))?;
+                Ok(Command::AddCable(cable))
+            }
+            Command::SetWireSpec { id, spec } => {
+                let spec = WireSpec {
+                    cross_section: spec.cross_section.trim().to_owned(),
+                    colour: spec.colour.trim().to_uppercase(),
+                    cable: spec.cable.map(|k| CableCore { core: k.core.trim().to_owned(), ..k }),
+                };
+                self.check_core(id, spec.cable.as_ref())?;
+                let c = self.connections.get_mut(&id).ok_or(ModelError::NoConnection(id))?;
+                Ok(Command::SetWireSpec { id, spec: std::mem::replace(&mut c.spec, spec) })
+            }
             Command::AddSymbol(symbol) => {
                 if self.symbols.contains_key(&symbol.id) {
                     return Err(ModelError::DuplicateSymbol(symbol.id.0));
@@ -1045,6 +1145,31 @@ impl Project {
         }
     }
 
+    /// A cable's tag is non-empty and unique.
+    fn check_cable(&self, cable: &Cable) -> Result<()> {
+        if cable.tag.is_empty() {
+            return Err(ModelError::EmptyTag);
+        }
+        if self.cables.values().any(|c| c.id != cable.id && c.tag == cable.tag) {
+            return Err(ModelError::DuplicateTag(cable.tag.clone()));
+        }
+        Ok(())
+    }
+
+    /// A wire's cable exists, and no other wire uses the same core.
+    fn check_core(&self, wire: ConnectionId, core: Option<&CableCore>) -> Result<()> {
+        let Some(core) = core else { return Ok(()) };
+        let cable = self.cables.get(&core.cable).ok_or(ModelError::NoCable(core.cable))?;
+        if core.core.is_empty() {
+            return Err(ModelError::EmptyCore);
+        }
+        let taken = self.connections.values().any(|c| c.id != wire && c.spec.cable.as_ref() == Some(core));
+        if taken {
+            return Err(ModelError::CoreInUse(cable.tag.clone(), core.core.clone()));
+        }
+        Ok(())
+    }
+
     fn check_wire_number(&self, number: &str, except: Option<ConnectionId>) -> Result<()> {
         // Per potential, wires share numbers; clashes between potentials are a check instead.
         if self.naming.wire_numbering == crate::WireNumbering::PerPotential {
@@ -1063,6 +1188,7 @@ impl Project {
         if let Some(n) = &c.wire_number {
             self.check_wire_number(n, None)?;
         }
+        self.check_core(c.id, c.spec.cable.as_ref())?;
         self.connection_point(&c.from)?;
         self.connection_point(&c.to)?;
         if self.function(c.from.function)?.page != self.function(c.to.function)?.page {

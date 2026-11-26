@@ -58,6 +58,7 @@ fn export_writes_what_only_asks_for() {
             "devices-without-parts.csv",
             "drawings.pdf",
             "plc-io-list.csv",
+            "table-of-contents.csv",
             "terminal-diagram.csv",
             "wire-list.csv"
         ]
@@ -78,7 +79,7 @@ fn report_prints_one_csv() {
     // An empty report is its header.
     let start = sample(dir.path(), "start");
     assert_eq!(String::from_utf8(ecad(&["report", &start, "plc-io-list"]).stdout).unwrap().lines().count(), 1);
-    assert_eq!(ecad(&["report", &start, "cable-list"]).status.code(), Some(2));
+    assert_eq!(ecad(&["report", &start, "motor-list"]).status.code(), Some(2));
 }
 
 #[test]

@@ -209,6 +209,7 @@ mod tests {
             from: ConnectionRef::new(a, "1"),
             to: ConnectionRef::new(b, "1"),
             wire_number: Some("W9".into()),
+            spec: Default::default(),
         })
         .unwrap();
         let shorted = p.potential_of(wire(&p, "W9")).unwrap();

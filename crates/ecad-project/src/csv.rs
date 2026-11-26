@@ -88,6 +88,7 @@ pub fn read_parts(text: &str) -> Result<Vec<Part>, CsvError> {
         .ok_or_else(|| err(*header_line, "no part number column (expected e.g. \"Part number\")"))?;
     let manufacturer = column(header, &["manufacturer", "maker", "brand", "vendor"]);
     let description = column(header, &["description", "desc", "text", "name"]);
+    let code = column(header, &["code", "internal code", "article code", "item code", "codice", "codice interno"]);
     let get =
         |r: &[String], i: Option<usize>| i.and_then(|i| r.get(i)).map(|s| s.trim().to_owned()).unwrap_or_default();
 
@@ -100,7 +101,12 @@ pub fn read_parts(text: &str) -> Result<Vec<Part>, CsvError> {
         if parts.iter().any(|p| p.number == n) {
             return Err(err(*line, format!("part `{n}` appears twice in the file")));
         }
-        parts.push(Part { number: n, manufacturer: get(r, manufacturer), description: get(r, description) });
+        parts.push(Part {
+            number: n,
+            manufacturer: get(r, manufacturer),
+            description: get(r, description),
+            code: get(r, code),
+        });
     }
     Ok(parts)
 }
@@ -124,7 +130,12 @@ mod tests {
         assert_eq!(parts.len(), 2);
         assert_eq!(
             parts[0],
-            Part { number: "EX-1".into(), manufacturer: "Example".into(), description: "Contactor; 24 V".into() }
+            Part {
+                number: "EX-1".into(),
+                manufacturer: "Example".into(),
+                description: "Contactor; 24 V".into(),
+                code: String::new()
+            }
         );
         assert_eq!(parts[1].manufacturer, "");
     }

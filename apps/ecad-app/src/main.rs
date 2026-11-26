@@ -41,14 +41,18 @@ struct App {
     show_checks: bool,
     /// Filter text of the symbol library.
     symbol_filter: String,
+    /// The cables window, its edit buffers by cable, and the new-cable row.
+    show_cables: bool,
+    cable_edits: std::collections::BTreeMap<String, CableEdit>,
+    new_cable: CableEdit,
     black_box: BoxFields,
     /// Whether the project settings window is open, and its buffers.
     show_project: bool,
     project_fields: ProjectFields,
     /// Edit buffers for catalogue rows: number → (manufacturer, description).
-    part_edits: std::collections::BTreeMap<String, (String, String)>,
+    part_edits: std::collections::BTreeMap<String, (String, String, String)>,
     /// The "new part" row: number, manufacturer, description.
-    new_part: (String, String, String),
+    new_part: (String, String, String, String),
     title: String,
     close_sent: bool,
 }
@@ -60,6 +64,15 @@ struct PageFields {
     name: String,
     description: String,
     subtitle: String,
+}
+
+/// Edit buffer of one cable row.
+#[derive(Clone, Default, PartialEq)]
+struct CableEdit {
+    tag: String,
+    kind: String,
+    cores: u32,
+    shielded: bool,
 }
 
 /// The "New black box" window: terminal names as comma-separated lists.
@@ -111,6 +124,11 @@ struct Fields {
     number: String,
     /// "Belongs to" device tag for a contact.
     owner: String,
+    /// A wire's cross-section, colour, cable and core.
+    cross_section: String,
+    colour: String,
+    cable: String,
+    core: String,
     /// A PLC channel's address, symbol and comment.
     address: String,
     plc_symbol: String,
@@ -230,6 +248,9 @@ impl App {
             if ui.selectable_label(self.show_parts, "Parts").on_hover_text("The parts catalogue").clicked() {
                 self.show_parts = !self.show_parts;
             }
+            if ui.selectable_label(self.show_cables, "Cables").on_hover_text("Cables and their types").clicked() {
+                self.show_cables = !self.show_cables;
+            }
             let errors = frame.checks.iter().filter(|c| c.severity == "error").count();
             let warnings = frame.checks.len() - errors;
             let label = match (errors, warnings) {
@@ -276,7 +297,9 @@ impl App {
             SelectionInfo::Device { tag, description, symbol, terminal, plc, .. } => {
                 format!("device {tag} {description} {symbol} {terminal:?} {plc:?}")
             }
-            SelectionInfo::Wire { number, from, to, .. } => format!("wire {from} {to} {number:?}"),
+            SelectionInfo::Wire { number, from, to, cross_section, colour, cable, core, .. } => {
+                format!("wire {from} {to} {number:?} {cross_section} {colour} {cable} {core}")
+            }
         });
         if key != self.fields.key {
             self.fields = Fields { key, ..Fields::default() };
@@ -291,7 +314,13 @@ impl App {
                         self.fields.comment = plc.comment.clone();
                     }
                 }
-                Some(SelectionInfo::Wire { number, .. }) => self.fields.number = number.clone().unwrap_or_default(),
+                Some(SelectionInfo::Wire { number, cross_section, colour, cable, core, .. }) => {
+                    self.fields.number = number.clone().unwrap_or_default();
+                    self.fields.cross_section = cross_section.clone();
+                    self.fields.colour = colour.clone();
+                    self.fields.cable = cable.clone();
+                    self.fields.core = core.clone();
+                }
                 None => {}
             }
         }
@@ -481,7 +510,7 @@ impl App {
                 ui.add_space(8.0);
                 ui.label("R rotates, Delete removes.");
             }
-            Some(SelectionInfo::Wire { number, from, to, potential, warning }) => {
+            Some(SelectionInfo::Wire { number, from, to, potential, warning, cross_section, colour, cable, core }) => {
                 ui.label("Wire number");
                 let edit = ui.text_edit_singleline(&mut self.fields.number);
                 if edit.lost_focus() && self.fields.number.trim() != number.as_deref().unwrap_or("") {
@@ -495,6 +524,54 @@ impl App {
                     .on_hover_text("Wires on the same potential are highlighted");
                 if let Some(w) = warning {
                     ui.colored_label(Color32::from_rgb(255, 110, 90), format!("⚠ {w}"));
+                }
+                ui.add_space(8.0);
+                let f = &mut self.fields;
+                let mut changed = false;
+                egui::Grid::new("wire-spec").num_columns(2).show(ui, |ui| {
+                    ui.label("Cross-section");
+                    changed |= ui
+                        .add(egui::TextEdit::singleline(&mut f.cross_section).hint_text("1,5").desired_width(80.0))
+                        .lost_focus();
+                    ui.end_row();
+                    ui.label("Colour");
+                    changed |= ui
+                        .add(egui::TextEdit::singleline(&mut f.colour).hint_text("BU").desired_width(80.0))
+                        .lost_focus();
+                    ui.end_row();
+                    ui.label("Cable");
+                    egui::ComboBox::from_id_salt("wire-cable")
+                        .selected_text(if f.cable.is_empty() { "none" } else { &f.cable })
+                        .show_ui(ui, |ui| {
+                            changed |= ui.selectable_value(&mut f.cable, String::new(), "none").clicked();
+                            for c in &frame.cables {
+                                changed |= ui.selectable_value(&mut f.cable, c.tag.clone(), &c.tag).clicked();
+                            }
+                        });
+                    ui.end_row();
+                    if !f.cable.is_empty() {
+                        ui.label("Core");
+                        changed |= ui
+                            .add(egui::TextEdit::singleline(&mut f.core).hint_text("1, BN…").desired_width(80.0))
+                            .lost_focus();
+                        ui.end_row();
+                    }
+                });
+                let differs = f.cross_section.trim() != cross_section
+                    || f.colour.trim().to_uppercase() != *colour
+                    || f.cable != *cable
+                    || (!f.cable.is_empty() && f.core.trim() != core);
+                // A cable needs a core before the change goes in.
+                if changed && differs && (f.cable.is_empty() || !f.core.trim().is_empty()) {
+                    events.push(UiEvent::WireSpec {
+                        cross_section: f.cross_section.clone(),
+                        colour: f.colour.clone(),
+                        cable: f.cable.clone(),
+                        core: f.core.clone(),
+                    });
+                }
+                if frame.cables.is_empty() {
+                    ui.small("Add cables in the Cables window.");
                 }
                 ui.add_space(8.0);
                 ui.label("Delete removes the wire.");
@@ -834,6 +911,71 @@ impl App {
         }
     }
 
+    fn cables_window(&mut self, ctx: &egui::Context, frame: &Frame) {
+        let mut open = self.show_cables;
+        let mut events = Vec::new();
+        egui::Window::new("Cables").open(&mut open).default_size([520.0, 320.0]).show(ctx, |ui| {
+            ui.small("Put a wire in a cable from the wire's panel: pick the cable and type the core.");
+            let ids: Vec<String> = frame.cables.iter().map(|c| format!("{:?}", c.id)).collect();
+            self.cable_edits.retain(|k, _| ids.contains(k));
+            egui::Grid::new("cables-grid").striped(true).num_columns(6).show(ui, |ui| {
+                for h in ["Tag", "Type", "Cores", "Shield", "Wires", ""] {
+                    ui.strong(h);
+                }
+                ui.end_row();
+                for c in &frame.cables {
+                    let current =
+                        CableEdit { tag: c.tag.clone(), kind: c.kind.clone(), cores: c.cores, shielded: c.shielded };
+                    let buf = self.cable_edits.entry(format!("{:?}", c.id)).or_insert_with(|| current.clone());
+                    let t = ui.add(egui::TextEdit::singleline(&mut buf.tag).desired_width(80.0));
+                    let k = ui.add(egui::TextEdit::singleline(&mut buf.kind).desired_width(140.0));
+                    let n = ui.add(egui::DragValue::new(&mut buf.cores).range(0..=99));
+                    let s = ui.checkbox(&mut buf.shielded, "");
+                    ui.label(c.used.to_string());
+                    let commit = t.lost_focus() || k.lost_focus() || n.drag_stopped() || n.lost_focus() || s.changed();
+                    if commit && *buf != current {
+                        events.push(UiEvent::UpdateCable {
+                            id: c.id,
+                            tag: buf.tag.clone(),
+                            kind: buf.kind.clone(),
+                            cores: buf.cores,
+                            shielded: buf.shielded,
+                        });
+                    }
+                    if ui
+                        .add_enabled(c.used == 0, egui::Button::new("✕").small())
+                        .on_hover_text("Remove (only when no wire uses it)")
+                        .clicked()
+                    {
+                        events.push(UiEvent::RemoveCable { id: c.id });
+                    }
+                    ui.end_row();
+                }
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                let b = &mut self.new_cable;
+                ui.add(egui::TextEdit::singleline(&mut b.tag).hint_text("-WM1").desired_width(80.0));
+                ui.add(egui::TextEdit::singleline(&mut b.kind).hint_text("4G2,5").desired_width(140.0));
+                ui.add(egui::DragValue::new(&mut b.cores).range(0..=99).prefix("cores "));
+                ui.checkbox(&mut b.shielded, "shield");
+                if ui.add_enabled(!b.tag.trim().is_empty(), egui::Button::new("Add")).clicked() {
+                    events.push(UiEvent::AddCable {
+                        tag: b.tag.clone(),
+                        kind: b.kind.clone(),
+                        cores: b.cores,
+                        shielded: b.shielded,
+                    });
+                    *b = CableEdit::default();
+                }
+            });
+        });
+        self.show_cables = open;
+        for ev in events {
+            self.send(ev);
+        }
+    }
+
     fn parts_window(&mut self, ctx: &egui::Context, frame: &Frame) {
         let mut open = self.show_parts;
         let mut events = Vec::new();
@@ -841,7 +983,7 @@ impl App {
             ui.horizontal(|ui| {
                 if ui
                     .button("Import CSV…")
-                    .on_hover_text("Columns: part number, manufacturer, description; , or ; separated")
+                    .on_hover_text("Columns: part number, manufacturer, description, internal code; , or ; separated")
                     .clicked()
                     && let Some(path) = rfd::FileDialog::new().add_filter("CSV", &["csv", "txt"]).pick_file()
                 {
@@ -853,28 +995,30 @@ impl App {
             // Keep edit buffers in step with the catalogue.
             self.part_edits.retain(|n, _| frame.parts.iter().any(|p| &p.number == n));
             egui::ScrollArea::vertical().max_height(ui.available_height() - 40.0).show(ui, |ui| {
-                egui::Grid::new("parts-grid").striped(true).num_columns(4).show(ui, |ui| {
+                egui::Grid::new("parts-grid").striped(true).num_columns(5).show(ui, |ui| {
                     ui.strong("Part number");
                     ui.strong("Manufacturer");
                     ui.strong("Description");
+                    ui.strong("Internal code");
                     ui.label("");
                     ui.end_row();
                     for part in &frame.parts {
-                        let buf = self
-                            .part_edits
-                            .entry(part.number.clone())
-                            .or_insert_with(|| (part.manufacturer.clone(), part.description.clone()));
+                        let buf = self.part_edits.entry(part.number.clone()).or_insert_with(|| {
+                            (part.manufacturer.clone(), part.description.clone(), part.code.clone())
+                        });
                         ui.label(&part.number);
                         let m = ui.add_sized([130.0, 20.0], egui::TextEdit::singleline(&mut buf.0));
                         let d = ui.add_sized([300.0, 20.0], egui::TextEdit::singleline(&mut buf.1));
-                        if (m.lost_focus() || d.lost_focus())
-                            && (buf.0 != part.manufacturer || buf.1 != part.description)
+                        let c = ui.add_sized([100.0, 20.0], egui::TextEdit::singleline(&mut buf.2));
+                        if (m.lost_focus() || d.lost_focus() || c.lost_focus())
+                            && (buf.0 != part.manufacturer || buf.1 != part.description || buf.2 != part.code)
                         {
                             events.push(UiEvent::UpdatePart {
                                 part: ecad_editor::Part {
                                     number: part.number.clone(),
                                     manufacturer: buf.0.trim().to_owned(),
                                     description: buf.1.trim().to_owned(),
+                                    code: buf.2.trim().to_owned(),
                                 },
                             });
                         }
@@ -887,16 +1031,18 @@ impl App {
             });
             ui.separator();
             ui.horizontal(|ui| {
-                let (n, m, d) = &mut self.new_part;
+                let (n, m, d, c) = &mut self.new_part;
                 ui.add(egui::TextEdit::singleline(n).hint_text("Part number").desired_width(120.0));
                 ui.add(egui::TextEdit::singleline(m).hint_text("Manufacturer").desired_width(120.0));
                 ui.add(egui::TextEdit::singleline(d).hint_text("Description").desired_width(240.0));
+                ui.add(egui::TextEdit::singleline(c).hint_text("Internal code").desired_width(90.0));
                 if ui.add_enabled(!n.trim().is_empty(), egui::Button::new("Add")).clicked() {
                     events.push(UiEvent::AddPart {
                         part: ecad_editor::Part {
                             number: n.trim().to_owned(),
                             manufacturer: m.trim().to_owned(),
                             description: d.trim().to_owned(),
+                            code: c.trim().to_owned(),
                         },
                     });
                     self.new_part = Default::default();
@@ -1093,6 +1239,9 @@ impl eframe::App for App {
             if self.show_project {
                 self.project_window(&ctx, &frame);
             }
+            if self.show_cables {
+                self.cables_window(&ctx, &frame);
+            }
             if self.black_box.open {
                 self.black_box_window(&ctx);
             }
@@ -1138,6 +1287,9 @@ fn main() -> eframe::Result {
                 show_parts: false,
                 show_checks: false,
                 symbol_filter: String::new(),
+                show_cables: false,
+                cable_edits: Default::default(),
+                new_cable: CableEdit::default(),
                 black_box: BoxFields::default(),
                 show_project: false,
                 project_fields: ProjectFields::default(),

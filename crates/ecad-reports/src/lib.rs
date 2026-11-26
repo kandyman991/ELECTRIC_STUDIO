@@ -11,6 +11,11 @@ pub struct WireListRow {
     pub from_point: String,
     pub to_tag: String,
     pub to_point: String,
+    pub cross_section: String,
+    pub colour: String,
+    /// The cable's tag and the core, when the wire runs in a cable.
+    pub cable: String,
+    pub core: String,
 }
 
 /// One row per connection, sorted by wire number.
@@ -24,6 +29,12 @@ pub fn wire_list(project: &Project) -> Result<Vec<WireListRow>, ModelError> {
             let (to_tag, to_point) = project.describe(&c.to)?;
             let potential =
                 potentials.iter().find(|p| p.connections.contains(&c.id)).and_then(|p| p.name()).unwrap_or_default();
+            let (cable, core) = c
+                .spec
+                .cable
+                .as_ref()
+                .map(|k| (project.cables.get(&k.cable).map(|c| c.tag.clone()).unwrap_or_default(), k.core.clone()))
+                .unwrap_or_default();
             Ok(WireListRow {
                 wire: c.wire_number.clone().unwrap_or_default(),
                 potential,
@@ -31,6 +42,10 @@ pub fn wire_list(project: &Project) -> Result<Vec<WireListRow>, ModelError> {
                 from_point,
                 to_tag,
                 to_point,
+                cross_section: c.spec.cross_section.clone(),
+                colour: c.spec.colour.clone(),
+                cable,
+                core,
             })
         })
         .collect::<Result<Vec<_>, _>>()
@@ -45,9 +60,21 @@ fn csv_field(s: &str) -> String {
 }
 
 pub fn wire_list_csv(rows: &[WireListRow]) -> String {
-    let mut out = String::from("wire,potential,from_device,from_point,to_device,to_point\n");
+    let mut out =
+        String::from("wire,potential,from_device,from_point,to_device,to_point,cross_section,colour,cable,core\n");
     for r in rows {
-        let fields = [&r.wire, &r.potential, &r.from_tag, &r.from_point, &r.to_tag, &r.to_point];
+        let fields = [
+            &r.wire,
+            &r.potential,
+            &r.from_tag,
+            &r.from_point,
+            &r.to_tag,
+            &r.to_point,
+            &r.cross_section,
+            &r.colour,
+            &r.cable,
+            &r.core,
+        ];
         out += &fields.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(",");
         out.push('\n');
     }
@@ -63,6 +90,10 @@ pub struct BomRow {
     pub quantity: u32,
     /// Tags of the devices using it, sorted.
     pub devices: Vec<String>,
+    /// The company's internal code for the part.
+    pub code: String,
+    /// Pages where those devices are drawn, in page order.
+    pub pages: Vec<String>,
 }
 
 /// The bill of materials: every part used by a device, with the total quantity, sorted by part
@@ -80,14 +111,25 @@ pub fn bom(project: &Project) -> Vec<BomRow> {
                 description: part.map(|p| p.description.clone()).unwrap_or_default(),
                 quantity: 0,
                 devices: Vec::new(),
+                code: part.map(|p| p.code.clone()).unwrap_or_default(),
+                pages: Vec::new(),
             });
             row.quantity += r.quantity * per;
             row.devices.push(d.tag.clone());
+            for f in project.functions_of(d.id) {
+                if let Ok(page) = project.page(f.page)
+                    && !row.pages.contains(&page.name)
+                {
+                    row.pages.push(page.name.clone());
+                }
+            }
         }
     }
+    let order: Vec<String> = project.pages_in_order().iter().map(|p| p.name.clone()).collect();
     rows.into_values()
         .map(|mut r| {
             r.devices.sort();
+            r.pages.sort_by_key(|p| order.iter().position(|o| o == p));
             r
         })
         .collect()
@@ -108,7 +150,7 @@ pub fn devices_without_parts(project: &Project) -> Vec<(String, String)> {
 }
 
 pub fn bom_csv(rows: &[BomRow]) -> String {
-    let mut out = String::from("part_number,manufacturer,description,quantity,devices\n");
+    let mut out = String::from("part_number,manufacturer,description,quantity,devices,code,pages\n");
     for r in rows {
         let fields = [
             r.number.clone(),
@@ -116,6 +158,8 @@ pub fn bom_csv(rows: &[BomRow]) -> String {
             r.description.clone(),
             r.quantity.to_string(),
             r.devices.join(" "),
+            r.code.clone(),
+            r.pages.join(" "),
         ];
         out += &fields.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(",");
         out.push('\n');
@@ -255,8 +299,96 @@ pub fn plc_io_list_csv(rows: &[PlcIoRow]) -> String {
     out
 }
 
+/// One core of a cable in the cable list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CableRow {
+    pub cable: String,
+    pub kind: String,
+    pub cores: u32,
+    pub shielded: bool,
+    pub core: String,
+    pub wire: String,
+    pub from: String,
+    pub to: String,
+}
+
+/// Every cable, sorted by tag, with one row per used core (in core order); a cable with no
+/// wires yet gets one row with an empty core.
+pub fn cable_list(project: &Project) -> Vec<CableRow> {
+    let mut cables: Vec<&ecad_model::Cable> = project.cables.values().collect();
+    cables.sort_by(|a, b| a.tag.cmp(&b.tag));
+    let end = |r| project.describe(r).map(|(t, p)| format!("{t}:{p}")).unwrap_or_default();
+    let mut rows = Vec::new();
+    for cable in cables {
+        let mut cores: Vec<(&str, &ecad_model::Connection)> = project
+            .connections
+            .values()
+            .filter_map(|c| c.spec.cable.as_ref().filter(|k| k.cable == cable.id).map(|k| (k.core.as_str(), c)))
+            .collect();
+        cores.sort_by(|a, b| natural(a.0, b.0));
+        let row = |core: &str, wire: String, from: String, to: String| CableRow {
+            cable: cable.tag.clone(),
+            kind: cable.kind.clone(),
+            cores: cable.cores,
+            shielded: cable.shielded,
+            core: core.to_owned(),
+            wire,
+            from,
+            to,
+        };
+        if cores.is_empty() {
+            rows.push(row("", String::new(), String::new(), String::new()));
+        }
+        for (core, c) in cores {
+            rows.push(row(core, c.wire_number.clone().unwrap_or_default(), end(&c.from), end(&c.to)));
+        }
+    }
+    rows
+}
+
+/// Numbers as numbers, then text.
+fn natural(a: &str, b: &str) -> std::cmp::Ordering {
+    match (a.parse::<u64>(), b.parse::<u64>()) {
+        (Ok(x), Ok(y)) => x.cmp(&y),
+        (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+        (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
+        _ => a.cmp(b),
+    }
+}
+
+pub fn cable_list_csv(rows: &[CableRow]) -> String {
+    let mut out = String::from("cable,type,cores,shield,core,wire,from,to\n");
+    for r in rows {
+        let fields = [
+            r.cable.clone(),
+            r.kind.clone(),
+            r.cores.to_string(),
+            if r.shielded { "yes".into() } else { String::new() },
+            r.core.clone(),
+            r.wire.clone(),
+            r.from.clone(),
+            r.to.clone(),
+        ];
+        out += &fields.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(",");
+        out.push('\n');
+    }
+    out
+}
+
+/// The table of contents: every page in order with its title lines.
+pub fn table_of_contents_csv(project: &Project) -> String {
+    let mut out = String::from("page,description,subtitle\n");
+    for p in project.pages_in_order() {
+        let fields = [&p.name, &p.description, &p.subtitle];
+        out += &fields.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(",");
+        out.push('\n');
+    }
+    out
+}
+
 /// Report names, as `ecad report` takes them and as their file names (`<name>.csv`).
-pub const REPORTS: [&str; 5] = ["wire-list", "bom", "terminal-diagram", "plc-io-list", "devices-without-parts"];
+pub const REPORTS: [&str; 7] =
+    ["wire-list", "bom", "terminal-diagram", "plc-io-list", "cable-list", "table-of-contents", "devices-without-parts"];
 
 /// One report as CSV, by name (see [`REPORTS`]); `None` for an unknown name. A report with no
 /// rows is just its header.
@@ -266,6 +398,8 @@ pub fn csv(project: &Project, name: &str) -> Result<Option<String>, ModelError> 
         "bom" => bom_csv(&bom(project)),
         "terminal-diagram" => terminal_diagram_csv(&terminal_diagram(project)),
         "plc-io-list" => plc_io_list_csv(&plc_io_list(project)),
+        "cable-list" => cable_list_csv(&cable_list(project)),
+        "table-of-contents" => table_of_contents_csv(project),
         "devices-without-parts" => devices_without_parts_csv(&devices_without_parts(project)),
         _ => return Ok(None),
     }))
@@ -283,6 +417,11 @@ pub fn all_csv(project: &Project) -> Result<Vec<(&'static str, String)>, ModelEr
     if !channels.is_empty() {
         files.push(("plc-io-list.csv", plc_io_list_csv(&channels)));
     }
+    let cables = cable_list(project);
+    if !cables.is_empty() {
+        files.push(("cable-list.csv", cable_list_csv(&cables)));
+    }
+    files.push(("table-of-contents.csv", table_of_contents_csv(project)));
     let missing = devices_without_parts(project);
     if !missing.is_empty() {
         files.push(("devices-without-parts.csv", devices_without_parts_csv(&missing)));
@@ -304,17 +443,17 @@ mod tests {
         p.apply(Command::SetDeviceParts { id: k1, parts: k1_parts }).unwrap();
         assert_eq!(
             bom_csv(&bom(&p)),
-            "part_number,manufacturer,description,quantity,devices\n\
-             EX-AUX-1NO1NC,Example,Auxiliary contact block 1 NO + 1 NC,2,-K1\n\
-             EX-CT-24DC,Example,\"Contactor 3 kW, 24 V DC coil, 1 NO auxiliary\",2,-K1 -K2\n\
-             EX-PB-GRN,Example,\"Pushbutton, green, 1 NO\",1,-S1\n"
+            "part_number,manufacturer,description,quantity,devices,code,pages\n\
+             EX-AUX-1NO1NC,Example,Auxiliary contact block 1 NO + 1 NC,2,-K1,,1 2\n\
+             EX-CT-24DC,Example,\"Contactor 3 kW, 24 V DC coil, 1 NO auxiliary\",2,-K1 -K2,,1 2\n\
+             EX-PB-GRN,Example,\"Pushbutton, green, 1 NO\",1,-S1,,1\n"
         );
         // L+, M, I1 and J1 aren't components; everything else has a part now.
         assert!(devices_without_parts(&p).is_empty());
         p.apply(Command::SetDeviceParts { id: k2, parts: vec![] }).unwrap();
         assert_eq!(devices_without_parts(&p), [("-K2".to_owned(), String::new())]);
         let names: Vec<&str> = all_csv(&p).unwrap().iter().map(|(n, _)| *n).collect();
-        assert_eq!(names, ["wire-list.csv", "bom.csv", "devices-without-parts.csv"]);
+        assert_eq!(names, ["wire-list.csv", "bom.csv", "table-of-contents.csv", "devices-without-parts.csv"]);
     }
 
     use super::*;
@@ -325,10 +464,10 @@ mod tests {
         let csv = wire_list_csv(&wire_list(&start_circuit().unwrap()).unwrap());
         assert_eq!(
             csv,
-            "wire,potential,from_device,from_point,to_device,to_point\n\
-             W1,L+,L+,1,-S1,13\n\
-             W2,,-S1,14,-K1,A1\n\
-             W3,M,-K1,A2,M,1\n"
+            "wire,potential,from_device,from_point,to_device,to_point,cross_section,colour,cable,core\n\
+             W1,L+,L+,1,-S1,13,,,,\n\
+             W2,,-S1,14,-K1,A1,,,,\n\
+             W3,M,-K1,A2,M,1,,,,\n"
         );
     }
 
@@ -381,6 +520,26 @@ mod tests {
             plc_io_list_csv(&rows)
                 .starts_with("card,channel,kind,address,symbol,comment,wired_to,location\n-KF1,0,DI,I0.0")
         );
+    }
+
+    #[test]
+    fn the_cable_list_has_a_row_per_core_and_the_bom_its_code_and_pages() {
+        let p = ecad_model::sample::with_power().unwrap();
+        let csv = cable_list_csv(&cable_list(&p));
+        let lines: Vec<&str> = csv.lines().collect();
+        assert_eq!(lines[0], "cable,type,cores,shield,core,wire,from,to");
+        assert_eq!(lines.len(), 4, "{csv}");
+        assert_eq!(lines[1], "-WM1,\"4G2,5\",4,yes,1,407,-K1:2,-M1:U");
+        let wires = wire_list(&p).unwrap();
+        let u = wires.iter().find(|w| w.to_tag == "-M1" && w.to_point == "U").unwrap();
+        assert_eq!(
+            (u.cross_section.as_str(), u.colour.as_str(), u.cable.as_str(), u.core.as_str()),
+            ("2,5", "BK", "-WM1", "1")
+        );
+        let toc = table_of_contents_csv(&p);
+        assert!(toc.contains("\n4,Power distribution,Distribuzione potenza\n"), "{toc}");
+        let names: Vec<&str> = all_csv(&p).unwrap().iter().map(|(n, _)| *n).collect();
+        assert!(names.contains(&"cable-list.csv") && names.contains(&"table-of-contents.csv"));
     }
 
     #[test]
