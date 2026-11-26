@@ -6,8 +6,8 @@ truth; schematics, panel layouts and manufacturing reports are generated from it
 Drawing, DXF/DWG/PDF output and rendering come from the Rust crates of
 [CADCraft](https://github.com/storytold/cadcraft) (MIT OR Apache-2.0), used as libraries.
 
-> Status: **M4a**: live checks in the editor and `ecad check`, on top of multi-page schematics,
-> parts, BOM, terminal strips and PLC I/O. Early development: an eleven-symbol placeholder library.
+> Status: **M4b**: drawing export (one PDF for the project; DXF, DWG and PNG per page), live
+> checks, multi-page schematics, parts, BOM, terminal strips and PLC I/O. Early development: an eleven-symbol placeholder library.
 
 ## Try it
 
@@ -15,7 +15,7 @@ Drawing, DXF/DWG/PDF output and rendering come from the Rust crates of
 cargo run -p ecad-cli -- demo out
 ```
 
-This writes `out/page-1.dxf`, `out/page-1.png` and `out/wire-list.csv` for a small sample
+This writes `out/drawings.pdf`, `out/page-1.dxf`, `.dwg`, `.png` and the reports for a small sample
 circuit (L+ → pushbutton -S1 → coil -K1 → M). The first build takes several minutes.
 
 Projects are folders of JSON files:
@@ -24,7 +24,7 @@ Projects are folders of JSON files:
 cargo run -p ecad-cli -- new-sample my-project     # write the sample as a project folder
 cargo run -p ecad-cli -- new-sample my-project plc    # or: start, contacts, potentials, terminals
 cargo run -p ecad-cli -- check my-project          # summarise and list errors and warnings (exit 1 on errors)
-cargo run -p ecad-cli -- export my-project out     # DXF and PNG for every page, wire list, BOM, terminal diagram, PLC I/O list
+cargo run -p ecad-cli -- export my-project out     # drawings.pdf, DXF/DWG/PNG per page, and the reports
 ```
 
 ## Try the editor
@@ -43,7 +43,7 @@ are attached to each CI run of the "Windows build" workflow (unsigned for now).
 | --- | --- |
 | `ecad-model` | Project, pages, symbols, devices, functions, connections, routing, undoable commands and history |
 | `ecad-project` | Loading and saving a project folder |
-| `ecad-view` | Model pages to CADCraft drawings; DXF, PNG and plain display primitives. The only CADCraft adapter |
+| `ecad-view` | Model pages to CADCraft drawings; project PDF, DXF, DWG, PNG and plain display primitives. The only CADCraft adapter |
 | `ecad-editor` | UI-independent editing controller and session: tools, hit-testing, snapping, undo, overlays, pan/zoom, saving |
 | `ecad-rules` | Checks on the model (unconnected points, potential clashes, missing parts…), live in the editor and in `ecad check` |
 | `ecad-reports` | Reports as queries on the model: wire list, BOM, terminal diagram, PLC I/O list |
@@ -59,8 +59,8 @@ Planned: `ecad-symbols`, `ecad-parts`, `ecad-mcp`. See [docs/ARCHITECTURE.md](do
 | M0 Foundation | Workspace, crates, CI, golden-file tests, feasibility test |
 | M1 One-page editor | M1a editing core · M1b UI chosen: egui · M1c Open/New, unsaved-changes prompt, readable labels, side-panel edits |
 | M2 Multi-page projects | M2a pages, sheet, title block · M2b cross-references · M2c potentials, junctions, interruption points |
-| **M3 Parts and reports** | M3a parts catalogue, BOM, report export · M3b terminal strips, terminal diagram · M3c PLC channels, PLC I/O list (this) |
-| **M4 Checks and output** | M4a live checks, checks panel, `ecad check` (this) · M4b PDF/DXF/DWG export · M4c headless CLI |
+| **M3 Parts and reports** | M3a parts catalogue, BOM, report export · M3b terminal strips, terminal diagram · M3c PLC channels, PLC I/O list |
+| **M4 Checks and output** | M4a live checks, checks panel, `ecad check` · M4b PDF/DXF/DWG export (this) · M4c headless CLI |
 | *MVP release gate* | *One real panel drawn end to end; BOM and wire list match it; checks clean* |
 | M5 Panel layout | 2D mounting plate, DIN rails, ducts, parts at scale, cables |
 | M6 Integrations | HMI Studio tag exchange, TIA Portal tag table, MCP server, DXF import |

@@ -160,7 +160,15 @@ impl App {
                     self.send(UiEvent::Save);
                 }
                 ui.separator();
-                if ui.button("Export reports…").on_hover_text("Wire list and bill of materials as CSV").clicked() {
+                let tip = "All pages in one PDF, plus DXF, DWG and PNG per page";
+                if ui.button("Export drawings…").on_hover_text(tip).clicked() {
+                    ui.close();
+                    if let Some(path) = pick_folder("Choose a folder for the drawings") {
+                        self.send(UiEvent::ExportDrawings { path });
+                    }
+                }
+                let tip = "Wire list, BOM, terminal diagram and PLC I/O list as CSV";
+                if ui.button("Export reports…").on_hover_text(tip).clicked() {
                     ui.close();
                     if let Some(path) = pick_folder("Choose a folder for the reports") {
                         self.send(UiEvent::ExportReports { path });

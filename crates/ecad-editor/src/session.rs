@@ -154,6 +154,10 @@ pub enum UiEvent {
     ExportReports {
         path: PathBuf,
     },
+    /// Write the drawings (one PDF with every page, plus DXF, DWG and PNG per page) into a folder.
+    ExportDrawings {
+        path: PathBuf,
+    },
     /// Give the selected terminal or PLC channel another number.
     RenumberTerminal {
         number: String,
@@ -529,6 +533,7 @@ impl Session {
                 }
             }),
             UiEvent::ExportReports { path } => self.export_reports(&path),
+            UiEvent::ExportDrawings { path } => self.export_drawings(&path),
             UiEvent::SetPlcProperty { key, value } => {
                 let r = self.editor.set_selected_property(&key, &value);
                 self.report(r);
@@ -622,6 +627,20 @@ impl Session {
             Ok((0, 0)) => "Nothing new to import: the catalogue already has these parts".into(),
             Ok((added, updated)) => format!("Imported {added} new parts, updated {updated}"),
             Err(e) => format!("Import failed: {e}"),
+        });
+    }
+
+    fn export_drawings(&mut self, dir: &Path) {
+        let result = ecad_view::drawing_files(self.editor.project()).map_err(|e| e.to_string()).and_then(|files| {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            for (name, bytes) in &files {
+                std::fs::write(dir.join(name), bytes).map_err(|e| format!("{}: {e}", dir.join(name).display()))?;
+            }
+            Ok(files.len())
+        });
+        self.message = Some(match result {
+            Ok(n) => format!("Wrote drawings.pdf and {} page files to {}", n - 1, dir.display()),
+            Err(e) => format!("Export failed: {e}"),
         });
     }
 
@@ -1146,6 +1165,20 @@ mod tests {
         assert_eq!(s.frame(None, [0, 0, 0]).status, format!("Wrote 2 reports to {}", out.display()));
         let bom = std::fs::read_to_string(out.join("bom.csv")).unwrap();
         assert!(bom.contains("EX-AUX-1NO1NC,Example,Auxiliary contact block 1 NO + 1 NC,1,-K1"), "{bom}");
+    }
+
+    #[test]
+    fn drawings_are_exported_as_pdf_dxf_dwg_and_png() {
+        let (dir, mut s) = session();
+        let out = dir.path().join("drawings");
+        s.handle(UiEvent::ExportDrawings { path: out.clone() });
+        assert_eq!(
+            s.frame(None, [0, 0, 0]).status,
+            format!("Wrote drawings.pdf and 3 page files to {}", out.display())
+        );
+        for name in ["drawings.pdf", "page-1.dxf", "page-1.dwg", "page-1.png"] {
+            assert!(std::fs::metadata(out.join(name)).is_ok_and(|m| m.len() > 1000), "{name}");
+        }
     }
 
     #[test]

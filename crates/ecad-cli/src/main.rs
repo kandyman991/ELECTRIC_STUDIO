@@ -5,7 +5,8 @@
 //!   interruption point across both pages, plus terminal strip -X2, plus PLC card -KF1 on page 3
 //! - `ecad check <project-dir>`: load a project, summarise it and list its errors and warnings;
 //!   exits with 1 when there are errors
-//! - `ecad export <project-dir> <out-dir>`: each page as DXF and PNG, plus the reports (wire
+//! - `ecad export <project-dir> <out-dir>`: all pages in one PDF (`drawings.pdf`), each page as
+//!   DXF, DWG and PNG, plus the reports (wire
 //!   list, bill of materials, terminal diagram, PLC I/O list, devices without parts)
 //! - `ecad demo <out-dir>`: `export` for the built-in sample, without a project folder
 
@@ -31,10 +32,8 @@ fn export(project: &Project, out: &Path) -> Result<(), String> {
         println!("wrote {}", path.display());
         Ok::<(), String>(())
     };
-    for page in project.pages.values() {
-        let stem = format!("page-{}", page.name);
-        write(&format!("{stem}.dxf"), ecad_view::page_dxf(project, page.id).map_err(|e| e.to_string())?.as_bytes())?;
-        write(&format!("{stem}.png"), &ecad_view::page_png(project, page.id, 1200, 1200).map_err(|e| e.to_string())?)?;
+    for (name, bytes) in ecad_view::drawing_files(project).map_err(|e| e.to_string())? {
+        write(&name, &bytes)?;
     }
     for (name, csv) in ecad_reports::all_csv(project).map_err(|e| e.to_string())? {
         write(name, csv.as_bytes())?;
