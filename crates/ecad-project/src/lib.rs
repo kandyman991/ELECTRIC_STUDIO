@@ -14,7 +14,8 @@
 //! a rule (duplicate tag, wire to a missing point) is rejected with the file named.
 
 use ecad_model::{
-    Command, Connection, Device, Function, ModelError, Page, Part, Point, Project, ProjectInfo, Sheet, SymbolDef,
+    Command, Connection, Device, Function, ModelError, Naming, Page, Part, Point, Project, ProjectInfo, Sheet,
+    SymbolDef,
 };
 
 pub mod csv;
@@ -49,7 +50,14 @@ struct ProjectFile {
     /// Title-block fields; missing in projects saved before G1.
     #[serde(default, skip_serializing_if = "is_default")]
     info: ProjectInfo,
+    /// Tag and wire number formats; missing in projects saved before G1b.
+    #[serde(default, skip_serializing_if = "is_default_naming")]
+    naming: Naming,
     pages: Vec<Page>,
+}
+
+fn is_default_naming(n: &Naming) -> bool {
+    *n == Naming::default()
 }
 
 fn is_default(info: &ProjectInfo) -> bool {
@@ -116,6 +124,7 @@ pub fn save(project: &Project, dir: &Path) -> Result<()> {
         name: project.name.clone(),
         sheet: Some(project.sheet),
         info: project.info.clone(),
+        naming: project.naming.clone(),
         pages,
     };
     write_json(&dir.join("project.json"), &head)?;
@@ -157,6 +166,8 @@ pub fn load(dir: &Path) -> Result<Project> {
     }
     let mut project = Project::new(&head.name);
     project.info = head.info;
+    // Before the wires load, so per-potential numbering allows shared numbers.
+    project.naming = head.naming;
     for page in head.pages {
         project.add_page(page);
     }

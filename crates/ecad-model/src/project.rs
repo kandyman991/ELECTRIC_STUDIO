@@ -252,6 +252,8 @@ pub enum Command {
     },
     /// Sheet size, columns and rows.
     SetSheet(Sheet),
+    /// How new tags and wire numbers are formed.
+    SetNaming(crate::Naming),
     /// Put the pages in this order (every page, once).
     ReorderPages(Vec<PageId>),
     /// Make a function part of another device, with the designations it gets there.
@@ -289,6 +291,8 @@ pub enum Command {
 pub enum ModelError {
     #[error("no page {0:?}")]
     NoPage(PageId),
+    #[error("a tag or wire number format needs one {{n}} (or {{n:02}}) and only {{page}} and {{letters}} (tags only)")]
+    InvalidNaming,
     #[error("the project name must not be empty")]
     EmptyProjectName,
     #[error("a sheet has 1 to 50 columns, numbered from 0 or 1, and up to 26 rows")]
@@ -368,6 +372,9 @@ pub struct Project {
     /// What the title block shows besides the project name.
     #[serde(default)]
     pub info: ProjectInfo,
+    /// How new tags and wire numbers are formed.
+    #[serde(default)]
+    pub naming: crate::Naming,
 }
 
 /// Title-block fields of a project. All free text.
@@ -805,6 +812,12 @@ impl Project {
                 let old_info = std::mem::replace(&mut self.info, info);
                 Ok(Command::SetProjectInfo { name: old_name, info: old_info })
             }
+            Command::SetNaming(naming) => {
+                if !naming.is_valid() {
+                    return Err(ModelError::InvalidNaming);
+                }
+                Ok(Command::SetNaming(std::mem::replace(&mut self.naming, naming)))
+            }
             Command::SetSheet(sheet) => {
                 if !sheet.is_valid() {
                     return Err(ModelError::InvalidSheet);
@@ -993,6 +1006,10 @@ impl Project {
     }
 
     fn check_wire_number(&self, number: &str, except: Option<ConnectionId>) -> Result<()> {
+        // Per potential, wires share numbers; clashes between potentials are a check instead.
+        if self.naming.wire_numbering == crate::WireNumbering::PerPotential {
+            return Ok(());
+        }
         match self.connections.values().find(|c| c.wire_number.as_deref() == Some(number)) {
             Some(c) if Some(c.id) != except => Err(ModelError::DuplicateWireNumber(number.to_owned())),
             _ => Ok(()),

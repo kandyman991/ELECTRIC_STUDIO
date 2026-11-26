@@ -5,6 +5,7 @@
 
 pub mod geometry;
 pub mod history;
+pub mod naming;
 pub mod parts;
 pub mod potential;
 pub mod project;
@@ -14,6 +15,7 @@ pub mod symbol;
 
 pub use geometry::{Direction, Point, Rotation};
 pub use history::History;
+pub use naming::{Naming, WireNumbering};
 pub use parts::{Part, PartRef};
 pub use potential::Potential;
 pub use project::*;

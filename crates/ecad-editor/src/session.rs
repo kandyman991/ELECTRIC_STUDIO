@@ -121,6 +121,12 @@ pub enum UiEvent {
         name: String,
         info: ecad_model::ProjectInfo,
     },
+    /// How new tags and wire numbers are formed.
+    Naming {
+        naming: ecad_model::Naming,
+    },
+    /// Number every wire again from the wire format.
+    RenumberWires,
     /// The sheet's columns (numbered from `first_column`, 0 or 1) and lettered rows (0: none).
     SheetGrid {
         columns: u32,
@@ -315,6 +321,7 @@ pub struct Frame {
     /// The project name as the settings edit it (the title adds a `*` when unsaved).
     pub project_name: String,
     pub info: ecad_model::ProjectInfo,
+    pub naming: ecad_model::Naming,
     pub sheet: SheetGrid,
     /// The project's checks, errors first; updated on every change.
     pub checks: Vec<CheckInfo>,
@@ -525,6 +532,17 @@ impl Session {
             UiEvent::ProjectInfo { name, info } => {
                 let r = self.editor.set_project_info(&name, info);
                 self.report(r);
+            }
+            UiEvent::Naming { naming } => {
+                let r = self.editor.set_naming(naming);
+                self.report(r);
+            }
+            UiEvent::RenumberWires => {
+                let r = self.editor.renumber_all_wires();
+                self.report(r);
+                if self.message.is_none() {
+                    self.message = Some(format!("Renumbered {} wires", self.editor.project().connections.len()));
+                }
             }
             UiEvent::SheetGrid { columns, first_column, rows } => {
                 let r = self.editor.set_sheet_grid(columns, first_column, rows);
@@ -893,6 +911,7 @@ impl Session {
             page: editor.page(),
             project_name: project.name.clone(),
             info: project.info.clone(),
+            naming: project.naming.clone(),
             sheet: SheetGrid {
                 columns: project.sheet.columns,
                 first_column: project.sheet.first_column,
@@ -1352,6 +1371,30 @@ mod tests {
         }
         let f = s.frame(None, [0, 0, 0]);
         assert_eq!((f.info.customer.as_str(), f.sheet.rows, f.pages[0].subtitle.as_str()), ("", 0, ""));
+    }
+
+    #[test]
+    fn naming_by_page_tags_new_devices_and_numbers_wires_per_potential() {
+        let (_dir, mut s) = session();
+        s.handle(UiEvent::Naming { naming: ecad_model::Naming::by_page() });
+        assert_eq!(s.frame(None, [0, 0, 0]).naming, ecad_model::Naming::by_page());
+        s.handle(UiEvent::RenumberWires);
+        assert_eq!(s.frame(None, [0, 0, 0]).status, "Renumbered 3 wires");
+        let mut numbers: Vec<String> =
+            s.editor().project().connections.values().filter_map(|c| c.wire_number.clone()).collect();
+        numbers.sort();
+        assert_eq!(numbers, ["101", "L+", "M"]);
+        s.handle(UiEvent::Tool { tool: "iec.coil".into() });
+        let (x, y) = s.view().to_screen(Point::new(120.0, 40.0));
+        s.handle(UiEvent::PointerDown { x, y, button: Button::Primary });
+        s.handle(UiEvent::PointerUp { x, y, button: Button::Primary });
+        assert!(
+            matches!(s.frame(None, [0, 0, 0]).selection, Some(SelectionInfo::Device { ref tag, .. }) if tag == "1K1")
+        );
+        s.handle(UiEvent::Naming {
+            naming: ecad_model::Naming { tag_format: "{page}".into(), ..ecad_model::Naming::by_page() },
+        });
+        assert!(s.frame(None, [0, 0, 0]).status.contains("needs one {n}"), "{}", s.frame(None, [0, 0, 0]).status);
     }
 
     #[test]

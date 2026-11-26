@@ -10,7 +10,7 @@ use ecad_model::{
     Command, Connection, ConnectionId, ConnectionRef, Device, DeviceId, Direction, Function, FunctionId, History,
     ModelError, Page, PageId, Point, Potential, Project, Rotation, SymbolId, route_between,
 };
-pub use ecad_model::{Part, PartRef, ProjectInfo, Revision};
+pub use ecad_model::{Naming, Part, PartRef, ProjectInfo, Revision, WireNumbering};
 pub use ecad_view::{Primitive, Shape};
 pub use session::{
     Button, Choice, DevicePart, Frame, KeyName, PageInfo, PaletteItem, SelectionInfo, Session, SheetGrid, UiEvent,
@@ -456,7 +456,23 @@ impl Editor {
         let Some(Selected::Connection(c)) = self.selection else { return Ok(()) };
         let old = self.wire_name(c);
         let label = format!("Renumber wire {old} to {}", number.trim());
-        self.execute(&label, Command::SetWireNumber { id: c, number: Some(number.to_owned()) })
+        // Per potential, every wire of the potential changes with it.
+        let cmds = self.project.set_wire_number_commands(c, Some(number.to_owned()));
+        self.execute(&label, Command::Batch(cmds))
+    }
+
+    /// Set how new tags and wire numbers are formed.
+    pub fn set_naming(&mut self, naming: ecad_model::Naming) -> Result<(), ModelError> {
+        if naming == self.project.naming {
+            return Ok(());
+        }
+        self.execute("Naming", Command::SetNaming(naming))
+    }
+
+    /// Number every wire again from the project's wire format, page by page.
+    pub fn renumber_all_wires(&mut self) -> Result<(), ModelError> {
+        let cmds = self.project.renumber_all_wires();
+        self.execute("Renumber all wires", Command::Batch(cmds))
     }
 
     pub fn pointer_move(&mut self, p: Point) {
@@ -747,20 +763,12 @@ impl Editor {
         self.project.connection(c).ok().and_then(|c| c.wire_number.clone()).unwrap_or_default()
     }
 
-    fn next_wire_number(&self) -> String {
-        (1..)
-            .map(|n| format!("W{n}"))
-            .find(|w| !self.project.connections.values().any(|c| c.wire_number.as_deref() == Some(w)))
-            .unwrap_or_default()
-    }
-
     fn place(&mut self, symbol: &SymbolId, at: Point) {
-        let prefix = match self.project.symbol(symbol) {
-            Ok(s) if !s.tag_prefix.is_empty() => s.tag_prefix.clone(),
-            Ok(_) => "-".to_owned(),
-            Err(e) => return self.status = e.to_string(),
-        };
-        let tag = self.project.next_tag(&prefix);
+        if let Err(e) = self.project.symbol(symbol) {
+            return self.status = e.to_string();
+        }
+        // The project's tag format: -K1, or A2SB1 with the page in front.
+        let tag = self.project.new_tag(symbol, self.page);
         let device = DeviceId::new();
         let function = FunctionId::new();
         let cmd = Command::Batch(vec![
@@ -888,14 +896,20 @@ impl Editor {
             None => self.wire_start = Some(point),
             Some(start) if start == point => {}
             Some(start) => {
-                let number = self.next_wire_number();
-                let cmd = Command::Connect(Connection {
+                // Per potential, the wire takes its potential's number, and a wire that joins
+                // two potentials brings the other one's wires to the same number.
+                let (number, renumber) = self.project.number_for_new_wire(&start, &point);
+                let mut cmds: Vec<Command> = renumber
+                    .into_iter()
+                    .map(|id| Command::SetWireNumber { id, number: Some(number.clone()) })
+                    .collect();
+                cmds.push(Command::Connect(Connection {
                     id: ConnectionId::new(),
                     from: start,
                     to: point,
                     wire_number: Some(number.clone()),
-                });
-                let result = self.execute(&format!("Draw wire {number}"), cmd);
+                }));
+                let result = self.execute(&format!("Draw wire {number}"), Command::Batch(cmds));
                 self.report(result);
             }
         }
