@@ -21,7 +21,8 @@ usage:
       --only    a comma-separated subset of: pdf, dxf, dwg, png, reports
   ecad report <project-dir> <report>
       Print one report as CSV: wire-list, bom, terminal-diagram, plc-io-list,
-      cable-list, table-of-contents, devices-without-parts, panel-cut-list
+      cable-list, table-of-contents, devices-without-parts, panel-cut-list,
+      wire-totals
   ecad new-sample <project-dir> [start|contacts|potentials|terminals|plc|power|library|reference]
       Write a sample project (default: start).
   ecad demo <out-dir>

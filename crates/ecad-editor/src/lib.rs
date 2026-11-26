@@ -12,7 +12,7 @@ use ecad_model::{
     Command, Connection, ConnectionId, ConnectionRef, Device, DeviceId, Direction, Function, FunctionId, History,
     ModelError, Page, PageId, Point, Potential, Project, Rotation, SymbolId, route_between,
 };
-pub use ecad_model::{Naming, Part, PartRef, ProjectInfo, Revision, WireNumbering};
+pub use ecad_model::{Naming, Part, PartRef, ProjectInfo, Revision, WireLengthSettings, WireNumbering};
 pub use ecad_view::{Primitive, Shape};
 pub use session::{
     Button, CableInfo, Choice, DevicePart, Frame, KeyName, LayoutInfo, PageInfo, PaletteItem, SelectionInfo, Session,
@@ -609,6 +609,14 @@ impl Editor {
             return Ok(());
         }
         self.execute("Naming", Command::SetNaming(naming))
+    }
+
+    /// Set how wire lengths are estimated from the panel layout.
+    pub fn set_wire_lengths(&mut self, settings: ecad_model::WireLengthSettings) -> Result<(), ModelError> {
+        if settings == self.project.wire_length_settings {
+            return Ok(());
+        }
+        self.execute("Wire lengths", Command::SetWireLengthSettings(settings))
     }
 
     /// Number every wire again from the project's wire format, page by page.

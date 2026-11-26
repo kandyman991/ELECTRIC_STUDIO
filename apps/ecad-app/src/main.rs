@@ -130,6 +130,7 @@ struct ProjectFields {
     name: String,
     info: ecad_editor::ProjectInfo,
     naming: ecad_editor::Naming,
+    wire_lengths: ecad_editor::WireLengthSettings,
     /// Applied with a button, so dragging a number doesn't make one undo step per value.
     grid: ecad_editor::SheetGrid,
 }
@@ -627,6 +628,7 @@ impl App {
                 cable,
                 core,
                 bent,
+                length,
             }) => {
                 ui.label("Wire number");
                 let edit = ui.text_edit_singleline(&mut self.fields.number);
@@ -636,6 +638,10 @@ impl App {
                 ui.add_space(4.0);
                 ui.label(format!("From {from}"));
                 ui.label(format!("To {to}"));
+                if let Some(l) = length {
+                    ui.label(format!("Length ≈ {l}"))
+                        .on_hover_text("Estimated from the panel layout, spare lengths included (Project settings)");
+                }
                 ui.horizontal(|ui| {
                     ui.small("Drag the wire to move its middle run.");
                     if *bent && ui.small_button("Straighten").on_hover_text("Put the middle run back halfway").clicked()
@@ -1029,13 +1035,17 @@ impl App {
     }
 
     fn project_window(&mut self, ctx: &egui::Context, frame: &Frame) {
-        let key = Some(format!("{} {:?} {:?} {:?}", frame.project_name, frame.info, frame.naming, frame.sheet));
+        let key = Some(format!(
+            "{} {:?} {:?} {:?} {:?}",
+            frame.project_name, frame.info, frame.naming, frame.sheet, frame.wire_lengths
+        ));
         if key != self.project_fields.key {
             self.project_fields = ProjectFields {
                 key,
                 name: frame.project_name.clone(),
                 info: frame.info.clone(),
                 naming: frame.naming.clone(),
+                wire_lengths: frame.wire_lengths,
                 grid: frame.sheet,
             };
         }
@@ -1132,6 +1142,19 @@ impl App {
                 }
             });
             ui.small("New devices and wires follow the naming; existing tags stay as they are.");
+            ui.separator();
+            ui.strong("Wire lengths");
+            let lengths = &mut f.wire_lengths;
+            ui.horizontal(|ui| {
+                ui.label("Spare per end");
+                ui.add(egui::DragValue::new(&mut lengths.spare_per_end).range(0.0..=2000.0).speed(5.0).suffix(" mm"));
+                ui.label("Round up to");
+                ui.add(egui::DragValue::new(&mut lengths.round_to).range(0.0..=1000.0).speed(5.0).suffix(" mm"));
+                if ui.add_enabled(*lengths != frame.wire_lengths, egui::Button::new("Apply")).clicked() {
+                    events.push(UiEvent::WireLengths { settings: *lengths });
+                }
+            });
+            ui.small("Lengths run from each device to the nearest duct, along the ducts, and out again; 0 rounding keeps them exact.");
             ui.separator();
             ui.strong("Sheet grid");
             let grid = &mut f.grid;

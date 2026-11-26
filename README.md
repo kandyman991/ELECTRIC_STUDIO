@@ -38,7 +38,8 @@ ecad check my-project --strict             # exit 1 on warnings too
 ecad check my-project --json               # the findings as JSON, each with its page, location and target
 ecad export my-project out --only pdf,reports   # any of pdf, dxf, dwg, png, reports
 ecad report my-project bom > bom.csv       # one report on stdout: wire-list, bom, terminal-diagram,
-                                           # plc-io-list, devices-without-parts
+                                           # plc-io-list, cable-list, table-of-contents,
+                                           # devices-without-parts, panel-cut-list, wire-totals
 ecad --help
 ```
 
@@ -83,7 +84,7 @@ Planned: `ecad-symbols`, `ecad-parts`, `ecad-mcp`. See [docs/ARCHITECTURE.md](do
 | *MVP release gate* | *G1a sheet grid with rows, references like `A3/2F`, full title block · G1b tag format and wire numbers per potential · G2 multi-pole devices and contact tables · G3 symbol library and black boxes · G4a wire details, cables, cable list, BOM code and pages, table of contents · G4b connectors and location boxes · reference project redrawn end to end (`ecad new-sample <dir> reference`)* |
 | *Gate check* | *One real panel drawn end to end; BOM and wire list match it; checks clean. Done: 0 errors, 28 devices match the BOM exactly; gaps listed in [docs/MVP-GATE.md](docs/MVP-GATE.md)* |
 | *G5 Gate gaps* | *G5a wire tidying: drag a wire's middle run, Straighten, Tidy wires, new wires avoid clashes, wire-overlap checks · G5b changeover contacts, contact numbers from the parts' contact blocks · G5c parts per terminal type, black-box bridges, PLC wire numbers · G6 mirrored symbols, dashed PE wires* |
-| **M5 Panel layout** | M5a layout pages: mounting plate at scale, DIN rails, ducts, device footprints from part sizes, checks, cut list, reference layout L7 · M5b editing the layout: place unplaced devices, snap to rails, draw rails and ducts, layout pages in the app (this) · M5c wiring through the ducts: wire lengths, exports |
+| **M5 Panel layout** | M5a layout pages: mounting plate at scale, DIN rails, ducts, device footprints from part sizes, checks, cut list, reference layout L7 · M5b editing the layout: place unplaced devices, snap to rails, draw rails and ducts, layout pages in the app · M5c wire lengths through the ducts in the wire list, wire totals, cut list in the exports (this) |
 | M6 Integrations | HMI Studio tag exchange, TIA Portal tag table, MCP server, DXF import |
 
 ## Contributing
