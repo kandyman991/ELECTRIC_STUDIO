@@ -134,6 +134,44 @@ pub fn symbols() -> Vec<SymbolDef> {
             connection_points: vec![cp("1", 0.0, 0.0, Direction::Up)],
         },
     ]
+    .into_iter()
+    .chain(plc_channel_symbols())
+    .collect()
+}
+
+/// One symbol per PLC channel kind: a box with the kind written in it. Inputs are fed from
+/// above (the sensor sits on the path above), outputs drive the load below.
+fn plc_channel_symbols() -> Vec<SymbolDef> {
+    [
+        ("iec.plc_di", "PLC digital input", IoKind::DigitalIn),
+        ("iec.plc_do", "PLC digital output", IoKind::DigitalOut),
+        ("iec.plc_ai", "PLC analog input", IoKind::AnalogIn),
+        ("iec.plc_ao", "PLC analog output", IoKind::AnalogOut),
+    ]
+    .into_iter()
+    .map(|(id, description, kind)| {
+        let input = matches!(kind, IoKind::DigitalIn | IoKind::AnalogIn);
+        let (y, leaves): (f64, _) = if input { (6.0, Direction::Up) } else { (-6.0, Direction::Down) };
+        SymbolDef {
+            id: SymbolId::new(id),
+            description: description.into(),
+            tag_prefix: "-KF".into(),
+            role: Role::PlcChannel { kind },
+            bridged: false,
+            hide_tag: false,
+            hide_point_labels: true,
+            graphics: vec![
+                line(-4.0, -3.0, 4.0, -3.0),
+                line(4.0, -3.0, 4.0, 3.0),
+                line(4.0, 3.0, -4.0, 3.0),
+                line(-4.0, 3.0, -4.0, -3.0),
+                line(0.0, y.signum() * 3.0, 0.0, y),
+                Graphic::Text { at: Point::new(-1.8, -1.25), height: 2.5, value: kind.short().into() },
+            ],
+            connection_points: vec![cp("1", 0.0, y, leaves)],
+        }
+    })
+    .collect()
 }
 
 pub const PAGE_1: PageId = PageId::from_u128(0x1);
@@ -163,6 +201,7 @@ pub fn start_circuit() -> Result<Project> {
             position: Point::new(x, y),
             rotation,
             designations: Default::default(),
+            properties: Default::default(),
         })?;
     }
 
@@ -227,6 +266,7 @@ pub fn with_contacts() -> Result<Project> {
             position: Point::new(coil.x + dx, coil.y),
             rotation: Rotation::R0,
             designations,
+            properties: Default::default(),
         })?;
     }
     Ok(p)
@@ -255,6 +295,7 @@ pub fn with_potentials() -> Result<Project> {
             position: Point::new(x, y),
             rotation,
             designations: Default::default(),
+            properties: Default::default(),
         })?;
         Ok(())
     };
@@ -311,6 +352,7 @@ pub fn with_terminals() -> Result<Project> {
             position: Point::new(0.0, y),
             rotation: Rotation::R0,
             designations,
+            properties: Default::default(),
         })?;
     }
     p.apply(Command::Disconnect(ConnectionId::from_u128(0x301)))?;
@@ -326,6 +368,84 @@ pub fn with_terminals() -> Result<Project> {
             id: ConnectionId::from_u128(id),
             from: ConnectionRef::new(FunctionId::from_u128(fa), pa),
             to: ConnectionRef::new(FunctionId::from_u128(fb), pb),
+            wire_number: Some(number.into()),
+        })?;
+    }
+    Ok(p)
+}
+
+pub const KF1: DeviceId = DeviceId::from_u128(0x10b);
+pub const KF1_DI0: FunctionId = FunctionId::from_u128(0x20e);
+pub const KF1_DO0: FunctionId = FunctionId::from_u128(0x210);
+
+/// [`with_terminals`] plus PLC card -KF1 on a new page 3: a field sensor -B1 (drawn as an NO
+/// contact) wired from L+ to digital input -KF1:0, a second input -KF1:1 from L+ through -S1's
+/// spare NC contact, digital output -KF1:2 driving coil -K3 to M, and an analog input -KF1:3 left
+/// unwired. Addresses follow automatically (I0.0, I0.1, Q0.0); the analog channel gets IW256
+/// by hand, and the two digital inputs carry symbols and comments.
+pub fn with_plc() -> Result<Project> {
+    let mut p = with_terminals()?;
+    let page3 = PageId::from_u128(0x3);
+    p.apply(Command::AddPage(Page {
+        id: page3,
+        name: "3".into(),
+        description: "PLC inputs and outputs".into(),
+        order: 2,
+    }))?;
+    p.add_device(Device::new(KF1, "-KF1", "PLC I/O card"))?;
+    p.add_device(Device::new(DeviceId::from_u128(0x10c), "-B1", "Guard door closed"))?;
+    p.add_device(Device::new(DeviceId::from_u128(0x10d), "-K3", "Pump contactor"))?;
+    let fid = FunctionId::from_u128;
+    let mut add = |dev: DeviceId, sym: &str, f: FunctionId, (x, y): (f64, f64), rotation| -> Result<()> {
+        let symbol = SymbolId::new(sym);
+        let designations = p.next_designations(dev, &symbol);
+        let properties = p.new_drawing_properties(&symbol);
+        p.place(Function {
+            id: f,
+            device: dev,
+            symbol,
+            page: page3,
+            position: Point::new(x, y),
+            rotation,
+            designations,
+            properties,
+        })?;
+        Ok(())
+    };
+    add(DeviceId::from_u128(0x101), "iec.supply", fid(0x211), (40.0, 56.0), Rotation::R0)?;
+    add(DeviceId::from_u128(0x10c), "iec.contact_no", fid(0x212), (40.0, 36.0), Rotation::R0)?;
+    add(KF1, "iec.plc_di", KF1_DI0, (40.0, 14.0), Rotation::R0)?;
+    add(DeviceId::from_u128(0x101), "iec.supply", fid(0x217), (88.0, 56.0), Rotation::R0)?;
+    add(DeviceId::from_u128(0x102), "iec.contact_nc", fid(0x213), (88.0, 36.0), Rotation::R0)?;
+    add(KF1, "iec.plc_di", fid(0x20f), (88.0, 14.0), Rotation::R0)?;
+    add(KF1, "iec.plc_do", KF1_DO0, (136.0, 14.0), Rotation::R0)?;
+    add(DeviceId::from_u128(0x10d), "iec.coil", fid(0x214), (136.0, -16.0), Rotation::R0)?;
+    add(DeviceId::from_u128(0x104), "iec.supply", fid(0x215), (136.0, -40.0), Rotation::R180)?;
+    add(KF1, "iec.plc_ai", fid(0x216), (184.0, 14.0), Rotation::R0)?;
+    let props =
+        |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect::<Vec<_>>();
+    let mut set = |f: FunctionId, pairs: &[(&str, &str)]| {
+        let mut properties: std::collections::BTreeMap<String, String> = p.function(f)?.properties.clone();
+        properties.extend(props(pairs));
+        p.apply(Command::SetProperties { id: f, properties }).map(drop)
+    };
+    set(KF1_DI0, &[(SYMBOL, "Door_Closed"), (COMMENT, "Guard door closed")])?;
+    set(fid(0x20f), &[(SYMBOL, "Start_Spare"), (COMMENT, "Start button, NC contact")])?;
+    set(KF1_DO0, &[(SYMBOL, "Pump_On")])?;
+    set(fid(0x216), &[(ADDRESS, "IW256"), (SYMBOL, "Tank_Level"), (COMMENT, "Tank level 4-20 mA")])?;
+    let wires = [
+        (0x30b, "W11", (0x211, "1"), (0x212, "13")),
+        (0x30c, "W12", (0x212, "14"), (0x20e, "1")),
+        (0x30d, "W13", (0x217, "1"), (0x213, "11")),
+        (0x30e, "W14", (0x213, "12"), (0x20f, "1")),
+        (0x30f, "W15", (0x210, "1"), (0x214, "A1")),
+        (0x310, "W16", (0x214, "A2"), (0x215, "1")),
+    ];
+    for (id, number, (fa, pa), (fb, pb)) in wires {
+        p.connect(Connection {
+            id: ConnectionId::from_u128(id),
+            from: ConnectionRef::new(fid(fa), pa),
+            to: ConnectionRef::new(fid(fb), pb),
             wire_number: Some(number.into()),
         })?;
     }

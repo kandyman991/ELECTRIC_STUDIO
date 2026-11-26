@@ -102,6 +102,13 @@ fn terminal_strip() {
 }
 
 #[test]
+fn plc_channels() {
+    let p = ecad_model::sample::with_plc().unwrap();
+    let page3 = p.pages_in_order()[2].id;
+    check_page(&p, page3, "with_plc_page3");
+}
+
+#[test]
 fn dxf_output_is_deterministic() {
     let p = start_circuit().unwrap();
     assert_eq!(ecad_view::page_dxf(&p, PAGE_1).unwrap(), ecad_view::page_dxf(&p, PAGE_1).unwrap());

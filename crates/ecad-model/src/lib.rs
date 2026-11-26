@@ -314,9 +314,62 @@ mod tests {
             [("1".into(), "2".into()), ("2".into(), "2".into())].into();
         assert_eq!(
             p.apply(Command::SetDesignations { id: sample::X2_1, designations: two }).unwrap_err(),
-            ModelError::DuplicateTerminal("-X2".into(), "2".into())
+            ModelError::DuplicateNumber("-X2".into(), "2".into())
         );
         assert_eq!(numbers(&p), ["2", "10"], "a refused renumber changes nothing");
+    }
+
+    #[test]
+    fn plc_channels_are_numbered_per_card_and_addresses_follow_on() {
+        let mut p = sample::with_plc().unwrap();
+        let channels = |p: &Project| {
+            p.plc_channels_of(sample::KF1)
+                .iter()
+                .map(|c| format!("{} {} {}", c.channel, c.kind.short(), c.address))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(channels(&p), ["0 DI I0.0", "1 DI I0.1", "2 DO Q0.0", "3 AI IW256"]);
+        assert_eq!(p.next_address(IoKind::DigitalIn), "I0.2");
+        assert_eq!(p.next_address(IoKind::DigitalOut), "Q0.1");
+        assert_eq!(p.next_address(IoKind::AnalogIn), "IW258");
+        assert_eq!(p.next_address(IoKind::AnalogOut), "", "no analog output yet: no guess");
+        assert_eq!(
+            p.next_designations(sample::KF1, &SymbolId::new("iec.plc_do")).get("1").map(String::as_str),
+            Some("4")
+        );
+
+        // Bits wrap at 8: after I0.7 comes I1.0.
+        let set = |p: &mut Project, f, key: &str, value: &str| {
+            let mut properties = p.function(f).unwrap().properties.clone();
+            properties.insert(key.into(), value.into());
+            p.apply(Command::SetProperties { id: f, properties })
+        };
+        set(&mut p, sample::KF1_DI0, ADDRESS, "I0.7").unwrap();
+        assert_eq!(p.next_address(IoKind::DigitalIn), "I1.0");
+
+        // Addresses and symbols are unique; a refused change leaves the channel as it was.
+        assert_eq!(
+            set(&mut p, sample::KF1_DI0, ADDRESS, "I0.1").unwrap_err(),
+            ModelError::DuplicateAddress("I0.1".into(), "-KF1:1".into())
+        );
+        assert_eq!(
+            set(&mut p, sample::KF1_DI0, SYMBOL, "Pump_On").unwrap_err(),
+            ModelError::DuplicatePlcSymbol("Pump_On".into(), "-KF1:2".into())
+        );
+        assert_eq!(p.function(sample::KF1_DI0).unwrap().property(ADDRESS), "I0.7");
+
+        // Blank values are dropped, and the change undoes.
+        let undo = set(&mut p, sample::KF1_DI0, COMMENT, "  ").unwrap();
+        assert_eq!(p.function(sample::KF1_DI0).unwrap().property(COMMENT), "");
+        p.apply(undo).unwrap();
+        assert_eq!(p.function(sample::KF1_DI0).unwrap().property(COMMENT), "Guard door closed");
+
+        // Channel numbers are unique on the card.
+        let one: std::collections::BTreeMap<String, String> = [("1".into(), "1".into())].into();
+        assert_eq!(
+            p.apply(Command::SetDesignations { id: sample::KF1_DO0, designations: one }).unwrap_err(),
+            ModelError::DuplicateNumber("-KF1".into(), "1".into())
+        );
     }
 
     #[test]

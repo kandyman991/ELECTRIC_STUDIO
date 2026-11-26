@@ -116,6 +116,16 @@ fn cross_reference_lines(project: &Project, f: ecad_model::FunctionId, role: Rol
             .enumerate()
             .map(|(i, at)| (i, format!("/{at}")))
             .collect(),
+        // A PLC channel shows its address and symbol: `I0.0 Door_Closed`.
+        Role::PlcChannel { .. } => {
+            let g = project.function(f)?;
+            let line = [g.property(ecad_model::ADDRESS), g.property(ecad_model::SYMBOL)]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if line.is_empty() { Vec::new() } else { vec![(0, line)] }
+        }
         Role::Single | Role::Potential | Role::Terminal => Vec::new(),
     })
 }
@@ -201,12 +211,12 @@ pub fn page_drawing(project: &Project, page: PageId) -> Result<Drawing> {
         }
         let tag = Attrib {
             tag: "TAG".into(),
-            // A terminal is labelled with its strip and number: -X2:3.
+            // A terminal or PLC channel is labelled with its device and number: -X2:3, -KF1:0.
             text: tag_text(
                 min,
                 max,
                 sideways,
-                &match project.terminal_number(f.id) {
+                &match project.drawing_number(f.id) {
                     Some(n) => format!("{}:{n}", device.tag),
                     None => device.tag.clone(),
                 },

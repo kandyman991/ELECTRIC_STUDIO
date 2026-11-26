@@ -60,6 +60,10 @@ struct Fields {
     number: String,
     /// "Belongs to" device tag for a contact.
     owner: String,
+    /// A PLC channel's address, symbol and comment.
+    address: String,
+    plc_symbol: String,
+    comment: String,
 }
 
 /// Ask for a project folder with the system's folder picker.
@@ -195,17 +199,23 @@ impl App {
     fn inspector(&mut self, ui: &mut egui::Ui, frame: &Frame) {
         ui.heading("Selection");
         let key = frame.selection.as_ref().map(|sel| match sel {
-            SelectionInfo::Device { tag, description, symbol, terminal, .. } => {
-                format!("device {tag} {description} {symbol} {terminal:?}")
+            SelectionInfo::Device { tag, description, symbol, terminal, plc, .. } => {
+                format!("device {tag} {description} {symbol} {terminal:?} {plc:?}")
             }
             SelectionInfo::Wire { number, from, to, .. } => format!("wire {from} {to} {number:?}"),
         });
         if key != self.fields.key {
             self.fields = Fields { key, ..Fields::default() };
             match &frame.selection {
-                Some(SelectionInfo::Device { tag, description, .. }) => {
+                Some(SelectionInfo::Device { tag, description, plc, .. }) => {
                     self.fields.tag = tag.clone();
                     self.fields.description = description.clone();
+                    if let Some(plc) = plc {
+                        self.fields.number = plc.channel.clone();
+                        self.fields.address = plc.address.clone();
+                        self.fields.plc_symbol = plc.symbol.clone();
+                        self.fields.comment = plc.comment.clone();
+                    }
                 }
                 Some(SelectionInfo::Wire { number, .. }) => self.fields.number = number.clone().unwrap_or_default(),
                 None => {}
@@ -214,7 +224,7 @@ impl App {
         // A field is applied when it loses focus (Tab, Enter or a click elsewhere) with a change.
         let mut events = Vec::new();
         match &frame.selection {
-            Some(SelectionInfo::Device { tag, description, symbol, role, references, parts, terminal }) => {
+            Some(SelectionInfo::Device { tag, description, symbol, role, references, parts, terminal, plc }) => {
                 if self.fields.owner.is_empty() {
                     self.fields.owner = tag.clone();
                 }
@@ -317,6 +327,56 @@ impl App {
                             .clicked()
                         {
                             events.push(UiEvent::AddContact { symbol: symbol.clone() });
+                        }
+                    }
+                    "plc" => {
+                        if let Some(plc) = plc {
+                            ui.add_space(8.0);
+                            ui.strong(format!("{} channel", plc.kind));
+                            ui.label("Channel number");
+                            let edit = ui.text_edit_singleline(&mut self.fields.number);
+                            if edit.lost_focus() && self.fields.number.trim() != plc.channel {
+                                events.push(UiEvent::RenumberTerminal { number: self.fields.number.clone() });
+                            }
+                            let fields = [
+                                (
+                                    "Address",
+                                    "address",
+                                    &mut self.fields.address,
+                                    &plc.address,
+                                    "e.g. I0.0, Q1.3, IW256",
+                                ),
+                                (
+                                    "Symbol",
+                                    "symbol",
+                                    &mut self.fields.plc_symbol,
+                                    &plc.symbol,
+                                    "The PLC program's name",
+                                ),
+                                ("Comment", "comment", &mut self.fields.comment, &plc.comment, ""),
+                            ];
+                            for (label, key, buffer, current, hint) in fields {
+                                ui.label(label);
+                                let edit = ui.add(egui::TextEdit::singleline(buffer).hint_text(hint));
+                                if edit.lost_focus() && buffer.trim() != current {
+                                    events.push(UiEvent::SetPlcProperty { key: key.into(), value: buffer.clone() });
+                                }
+                            }
+                            ui.add_space(4.0);
+                            ui.strong(format!("Card {tag}"));
+                            for r in references {
+                                if ui.link(&r.label).on_hover_text("Show this page").clicked() {
+                                    events.push(UiEvent::ShowPage { id: r.page });
+                                }
+                            }
+                            for item in &frame.channel_palette {
+                                let label =
+                                    format!("Add {}", item.description.trim_start_matches("PLC ").to_lowercase());
+                                let hint = "The card's next channel and address; then click where it goes, on any page";
+                                if ui.button(label).on_hover_text(hint).clicked() {
+                                    events.push(UiEvent::AddContact { symbol: item.id.clone() });
+                                }
+                            }
                         }
                     }
                     "potential" | "interruption" => {

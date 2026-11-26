@@ -1,11 +1,11 @@
 //! `ecad`: headless commands.
 //!
-//! - `ecad new-sample <project-dir> [start|contacts|potentials|terminals]`: write a sample project:
-//!   the start circuit (default), plus -K1's contacts on page 2, plus potentials and an
-//!   interruption point across both pages
+//! - `ecad new-sample <project-dir> [start|contacts|potentials|terminals|plc]`: write a sample
+//!   project: the start circuit (default), plus -K1's contacts on page 2, plus potentials and an
+//!   interruption point across both pages, plus terminal strip -X2, plus PLC card -KF1 on page 3
 //! - `ecad check <project-dir>`: load a project and report what it contains
 //! - `ecad export <project-dir> <out-dir>`: each page as DXF and PNG, plus the reports (wire
-//!   list, bill of materials, devices without parts)
+//!   list, bill of materials, terminal diagram, PLC I/O list, devices without parts)
 //! - `ecad demo <out-dir>`: `export` for the built-in sample, without a project folder
 
 use ecad_model::Project;
@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const USAGE: &str = "usage:
-  ecad new-sample <project-dir> [start|contacts|potentials|terminals]
+  ecad new-sample <project-dir> [start|contacts|potentials|terminals|plc]
   ecad check <project-dir>
   ecad export <project-dir> <out-dir>
   ecad demo <out-dir>";
@@ -50,6 +50,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 Some("contacts") => sample::with_contacts(),
                 Some("potentials") => sample::with_potentials(),
                 Some("terminals") => sample::with_terminals(),
+                Some("plc") => sample::with_plc(),
                 Some(other) => return Err(format!("unknown sample `{other}`\n{USAGE}")),
             }
             .map_err(|e| e.to_string())?;

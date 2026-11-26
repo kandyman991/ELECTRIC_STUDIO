@@ -197,6 +197,7 @@ mod tests {
                 position: Point::new(x, 100.0),
                 rotation: Rotation::R0,
                 designations: Default::default(),
+                properties: Default::default(),
             };
             let id = f.id;
             p.place(f).unwrap();
