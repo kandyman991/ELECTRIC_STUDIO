@@ -138,6 +138,10 @@ pub struct SymbolDef {
     /// All connection points are internally connected (a junction).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub bridged: bool,
+    /// Groups of connection points joined inside the device (a black box's bridged terminals,
+    /// a distribution block's poles), by point name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bridges: Vec<Vec<String>>,
     /// Don't print the device tag beside the symbol (junctions).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hide_tag: bool,

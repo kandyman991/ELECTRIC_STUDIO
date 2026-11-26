@@ -63,6 +63,11 @@ pub struct PartRef {
     /// once for the whole strip (end brackets, end plates, a housing).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub per_strip: bool,
+    /// On a strip with terminals of more than one kind: count once per terminal drawn with this
+    /// symbol only (feed-through terminals with `iec.terminal`, PE terminals with
+    /// `iec.terminal_pe`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub only: Option<crate::SymbolId>,
 }
 
 fn one() -> u32 {
@@ -75,11 +80,16 @@ fn is_one(q: &u32) -> bool {
 
 impl PartRef {
     pub fn new(number: &str, quantity: u32) -> Self {
-        PartRef { number: number.to_owned(), quantity, per_strip: false }
+        PartRef { number: number.to_owned(), quantity, per_strip: false, only: None }
     }
 
     /// A part counted once for a whole strip, not per terminal.
     pub fn per_strip(number: &str, quantity: u32) -> Self {
         PartRef { per_strip: true, ..PartRef::new(number, quantity) }
+    }
+
+    /// A part counted once per terminal drawn with `symbol`.
+    pub fn per_terminal_of(number: &str, quantity: u32, symbol: &str) -> Self {
+        PartRef { only: Some(crate::SymbolId::new(symbol)), ..PartRef::new(number, quantity) }
     }
 }

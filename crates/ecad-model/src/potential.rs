@@ -1,6 +1,7 @@
 //! Potentials: sets of connection points that are electrically the same, across all pages.
 //!
-//! Points are joined by wires, inside bridged symbols (junctions), and across all drawings of a
+//! Points are joined by wires, inside bridged symbols (junctions) and a symbol's bridges (a black
+//! box's joined terminals), and across all drawings of a
 //! potential or interruption device. A potential is named by the potential points on it (their
 //! device tags, `L+`, `M`…); two different names on one potential means they are connected,
 //! which is almost always a mistake (L+ shorted to M).
@@ -84,6 +85,12 @@ impl Project {
                 sym.connection_points.iter().filter_map(|cp| index.get(&(f.id, cp.name.clone())).copied()).collect();
             if sym.bridged {
                 for w in mine.windows(2) {
+                    sets.join(w[0], w[1]);
+                }
+            }
+            for group in &sym.bridges {
+                let joined: Vec<usize> = group.iter().filter_map(|n| index.get(&(f.id, n.clone())).copied()).collect();
+                for w in joined.windows(2) {
                     sets.join(w[0], w[1]);
                 }
             }

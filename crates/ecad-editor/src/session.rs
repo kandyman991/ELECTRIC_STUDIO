@@ -213,11 +213,12 @@ pub enum UiEvent {
         number: String,
         quantity: u32,
     },
-    /// On a terminal strip: count this part once for the strip (end plates, brackets) or once
-    /// per terminal.
-    SetDevicePartPerStrip {
+    /// On a terminal strip, how a part counts: `terminal` once per terminal, `strip` once for
+    /// the strip (end plates, brackets), or a terminal symbol's id once per terminal drawn with
+    /// it (PE terminals with `iec.terminal_pe`). See [`DevicePart::count`].
+    SetDevicePartCount {
         number: String,
-        per_strip: bool,
+        count: String,
     },
     /// Write every report as CSV into this folder.
     ExportReports {
@@ -299,6 +300,9 @@ pub enum SelectionInfo {
         references: Vec<Reference>,
         /// Catalogue parts the device is built from.
         parts: Vec<DevicePart>,
+        /// For a terminal strip: the kinds of terminal drawn on it, as (symbol id, description),
+        /// for counting a part per terminal of one kind.
+        terminal_kinds: Vec<(String, String)>,
         /// For a terminal, its number on the strip.
         terminal: Option<String>,
         /// For a PLC channel: its kind, number, address, symbol and comment.
@@ -354,7 +358,9 @@ pub struct PlcInfo {
 pub struct DevicePart {
     pub number: String,
     pub quantity: u32,
-    pub per_strip: bool,
+    /// On a strip: `terminal`, `strip` or a terminal symbol's id (see
+    /// [`UiEvent::SetDevicePartCount`]).
+    pub count: String,
     pub description: String,
 }
 
@@ -723,9 +729,13 @@ impl Session {
                     p.quantity = quantity;
                 }
             }),
-            UiEvent::SetDevicePartPerStrip { number, per_strip } => self.edit_device_parts(|parts| {
+            UiEvent::SetDevicePartCount { number, count } => self.edit_device_parts(|parts| {
                 if let Some(p) = parts.iter_mut().find(|p| p.number == number) {
-                    p.per_strip = per_strip;
+                    (p.per_strip, p.only) = match count.as_str() {
+                        "terminal" => (false, None),
+                        "strip" => (true, None),
+                        symbol => (false, Some(ecad_model::SymbolId::new(symbol))),
+                    };
                 }
             }),
             UiEvent::ExportReports { path } => self.export_reports(&path),
@@ -939,6 +949,18 @@ impl Session {
                     }
                     .into(),
                     references,
+                    terminal_kinds: {
+                        let mut kinds: Vec<(String, String)> = project
+                            .functions_of(d.id)
+                            .filter(|g| matches!(project.role(g.id), Ok(Role::Terminal)))
+                            .filter_map(|g| {
+                                project.symbol(&g.symbol).ok().map(|s| (s.id.0.clone(), s.description.clone()))
+                            })
+                            .collect();
+                        kinds.sort();
+                        kinds.dedup();
+                        kinds
+                    },
                     terminal: project.terminal_number(f.id),
                     location: project.box_labels(f.id).join(" "),
                     plc: match role {
@@ -957,7 +979,11 @@ impl Session {
                         .map(|r| DevicePart {
                             number: r.number.clone(),
                             quantity: r.quantity,
-                            per_strip: r.per_strip,
+                            count: match (&r.only, r.per_strip) {
+                                (_, true) => "strip".into(),
+                                (Some(s), false) => s.0.clone(),
+                                (None, false) => "terminal".into(),
+                            },
                             description: project
                                 .parts
                                 .get(&r.number)

@@ -45,7 +45,7 @@ fn category_of(id: &str) -> &'static str {
         n if n.starts_with("breaker") || n.starts_with("motor_protection") || n.starts_with("fuse") => "Protection",
         "disconnector_fuse_3" => "Protection",
         "lamp" | "siren" => "Signalling",
-        "plug_pin" | "terminal" => "Wiring",
+        "plug_pin" | "terminal" | "terminal_pe" => "Wiring",
         n if n.starts_with("motor") || n == "power_supply" || n == "socket_2pe" => "Loads and supplies",
         _ => "Wiring",
     }
@@ -71,6 +71,7 @@ fn basics() -> Vec<SymbolDef> {
                 line(0.0, -3.0, 0.0, -8.0),
             ],
             connection_points: vec![cp("A1", 0.0, 8.0, Direction::Up), cp("A2", 0.0, -8.0, Direction::Down)],
+            bridges: Vec::new(),
         },
         SymbolDef {
             id: SymbolId::new("iec.contact_no"),
@@ -88,6 +89,7 @@ fn basics() -> Vec<SymbolDef> {
                 line(-6.0, 0.0, -2.0, 0.0),
             ],
             connection_points: vec![cp("13", 0.0, 8.0, Direction::Up), cp("14", 0.0, -8.0, Direction::Down)],
+            bridges: Vec::new(),
         },
         SymbolDef {
             id: SymbolId::new("iec.contact_co"),
@@ -114,6 +116,7 @@ fn basics() -> Vec<SymbolDef> {
                 cp("12", -8.0, 8.0, Direction::Up),
                 cp("14", 0.0, 8.0, Direction::Up),
             ],
+            bridges: Vec::new(),
         },
         SymbolDef {
             id: SymbolId::new("iec.contact_nc"),
@@ -132,6 +135,7 @@ fn basics() -> Vec<SymbolDef> {
                 line(-6.0, 0.0, 1.0, 0.0),
             ],
             connection_points: vec![cp("11", 0.0, 8.0, Direction::Up), cp("12", 0.0, -8.0, Direction::Down)],
+            bridges: Vec::new(),
         },
         SymbolDef {
             id: SymbolId::new("iec.supply"),
@@ -144,6 +148,7 @@ fn basics() -> Vec<SymbolDef> {
             category: String::new(),
             graphics: vec![line(-2.0, 0.0, 2.0, 0.0)],
             connection_points: vec![cp("1", 0.0, 0.0, Direction::Down)],
+            bridges: Vec::new(),
         },
         SymbolDef {
             id: SymbolId::new("iec.terminal"),
@@ -162,6 +167,29 @@ fn basics() -> Vec<SymbolDef> {
             ],
             // Top is the inside of the cabinet, bottom the field side.
             connection_points: vec![cp("1", 0.0, 4.0, Direction::Up), cp("2", 0.0, -4.0, Direction::Down)],
+            bridges: Vec::new(),
+        },
+        SymbolDef {
+            id: SymbolId::new("iec.terminal_pe"),
+            description: "PE terminal".into(),
+            tag_prefix: "-X".into(),
+            role: Role::Terminal,
+            bridged: true,
+            hide_tag: false,
+            hide_point_labels: true,
+            category: String::new(),
+            // A terminal with the earth sign beside it.
+            graphics: vec![
+                Graphic::Circle { center: Point::ZERO, radius: 1.2 },
+                line(0.0, 1.2, 0.0, 4.0),
+                line(0.0, -1.2, 0.0, -4.0),
+                line(1.2, 0.0, 2.4, 0.0),
+                line(2.4, 1.2, 2.4, -1.2),
+                line(3.0, 0.8, 3.0, -0.8),
+                line(3.6, 0.4, 3.6, -0.4),
+            ],
+            connection_points: vec![cp("1", 0.0, 4.0, Direction::Up), cp("2", 0.0, -4.0, Direction::Down)],
+            bridges: Vec::new(),
         },
         SymbolDef {
             id: SymbolId::new("iec.junction"),
@@ -185,6 +213,7 @@ fn basics() -> Vec<SymbolDef> {
                 cp("3", 0.0, 0.0, Direction::Left),
                 cp("4", 0.0, 0.0, Direction::Right),
             ],
+            bridges: Vec::new(),
         },
         SymbolDef {
             id: SymbolId::new("iec.interruption"),
@@ -202,6 +231,7 @@ fn basics() -> Vec<SymbolDef> {
                 line(0.0, -5.0, -2.0, -2.0),
             ],
             connection_points: vec![cp("1", 0.0, 0.0, Direction::Up)],
+            bridges: Vec::new(),
         },
     ]
 }
@@ -264,6 +294,7 @@ fn power_symbols() -> Vec<SymbolDef> {
         category: String::new(),
         graphics,
         connection_points: points,
+        bridges: Vec::new(),
     };
     let mut contactor = poles(3, &|_| Vec::new());
     contactor.push(link(3));
@@ -369,6 +400,7 @@ fn plc_channel_symbols() -> Vec<SymbolDef> {
                 Graphic::Text { at: Point::new(-1.8, -1.25), height: 2.5, value: kind.short().into() },
             ],
             connection_points: vec![cp("1", 0.0, y, leaves)],
+            bridges: Vec::new(),
         }
     })
     .collect()
@@ -394,6 +426,7 @@ fn sym(
         category: String::new(),
         graphics,
         connection_points: points,
+        bridges: Vec::new(),
     }
 }
 
@@ -673,6 +706,7 @@ fn plug_pin() -> SymbolDef {
         category: String::new(),
         graphics: g,
         connection_points: vec![cp("1", 0.0, 6.0, Direction::Up), cp("2", 0.0, -6.0, Direction::Down)],
+        bridges: Vec::new(),
     }
 }
 
@@ -692,14 +726,26 @@ pub struct BlackBox {
     pub bottom: Vec<String>,
     pub left: Vec<String>,
     pub right: Vec<String>,
+    /// Groups of terminals joined inside the device, e.g. a distribution block's pole with its
+    /// outlets: `[["L1", "L1.1", "L1.2"]]`. They are one potential.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bridges: Vec<Vec<String>>,
 }
 
 impl BlackBox {
-    /// Every terminal name, side by side; names must be unique and non-empty.
+    /// Every terminal name, side by side; names must be unique and non-empty. Each bridge joins
+    /// at least two of the box's terminals, and a terminal is in at most one bridge.
     pub fn is_valid(&self) -> bool {
         let names: Vec<&String> = self.top.iter().chain(&self.bottom).chain(&self.left).chain(&self.right).collect();
         let unique: std::collections::BTreeSet<&String> = names.iter().copied().collect();
-        !names.is_empty() && unique.len() == names.len() && names.iter().all(|n| !n.trim().is_empty())
+        let bridged: Vec<&String> = self.bridges.iter().flatten().collect();
+        let bridged_unique: std::collections::BTreeSet<&String> = bridged.iter().copied().collect();
+        !names.is_empty()
+            && unique.len() == names.len()
+            && names.iter().all(|n| !n.trim().is_empty())
+            && self.bridges.iter().all(|g| g.len() >= 2)
+            && bridged.iter().all(|n| unique.contains(n))
+            && bridged_unique.len() == bridged.len()
     }
 }
 
@@ -741,6 +787,33 @@ pub fn black_box(id: &str, spec: &BlackBox) -> SymbolDef {
         g.push(text(x1 - 1.0 - width, y - label / 2.0, label, name));
         points.push(cp(name, x1 + stub, y, Direction::Right));
     }
+    // A bridge between terminals on the top or bottom: a bus line inside, under their names,
+    // with a tick at each; between a top and a bottom terminal in line, a line straight down.
+    for group in &spec.bridges {
+        for (i, name) in spec.top.iter().enumerate() {
+            if group.contains(name) && spec.bottom.get(i).is_some_and(|b| group.contains(b)) {
+                let x = BOX_PITCH * (i as f64 + 1.0);
+                g.push(line(x, y1 - 3.4, x, y0 + 3.4));
+            }
+        }
+        for (side, edge, inward) in [(&spec.top, y1, -1.0), (&spec.bottom, y0, 1.0)] {
+            let xs: Vec<f64> = side
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| group.contains(n))
+                .map(|(i, _)| BOX_PITCH * (i as f64 + 1.0))
+                .collect();
+            if let (Some(lo), Some(hi)) = (xs.first(), xs.last())
+                && xs.len() > 1
+            {
+                let y = edge + inward * 4.2;
+                g.push(line(*lo, y, *hi, y));
+                for x in &xs {
+                    g.push(line(*x, y, *x, y - inward * 0.8));
+                }
+            }
+        }
+    }
     if !spec.description.is_empty() {
         // Shrunk to fit inside the box (stroke-font characters with spacing are about 0.9 of
         // their height wide).
@@ -761,6 +834,7 @@ pub fn black_box(id: &str, spec: &BlackBox) -> SymbolDef {
         category: "Black boxes".into(),
         graphics: g,
         connection_points: points,
+        bridges: spec.bridges.clone(),
     }
 }
 
@@ -801,6 +875,7 @@ mod tests {
             bottom: vec!["U".into(), "V".into(), "W".into()],
             left: Vec::new(),
             right: vec!["DI0".into(), "DI1".into()],
+            bridges: Vec::new(),
         };
         assert!(spec.is_valid());
         let s = black_box("box.1", &spec);
@@ -812,5 +887,76 @@ mod tests {
         assert!(hi.x - lo.x >= 40.0, "four top terminals fit");
         assert!(!BlackBox { top: vec!["1".into(), "1".into()], ..BlackBox::default() }.is_valid(), "duplicate names");
         assert!(!BlackBox::default().is_valid(), "no terminals");
+    }
+
+    #[test]
+    fn a_black_box_bridge_joins_its_terminals_into_one_potential() {
+        let names = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        let spec = BlackBox {
+            description: String::new(),
+            tag_prefix: "-WB".into(),
+            top: names(&["L1", "N"]),
+            bottom: names(&["L1'", "N'"]),
+            left: Vec::new(),
+            right: Vec::new(),
+            bridges: vec![names(&["L1", "L1'"]), names(&["N", "N'"])],
+        };
+        assert!(spec.is_valid());
+        assert!(!BlackBox { bridges: vec![names(&["L1", "X"])], ..spec.clone() }.is_valid(), "unknown terminal");
+        assert!(!BlackBox { bridges: vec![names(&["L1"])], ..spec.clone() }.is_valid(), "a bridge of one");
+        assert!(
+            !BlackBox { bridges: vec![names(&["L1", "L1'"]), names(&["L1", "N"])], ..spec.clone() }.is_valid(),
+            "a terminal in two bridges"
+        );
+        let mut p = crate::sample::start_circuit().unwrap();
+        p.apply(crate::Command::AddSymbol(black_box("box.wb", &spec))).unwrap();
+        let device = crate::DeviceId::new();
+        p.add_device(crate::Device::new(device, "-WB1", "")).unwrap();
+        let f = crate::FunctionId::new();
+        p.place(crate::Function {
+            id: f,
+            device,
+            symbol: SymbolId::new("box.wb"),
+            page: crate::sample::PAGE_1,
+            position: Point::new(100.0, 100.0),
+            rotation: Default::default(),
+            designations: Default::default(),
+            properties: Default::default(),
+        })
+        .unwrap();
+        // Potentials are made of wired points: give each terminal a wire to its own junction.
+        for (k, point) in ["L1", "L1'", "N", "N'"].iter().enumerate() {
+            let jd = crate::DeviceId::new();
+            p.add_device(crate::Device::new(jd, &format!("J{}", 90 + k), "")).unwrap();
+            let j = crate::FunctionId::new();
+            p.place(crate::Function {
+                id: j,
+                device: jd,
+                symbol: SymbolId::new("iec.junction"),
+                page: crate::sample::PAGE_1,
+                position: Point::new(160.0 + 8.0 * k as f64, 60.0),
+                rotation: Default::default(),
+                designations: Default::default(),
+                properties: Default::default(),
+            })
+            .unwrap();
+            p.connect(crate::Connection {
+                bend: None,
+                id: crate::ConnectionId::new(),
+                from: crate::ConnectionRef::new(f, point),
+                to: crate::ConnectionRef::new(j, "1"),
+                wire_number: None,
+                spec: Default::default(),
+            })
+            .unwrap();
+        }
+        let on = |point: &str| {
+            let r = crate::ConnectionRef::new(f, point);
+            p.potentials().into_iter().position(|pot| pot.points.contains(&r))
+        };
+        assert!(on("L1").is_some());
+        assert_eq!(on("L1"), on("L1'"), "a pole and its outlet");
+        assert_eq!(on("N"), on("N'"));
+        assert_ne!(on("L1"), on("N"), "poles stay apart");
     }
 }

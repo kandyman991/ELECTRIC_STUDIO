@@ -29,6 +29,10 @@ pub struct Naming {
     pub wire_numbering: WireNumbering,
     /// New wire numbers. `{page}`, and `{n}` or `{n:02}` (zero-padded to two digits).
     pub wire_format: String,
+    /// Wires on a PLC channel take their number from its address, e.g. `{io}{byte}{bit:02}`
+    /// gives `I005` for I0.5 and `O306` for Q3.6: `{io}` is I for inputs and O for outputs,
+    /// `{byte}`, `{bit}` (or `{bit:02}`) the address's parts, `{address}` the whole. Empty: off.
+    pub plc_wire_format: String,
 }
 
 impl Default for Naming {
@@ -37,6 +41,7 @@ impl Default for Naming {
             tag_format: "-{letters}{n}".into(),
             wire_numbering: WireNumbering::PerWire,
             wire_format: "W{n}".into(),
+            plc_wire_format: String::new(),
         }
     }
 }
@@ -48,14 +53,61 @@ impl Naming {
             tag_format: "{page}{letters}{n}".into(),
             wire_numbering: WireNumbering::PerPotential,
             wire_format: "{page}{n:02}".into(),
+            plc_wire_format: "{io}{byte}{bit:02}".into(),
         }
     }
 
     /// Whether the formats can produce names: each needs `{n}` (or `{n:0W}`) once, and only
     /// known placeholders.
     pub fn is_valid(&self) -> bool {
-        valid(&self.tag_format, &["page", "letters"]) && valid(&self.wire_format, &["page"])
+        valid(&self.tag_format, &["page", "letters"])
+            && valid(&self.wire_format, &["page"])
+            && valid_plc(&self.plc_wire_format)
     }
+
+    /// The number the PLC wire format gives a channel's address (`I0.5`, `%Q3.6`), if it is on
+    /// and the address has a byte and a bit.
+    pub fn plc_wire_number(&self, address: &str) -> Option<String> {
+        if self.plc_wire_format.is_empty() {
+            return None;
+        }
+        let a = address.trim().trim_start_matches('%');
+        let letters: String = a.chars().take_while(char::is_ascii_alphabetic).collect();
+        let (byte, bit) = a[letters.len()..].split_once('.')?;
+        let (byte, bit): (u32, u32) = (byte.parse().ok()?, bit.parse().ok()?);
+        // Inputs I (E in German), outputs Q (A in German).
+        let io = match letters.to_ascii_uppercase().chars().next()? {
+            'I' | 'E' => "I",
+            'Q' | 'A' => "O",
+            _ => return None,
+        };
+        Some(
+            self.plc_wire_format
+                .replace("{io}", io)
+                .replace("{byte}", &byte.to_string())
+                .replace("{bit:02}", &format!("{bit:02}"))
+                .replace("{bit}", &bit.to_string())
+                .replace("{address}", address.trim()),
+        )
+    }
+}
+
+/// A PLC wire format is empty or uses only its own placeholders, and at least one.
+fn valid_plc(format: &str) -> bool {
+    if format.is_empty() {
+        return true;
+    }
+    let mut rest = format;
+    let mut found = 0;
+    while let Some(i) = rest.find('{') {
+        let Some(j) = rest[i..].find('}') else { return false };
+        if !["io", "byte", "bit", "bit:02", "address"].contains(&&rest[i + 1..i + j]) {
+            return false;
+        }
+        found += 1;
+        rest = &rest[i + j + 1..];
+    }
+    found > 0
 }
 
 /// Split a format at its counter: (text before, zero-pad width, text after), with the other
@@ -109,6 +161,16 @@ impl Project {
         }
     }
 
+    /// The number the PLC wire format gives wires on these points: from the address of the first
+    /// PLC channel among them that has one.
+    fn plc_number_of(&self, points: &[ConnectionRef]) -> Option<String> {
+        points.iter().find_map(|r| {
+            let f = self.function(r.function).ok()?;
+            matches!(self.role(f.id).ok()?, Role::PlcChannel { .. })
+                .then(|| self.naming.plc_wire_number(f.property(crate::ADDRESS)))?
+        })
+    }
+
     fn wire_number_taken(&self, number: &str) -> bool {
         self.connections.values().any(|c| c.wire_number.as_deref() == Some(number))
     }
@@ -129,12 +191,17 @@ impl Project {
     pub fn number_for_new_wire(&self, from: &ConnectionRef, to: &ConnectionRef) -> (String, Vec<ConnectionId>) {
         let page = self.function(from.function).map(|f| f.page).unwrap_or_default();
         if self.naming.wire_numbering == WireNumbering::PerWire {
-            return (self.next_wire_number(page), Vec::new());
+            let plc = self.plc_number_of(&[from.clone(), to.clone()]).filter(|n| !self.wire_number_taken(n));
+            return (plc.unwrap_or_else(|| self.next_wire_number(page)), Vec::new());
         }
         let potentials = self.potentials();
         let find = |r: &ConnectionRef| potentials.iter().find(|p| p.points.contains(r));
         let sides: Vec<_> = [find(from), find(to)].into_iter().flatten().collect();
         let name = sides.iter().find_map(|p| p.name());
+        // A channel's own end may not be on a potential yet (no wire): count it too.
+        let mut points: Vec<ConnectionRef> = sides.iter().flat_map(|p| p.points.iter().cloned()).collect();
+        points.extend([from.clone(), to.clone()]);
+        let name = name.or_else(|| self.plc_number_of(&points));
         let existing = sides.iter().find_map(|p| {
             p.connections.iter().find_map(|c| self.connection(*c).ok().and_then(|c| c.wire_number.clone()))
         });
@@ -161,8 +228,9 @@ impl Project {
     }
 
     /// Commands that renumber every wire from scratch, page by page in page order and down each
-    /// page column by column. Per potential, a named potential takes its name and the others
-    /// a new number on the page where they start.
+    /// page column by column. Per potential, a named potential takes its name, one on a PLC
+    /// channel the number from its address (with a PLC wire format), and the others a new
+    /// number on the page where they start.
     pub fn renumber_all_wires(&self) -> Vec<Command> {
         let order: Vec<PageId> = self.pages_in_order().iter().map(|p| p.id).collect();
         let place = |c: ConnectionId| {
@@ -186,7 +254,7 @@ impl Project {
                 .potentials()
                 .into_iter()
                 .filter(|p| !p.connections.is_empty())
-                .map(|p| (p.name(), p.connections))
+                .map(|p| (p.name().or_else(|| self.plc_number_of(&p.points)), p.connections))
                 .collect(),
         };
         let first = |ids: &[ConnectionId]| {
@@ -222,6 +290,36 @@ mod tests {
         assert!(!Naming { wire_format: "{n}{n}".into(), ..Naming::default() }.is_valid(), "two counters");
         assert!(!Naming { wire_format: "{letters}{n}".into(), ..Naming::default() }.is_valid(), "no letters for wires");
         assert_eq!(first_free("P2", 2, "", |s| s == "P201"), "P202");
+    }
+
+    #[test]
+    fn plc_wires_are_numbered_from_the_channel_address() {
+        let n = Naming::by_page();
+        assert_eq!(n.plc_wire_number("I0.5").as_deref(), Some("I005"));
+        assert_eq!(n.plc_wire_number("%Q3.6").as_deref(), Some("O306"));
+        assert_eq!(n.plc_wire_number("E1.2").as_deref(), Some("I102"), "German inputs");
+        assert_eq!(n.plc_wire_number("IW256"), None, "no bit: an analog word");
+        assert_eq!(Naming::default().plc_wire_number("I0.5"), None, "off by default");
+        assert!(!Naming { plc_wire_format: "{n}".into(), ..Naming::by_page() }.is_valid());
+        assert!(Naming { plc_wire_format: "X{address}".into(), ..Naming::by_page() }.is_valid());
+
+        let mut p = crate::sample::with_plc().unwrap();
+        p.naming = Naming::by_page();
+        for cmd in p.renumber_all_wires() {
+            p.apply(cmd).unwrap();
+        }
+        let numbers: BTreeSet<String> = p.connections.values().filter_map(|c| c.wire_number.clone()).collect();
+        // Each wired digital channel's potential carries its address.
+        let mut checked = 0;
+        for ch in p.plc_channels_of(crate::sample::KF1) {
+            let Some(want) = p.naming.plc_wire_number(&ch.address) else { continue };
+            let wired = p.connections.values().any(|c| c.from.function == ch.function || c.to.function == ch.function);
+            if wired {
+                assert!(numbers.contains(&want), "{want} missing from {numbers:?}");
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "the sample has wired digital channels");
     }
 
     use crate::geometry::{Point, Rotation};

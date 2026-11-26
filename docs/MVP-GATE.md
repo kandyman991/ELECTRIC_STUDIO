@@ -49,20 +49,19 @@ and the original PDF are deliberately not in the repository.
 
 In rough order of how much they matter for drawing real machines:
 
-1. **Parts per terminal type.** A strip has one part list for all its terminals, so the PE
-   terminals (ZPE) on -X0 can't be listed apart from the feed-through ones.
+1. ~~**Parts per terminal type.**~~ — done in G5c: a part on a strip can count per terminal of
+   one kind (new PE terminal symbol); -X0's two ZPE now match the original.
 2. ~~**Changeover contact symbol** (11-12-14) is missing~~ — done in G5b (`iec.contact_co`).
 3. ~~**Contact numbering by block position.**~~ — done in G5b: parts list their contact blocks
    (`13-14`, `21-22`, `11-12-14`) and contacts take their numbers from them.
-4. **Black boxes with internal bridges.** The distribution block was modelled as four bridged
-   terminals; a black box should be able to say which of its points are joined inside.
-5. **Contact tables in dense columns** overlap when coils sit 40 mm apart; the original puts them
-   under the rail.
-6. **PLC wire numbers from the address** (e.g. `I000`, `O000`) are typed by hand; a naming rule
-   for channel wires would do it.
-7. **Vertical labels** for interruption arrows that sit close together.
+4. ~~**Black boxes with internal bridges.**~~ — done in G5c; P2WB1 is now a black box with each
+   pole joined to its outlet.
+5. ~~**Contact tables in dense columns**~~ — done with the label placer: a table that finds no
+   room beside its coil goes under the rail, as the original does.
+6. ~~**PLC wire numbers from the address**~~ — done in G5c: naming setting `{io}{byte}{bit:02}`.
+7. ~~**Vertical labels**~~ — done with the label placer: tags of arrows close together are written
+   upwards.
 8. **Mirrored symbols** (a main switch on a horizontal line).
 9. **Dashed PE wires** aren't drawn dashed.
 
-None of these blocks the MVP: each has a workaround in the redraw. Items 1 to 4 are worth doing
-before using the tool on a live project.
+None of these blocked the MVP. Items 1–7 are done (G5); 8 and 9 remain.
