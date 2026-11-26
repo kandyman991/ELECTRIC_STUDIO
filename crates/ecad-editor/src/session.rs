@@ -190,6 +190,11 @@ pub enum UiEvent {
     UpdatePart {
         part: Part,
     },
+    /// A part's size, as typed: `45 x 90` or `45 x 90 x 75` (mm), empty to clear.
+    PartSize {
+        number: String,
+        size: String,
+    },
     /// A part's contact blocks, as typed: `13-14 21-22` or `11-12-14`.
     PartContacts {
         number: String,
@@ -697,6 +702,20 @@ impl Session {
                 let r = self.editor.update_part(part);
                 self.report(r);
             }
+            UiEvent::PartSize { number, size } => match ecad_model::parts::parse_size(&size) {
+                Err(bad) => {
+                    self.message = Some(format!("`{bad}` isn't a size: write width x height, e.g. 45 x 90 (mm)"))
+                }
+                Ok((width, height, depth)) => {
+                    if let Some(mut part) = self.editor.project().parts.get(&number).cloned()
+                        && (part.width, part.height, part.depth) != (width, height, depth)
+                    {
+                        (part.width, part.height, part.depth) = (width, height, depth);
+                        let r = self.editor.update_part(part);
+                        self.report(r);
+                    }
+                }
+            },
             UiEvent::PartContacts { number, contacts } => match ecad_model::parts::parse_blocks(&contacts) {
                 Err(bad) => {
                     self.message =

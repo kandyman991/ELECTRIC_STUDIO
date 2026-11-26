@@ -395,9 +395,54 @@ pub fn table_of_contents_csv(project: &Project) -> String {
     out
 }
 
+/// One length to cut for a layout page: a rail or a duct.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CutRow {
+    pub page: String,
+    /// `rail` or `duct 60 x 80`.
+    pub item: String,
+    pub part: String,
+    pub length: f64,
+}
+
+/// The rails and ducts of every layout page, page by page from the top of each plate.
+pub fn panel_cut_list(project: &Project) -> Vec<CutRow> {
+    let mut out = Vec::new();
+    for page in project.pages_in_order() {
+        for item in project.panel_items_on(page.id) {
+            let what = match &item.kind {
+                ecad_model::PanelItemKind::Rail => "rail TS 35".to_owned(),
+                ecad_model::PanelItemKind::Duct { width, depth } => format!("duct {width} x {depth}"),
+                ecad_model::PanelItemKind::Device { .. } => continue,
+            };
+            out.push(CutRow { page: page.name.clone(), item: what, part: item.part.clone(), length: item.length });
+        }
+    }
+    out
+}
+
+pub fn panel_cut_list_csv(rows: &[CutRow]) -> String {
+    let mut out = String::from("page,item,part,length_mm\n");
+    for r in rows {
+        let length = format!("{}", (r.length * 10.0).round() / 10.0);
+        let fields = [&r.page, &r.item, &r.part, &length];
+        out += &fields.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(",");
+        out.push('\n');
+    }
+    out
+}
+
 /// Report names, as `ecad report` takes them and as their file names (`<name>.csv`).
-pub const REPORTS: [&str; 7] =
-    ["wire-list", "bom", "terminal-diagram", "plc-io-list", "cable-list", "table-of-contents", "devices-without-parts"];
+pub const REPORTS: [&str; 8] = [
+    "wire-list",
+    "bom",
+    "terminal-diagram",
+    "plc-io-list",
+    "cable-list",
+    "table-of-contents",
+    "devices-without-parts",
+    "panel-cut-list",
+];
 
 /// One report as CSV, by name (see [`REPORTS`]); `None` for an unknown name. A report with no
 /// rows is just its header.
@@ -410,6 +455,7 @@ pub fn csv(project: &Project, name: &str) -> Result<Option<String>, ModelError> 
         "cable-list" => cable_list_csv(&cable_list(project)),
         "table-of-contents" => table_of_contents_csv(project),
         "devices-without-parts" => devices_without_parts_csv(&devices_without_parts(project)),
+        "panel-cut-list" => panel_cut_list_csv(&panel_cut_list(project)),
         _ => return Ok(None),
     }))
 }
@@ -434,6 +480,10 @@ pub fn all_csv(project: &Project) -> Result<Vec<(&'static str, String)>, ModelEr
     let missing = devices_without_parts(project);
     if !missing.is_empty() {
         files.push(("devices-without-parts.csv", devices_without_parts_csv(&missing)));
+    }
+    let cuts = panel_cut_list(project);
+    if !cuts.is_empty() {
+        files.push(("panel-cut-list.csv", panel_cut_list_csv(&cuts)));
     }
     Ok(files)
 }
@@ -527,6 +577,9 @@ mod tests {
                 description: String::new(),
                 code: String::new(),
                 contacts: Vec::new(),
+                width: None,
+                height: None,
+                depth: None,
             }))
             .unwrap();
         }

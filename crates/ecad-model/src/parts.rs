@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// A catalogue entry: something that can be ordered.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Part {
     /// Manufacturer's order number, unique in the catalogue, e.g. `3RT2015-1BB41`.
     pub number: String,
@@ -18,6 +18,49 @@ pub struct Part {
     /// `11-12-14` (changeover). Contacts drawn for a device take their numbers from these.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub contacts: Vec<String>,
+    /// Size in mm, for the panel layout: width along the rail, height across it, depth from
+    /// the plate. Parts without one are drawn one module wide on a plate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<f64>,
+}
+
+/// A part's width, height and depth in mm, each optional.
+pub type Size = (Option<f64>, Option<f64>, Option<f64>);
+
+/// A part's size as written in the catalogue window: `45 x 90` or `45 x 90 x 75` (width,
+/// height, depth in mm; `×` or `*` work too, and a decimal comma). Empty clears it.
+pub fn parse_size(text: &str) -> Result<Size, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok((None, None, None));
+    }
+    let values: Vec<f64> = text
+        .split(['x', 'X', '×', '*'])
+        .map(|s| s.trim().replace(',', ".").parse::<f64>().ok().filter(|v| *v > 0.0 && v.is_finite()))
+        .collect::<Option<_>>()
+        .ok_or_else(|| text.to_owned())?;
+    match values.as_slice() {
+        [w, h] => Ok((Some(*w), Some(*h), None)),
+        [w, h, d] => Ok((Some(*w), Some(*h), Some(*d))),
+        _ => Err(text.to_owned()),
+    }
+}
+
+/// A part's size written back as `45 x 90 x 75`, or empty.
+pub fn format_size(part: &Part) -> String {
+    let n = |v: f64| {
+        let s = format!("{v}");
+        s.replace('.', ",")
+    };
+    match (part.width, part.height, part.depth) {
+        (Some(w), Some(h), Some(d)) => format!("{} x {} x {}", n(w), n(h), n(d)),
+        (Some(w), Some(h), None) => format!("{} x {}", n(w), n(h)),
+        _ => String::new(),
+    }
 }
 
 /// A contact block's points, e.g. `["13", "14"]` for `13-14`.
@@ -91,5 +134,29 @@ impl PartRef {
     /// A part counted once per terminal drawn with `symbol`.
     pub fn per_terminal_of(number: &str, quantity: u32, symbol: &str) -> Self {
         PartRef { only: Some(crate::SymbolId::new(symbol)), ..PartRef::new(number, quantity) }
+    }
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::*;
+
+    #[test]
+    fn sizes_parse_and_print() {
+        assert_eq!(parse_size("45 x 90"), Ok((Some(45.0), Some(90.0), None)));
+        assert_eq!(parse_size("6,4×90*87"), Ok((Some(6.4), Some(90.0), Some(87.0))));
+        assert_eq!(parse_size(""), Ok((None, None, None)));
+        assert!(parse_size("45").is_err() && parse_size("45 x 0").is_err() && parse_size("a x b").is_err());
+        let p = Part {
+            number: "X".into(),
+            manufacturer: String::new(),
+            description: String::new(),
+            code: String::new(),
+            contacts: Vec::new(),
+            width: Some(6.4),
+            height: Some(90.0),
+            depth: None,
+        };
+        assert_eq!(format_size(&p), "6,4 x 90");
     }
 }
