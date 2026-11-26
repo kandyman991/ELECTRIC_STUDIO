@@ -15,7 +15,7 @@ Drawing, DXF/DWG/PDF output and rendering come from the Rust crates of
 cargo run -p ecad-cli -- demo out
 ```
 
-This writes `out/page-1.dxf`, `out/page-1.png` and `out/wire-list.csv` for a small sample
+This writes `out/drawings.pdf`, `out/page-1.dxf`, `.dwg`, `.png` and the reports for a small sample
 circuit (L+ → pushbutton -S1 → coil -K1 → M). The first build takes several minutes.
 
 Projects are folders of JSON files:
