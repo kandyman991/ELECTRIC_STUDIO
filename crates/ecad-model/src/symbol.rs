@@ -28,6 +28,36 @@ pub struct ConnectionPointDef {
     pub leaves: Direction,
 }
 
+/// The kind of contact a contact symbol draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ContactKind {
+    NormallyOpen,
+    NormallyClosed,
+}
+
+impl ContactKind {
+    /// `NO` or `NC`, as printed in contact lists.
+    pub fn short(self) -> &'static str {
+        match self {
+            ContactKind::NormallyOpen => "NO",
+            ContactKind::NormallyClosed => "NC",
+        }
+    }
+}
+
+/// What a symbol stands for within its device, which decides cross-references.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum Role {
+    /// A device drawn once, e.g. a terminal or a supply point.
+    #[default]
+    Single,
+    /// A device's main function, e.g. a relay or contactor coil. It lists its contacts.
+    Main,
+    /// A contact of a device; it refers back to the device's main function.
+    Contact { kind: ContactKind },
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SymbolDef {
     pub id: SymbolId,
@@ -35,6 +65,8 @@ pub struct SymbolDef {
     /// Prefix for new device tags, e.g. `-K` gives `-K1`, `-K2`…
     #[serde(default)]
     pub tag_prefix: String,
+    #[serde(default)]
+    pub role: Role,
     pub graphics: Vec<Graphic>,
     pub connection_points: Vec<ConnectionPointDef>,
 }

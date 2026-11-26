@@ -183,3 +183,39 @@ fn undoing_back_to_the_saved_state_is_clean_and_a_new_branch_is_not() {
     e.key(Key::Undo);
     assert!(e.is_dirty(), "unrotated is not what was saved");
 }
+
+#[test]
+fn a_coil_gets_contacts_on_another_page_with_the_next_numbers() {
+    use ecad_model::sample::{K1_NO, with_contacts};
+    let mut e = Editor::new(with_contacts().unwrap(), PAGE_1).unwrap();
+    let k1 = e.project().function(K1_COIL).unwrap().device;
+    let page2 = e.project().function(K1_NO).unwrap().page;
+    e.set_page(page2).unwrap();
+    e.set_tool(Tool::PlaceFor { symbol: SymbolId::new("iec.contact_no"), device: k1 });
+    click(&mut e, 0.0, 60.0);
+    assert_eq!(e.tool(), &Tool::Select, "one contact, then back to Select");
+    assert_eq!(e.undo_label(), Some("Place -K1 contact 33-34"));
+    let terminals: Vec<String> = e.project().contacts_of(k1).iter().map(|c| c.terminals.clone()).collect();
+    assert_eq!(terminals, ["13-14", "21-22", "33-34"]);
+    e.key(Key::Undo);
+    assert_eq!(e.project(), &with_contacts().unwrap());
+}
+
+#[test]
+fn a_stray_contact_can_join_a_coil_and_its_old_device_goes() {
+    let mut e = editor();
+    // Place a new NC contact: it becomes device -S2 with terminals 11-12.
+    e.set_tool(Tool::Place(SymbolId::new("iec.contact_nc")));
+    click(&mut e, 40.0, 40.0);
+    assert!(e.project().device_by_tag("-S2").is_some());
+    assert_eq!(e.reassign_selected("-K9"), Err(ModelError::UnknownTag("-K9".into())));
+    e.reassign_selected(" -K1 ").unwrap();
+    assert!(e.project().device_by_tag("-S2").is_none(), "nothing else drew -S2");
+    let k1 = e.project().device_by_tag("-K1").unwrap().id;
+    let contacts = e.project().contacts_of(k1);
+    assert_eq!(contacts.len(), 1);
+    assert_eq!(contacts[0].terminals, "11-12", "first contact of -K1 is 1x; NC keeps 1/2");
+    assert_eq!(e.undo_label(), Some("Move -S2 to -K1"));
+    e.key(Key::Undo);
+    assert!(e.project().device_by_tag("-S2").is_some());
+}

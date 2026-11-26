@@ -27,7 +27,8 @@ Dependencies point downward only. The core never depends on the UI or on CADCraf
 | Page | One sheet: number (`1`, `3a`), content description, position in the project |
 | Sheet | Size (A3 landscape by default), border, 10 numbered columns, title block; gives addresses like `2.4` (page 2, column 4) |
 | Device | A real component with an IEC 81346 tag (`-K1`, `=A1+B2-K1`) and a part number |
-| Function | One drawing of a device on a page (a coil here, its contacts elsewhere) |
+| Function | One drawing of a device on a page (a coil here, its contacts elsewhere), with its own terminal designations (`23`/`24` for a second NO contact) |
+| Symbol role | Main function (coil: lists its contacts), contact (NO/NC: refers back to the coil), or single (terminal, supply) |
 | Connection point | A designated terminal (`A1`, `13`) with the direction a wire leaves in |
 | Connection | A wire between two connection points, with wire number, cross-section, colour |
 | Potential | Calculated from the wiring (M2), named at potential-definition points |

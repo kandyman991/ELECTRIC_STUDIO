@@ -216,6 +216,45 @@ mod tests {
     }
 
     #[test]
+    fn contacts_get_iec_numbers_and_refer_to_their_coil() {
+        let p = sample::with_contacts().unwrap();
+        let k1 = DeviceId::from_u128(0x103);
+        let contacts = p.contacts_of(k1);
+        let summary: Vec<(String, &str, String)> =
+            contacts.iter().map(|c| (c.terminals.clone(), c.kind.short(), c.location.clone())).collect();
+        let col = |f| p.sheet.column_of(p.function(f).unwrap().position);
+        assert_eq!(
+            summary,
+            [
+                ("13-14".to_owned(), "NO", format!("2.{}", col(sample::K1_NO))),
+                ("21-22".to_owned(), "NC", format!("2.{}", col(sample::K1_NC))),
+            ]
+        );
+        assert_eq!(p.main_function(k1).map(|f| f.id), Some(K1_COIL));
+        assert_eq!(p.function_location(K1_COIL).unwrap(), format!("1.{}", col(K1_COIL)));
+        // A third contact takes the next free number; the sample pushbutton -S1 has no coil.
+        let third = p.next_contact_designations(k1, &SymbolId::new("iec.contact_no"));
+        assert_eq!(third.get("13").map(String::as_str), Some("33"));
+        assert!(p.next_contact_designations(k1, &SymbolId::new("iec.coil")).is_empty());
+        assert!(p.main_function(DeviceId::from_u128(0x102)).is_none());
+        // Wires and reports name the contact by its own designation.
+        assert_eq!(p.describe(&ConnectionRef::new(sample::K1_NC, "11")).unwrap(), ("-K1".into(), "21".into()));
+    }
+
+    #[test]
+    fn reassign_moves_a_contact_to_another_device_and_undoes() {
+        let original = sample::with_contacts().unwrap();
+        let mut p = original.clone();
+        let s1 = DeviceId::from_u128(0x102);
+        let undo =
+            p.apply(Command::Reassign { id: sample::K1_NO, device: s1, designations: Default::default() }).unwrap();
+        assert_eq!(p.contacts_of(DeviceId::from_u128(0x103)).len(), 1);
+        assert_eq!(p.describe(&ConnectionRef::new(sample::K1_NO, "13")).unwrap(), ("-S1".into(), "13".into()));
+        p.apply(undo).unwrap();
+        assert_eq!(p, original);
+    }
+
+    #[test]
     fn devices_in_use_cannot_be_removed_and_tags_are_numbered() {
         let mut p = start_circuit().unwrap();
         let k1 = DeviceId::from_u128(0x103);

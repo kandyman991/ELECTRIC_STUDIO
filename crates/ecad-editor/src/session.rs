@@ -5,7 +5,7 @@
 
 use crate::view::Viewport;
 use crate::{Editor, Key, Overlay, Primitive, Selected, Tool};
-use ecad_model::{Page, PageId, Point, Project, SymbolId};
+use ecad_model::{Page, PageId, Point, Project, Role, SymbolId};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -112,6 +112,14 @@ pub enum UiEvent {
     MovePage {
         delta: i32,
     },
+    /// Place one more contact of the selected symbol's device, drawn with this symbol.
+    AddContact {
+        symbol: String,
+    },
+    /// Make the selected symbol part of the device with this tag.
+    AssignTo {
+        tag: String,
+    },
 }
 
 /// Keys the UI maps from its own key events.
@@ -142,8 +150,28 @@ pub struct PageInfo {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum SelectionInfo {
-    Device { tag: String, description: String, symbol: String },
-    Wire { number: Option<String>, from: String, to: String },
+    Device {
+        tag: String,
+        description: String,
+        symbol: String,
+        /// `main` (a coil), `contact`, or `single`.
+        role: String,
+        /// For a coil: its contacts. For a contact: its coil. Each can be shown with
+        /// [`UiEvent::ShowPage`].
+        references: Vec<Reference>,
+    },
+    Wire {
+        number: Option<String>,
+        from: String,
+        to: String,
+    },
+}
+
+/// A cross-reference the side panel lists, e.g. `13-14 NO 2.7`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Reference {
+    pub label: String,
+    pub page: PageId,
 }
 
 /// Everything the UI needs to paint one frame.
@@ -165,6 +193,8 @@ pub struct Frame {
     pub title: String,
     pub project_dir: String,
     pub palette: Vec<PaletteItem>,
+    /// Contact symbols, offered for adding contacts to the selected device.
+    pub contact_palette: Vec<PaletteItem>,
     /// All pages in order, and the one shown.
     pub pages: Vec<PageInfo>,
     pub page: PageId,
@@ -362,6 +392,17 @@ impl Session {
                 let r = self.editor.move_page(delta);
                 self.report(r);
             }
+            UiEvent::AddContact { symbol } => match self.selected_device() {
+                Some(device) => {
+                    self.editor.set_tool(Tool::PlaceFor { symbol: SymbolId::new(&symbol), device });
+                    self.message = Some("Click where the contact goes; switch pages first if needed".into());
+                }
+                None => self.message = Some("Select the device first".into()),
+            },
+            UiEvent::AssignTo { tag } => {
+                let r = self.editor.reassign_selected(&tag);
+                self.report(r);
+            }
             UiEvent::Confirm { choice } => {
                 let Some(action) = self.pending.take() else { return };
                 match choice {
@@ -427,16 +468,49 @@ impl Session {
         });
     }
 
+    fn selected_device(&self) -> Option<ecad_model::DeviceId> {
+        match self.editor.selection()? {
+            Selected::Function(f) => self.editor.project().function(f).ok().map(|f| f.device),
+            Selected::Connection(_) => None,
+        }
+    }
+
     fn selection_info(&self) -> Option<SelectionInfo> {
         let project = self.editor.project();
         match self.editor.selection()? {
             Selected::Function(f) => {
                 let f = project.function(f).ok()?;
                 let d = project.device(f.device).ok()?;
+                let role = project.role(f.id).ok()?;
+                let references = match role {
+                    Role::Main => project
+                        .contacts_of(d.id)
+                        .into_iter()
+                        .map(|c| Reference {
+                            label: format!("{} {} {}", c.terminals, c.kind.short(), c.location),
+                            page: c.page,
+                        })
+                        .collect(),
+                    Role::Contact { .. } => project
+                        .main_function(d.id)
+                        .and_then(|m| {
+                            let at = project.function_location(m.id).ok()?;
+                            Some(vec![Reference { label: format!("Coil at {at}"), page: m.page }])
+                        })
+                        .unwrap_or_default(),
+                    Role::Single => Vec::new(),
+                };
                 Some(SelectionInfo::Device {
                     tag: d.tag.clone(),
                     description: d.description.clone(),
                     symbol: f.symbol.0.clone(),
+                    role: match role {
+                        Role::Main => "main",
+                        Role::Contact { .. } => "contact",
+                        Role::Single => "single",
+                    }
+                    .into(),
+                    references,
                 })
             }
             Selected::Connection(c) => {
@@ -477,6 +551,7 @@ impl Session {
                 Tool::Select => "select".into(),
                 Tool::Wire => "wire".into(),
                 Tool::Place(s) => s.0.clone(),
+                Tool::PlaceFor { symbol, .. } => format!("contact:{}", symbol.0),
             },
             selection: self.selection_info(),
             undo: editor.undo_label().map(str::to_owned),
@@ -487,6 +562,12 @@ impl Session {
             palette: project
                 .symbols
                 .values()
+                .map(|s| PaletteItem { id: s.id.0.clone(), description: s.description.clone() })
+                .collect(),
+            contact_palette: project
+                .symbols
+                .values()
+                .filter(|s| matches!(s.role, Role::Contact { .. }))
                 .map(|s| PaletteItem { id: s.id.0.clone(), description: s.description.clone() })
                 .collect(),
             pages: project
@@ -614,7 +695,7 @@ mod tests {
         let f = s.frame(None, [0, 0, 0]);
         assert_eq!(f.title, "Panel A");
         assert_eq!(s.editor().project().functions.len(), 0);
-        assert_eq!(f.palette.len(), 3, "starter symbols are available");
+        assert_eq!(f.palette.len(), 4, "starter symbols are available");
         assert!(path.join("project.json").exists());
 
         // New into a folder that already has a project is refused.
@@ -711,6 +792,37 @@ mod tests {
         s.handle(UiEvent::ShowPage { id: pages[0].id });
         s.handle(UiEvent::ShowPage { id: pages[1].id });
         assert!(!s.frame(None, [0, 0, 0]).dirty);
+    }
+
+    #[test]
+    fn a_coil_lists_its_contacts_and_a_contact_its_coil() {
+        let dir = tempfile::tempdir().unwrap();
+        ecad_project::save(&ecad_model::sample::with_contacts().unwrap(), dir.path()).unwrap();
+        let mut s = Session::open(dir.path()).unwrap();
+        s.handle(UiEvent::Resize { width: 800.0, height: 600.0 });
+        let click = |s: &mut Session, p: Point| {
+            let (x, y) = s.view().to_screen(p);
+            s.handle(UiEvent::PointerDown { x, y, button: Button::Primary });
+            s.handle(UiEvent::PointerUp { x, y, button: Button::Primary });
+        };
+        click(&mut s, Point::new(2.0, 12.0)); // the coil -K1
+        let f = s.frame(None, [0, 0, 0]);
+        let Some(SelectionInfo::Device { role, references, .. }) = f.selection else { panic!("coil selected") };
+        assert_eq!(role, "main");
+        let labels: Vec<&str> = references.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels.len(), 2);
+        assert!(labels[0].starts_with("13-14 NO 2.") && labels[1].starts_with("21-22 NC 2."), "{labels:?}");
+        assert_eq!(f.contact_palette.len(), 2);
+
+        // Add a third contact on page 2 from the side panel.
+        s.handle(UiEvent::AddContact { symbol: "iec.contact_no".into() });
+        assert_eq!(s.frame(None, [0, 0, 0]).tool, "contact:iec.contact_no");
+        s.handle(UiEvent::ShowPage { id: references[0].page });
+        click(&mut s, Point::new(0.0, 60.0));
+        let f = s.frame(None, [0, 0, 0]);
+        let Some(SelectionInfo::Device { role, references, tag, .. }) = f.selection else { panic!("contact selected") };
+        assert_eq!((role.as_str(), tag.as_str()), ("contact", "-K1"));
+        assert!(references[0].label.starts_with("Coil at 1."), "{references:?}");
     }
 
     #[test]

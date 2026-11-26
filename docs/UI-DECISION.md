@@ -35,6 +35,8 @@ if needed.
 | Undo, redo, save | Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z), Ctrl+S |
 | New, open project | Ctrl+N, Ctrl+O (or the File menu); asks before discarding changes |
 | Pages | Left panel: click to show, Add, Delete, ▲ ▼ to reorder; PageUp / PageDown |
+| Contacts of a coil | Select the coil, "Add normally open/closed contact" in the right panel, then click on any page; click a listed contact to jump to it |
+| Move a contact to a coil | Select the contact, type the coil's tag in "Belongs to device" |
 | Pan, zoom, fit | Middle-drag, wheel, F |
 | Edit tag, description, wire number | Select, edit in the right panel; applied when the field loses focus (Enter, Tab or a click) |
 

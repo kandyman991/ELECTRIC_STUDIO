@@ -19,6 +19,7 @@ pub fn symbols() -> Vec<SymbolDef> {
             id: SymbolId::new("iec.coil"),
             description: "Relay or contactor coil".into(),
             tag_prefix: "-K".into(),
+            role: Role::Main,
             graphics: vec![
                 line(-5.0, -3.0, 5.0, -3.0),
                 line(5.0, -3.0, 5.0, 3.0),
@@ -33,6 +34,7 @@ pub fn symbols() -> Vec<SymbolDef> {
             id: SymbolId::new("iec.contact_no"),
             description: "Normally open contact".into(),
             tag_prefix: "-S".into(),
+            role: Role::Contact { kind: ContactKind::NormallyOpen },
             graphics: vec![
                 line(0.0, 8.0, 0.0, 3.0),
                 line(0.0, 3.0, -3.0, -3.0),
@@ -42,9 +44,24 @@ pub fn symbols() -> Vec<SymbolDef> {
             connection_points: vec![cp("13", 0.0, 8.0, Direction::Up), cp("14", 0.0, -8.0, Direction::Down)],
         },
         SymbolDef {
+            id: SymbolId::new("iec.contact_nc"),
+            description: "Normally closed contact".into(),
+            tag_prefix: "-S".into(),
+            role: Role::Contact { kind: ContactKind::NormallyClosed },
+            graphics: vec![
+                line(0.0, 8.0, 0.0, 3.0),
+                line(0.0, 3.0, 2.5, 3.0),
+                line(0.0, -3.0, 3.5, 4.0),
+                line(0.0, -3.0, 0.0, -8.0),
+                line(-6.0, 0.0, 1.0, 0.0),
+            ],
+            connection_points: vec![cp("11", 0.0, 8.0, Direction::Up), cp("12", 0.0, -8.0, Direction::Down)],
+        },
+        SymbolDef {
             id: SymbolId::new("iec.supply"),
             description: "Supply connection".into(),
             tag_prefix: "-X".into(),
+            role: Role::Single,
             graphics: vec![line(-2.0, 0.0, 2.0, 0.0)],
             connection_points: vec![cp("1", 0.0, 0.0, Direction::Down)],
         },
@@ -78,6 +95,7 @@ pub fn start_circuit() -> Result<Project> {
             page: PAGE_1,
             position: Point::new(x, y),
             rotation,
+            designations: Default::default(),
         })?;
     }
 
@@ -96,6 +114,34 @@ pub fn start_circuit() -> Result<Project> {
     }
     if let Some((min, max)) = p.content_bounds(PAGE_1) {
         p.sheet = crate::Sheet::around(min, max);
+    }
+    Ok(p)
+}
+
+pub const PAGE_2: PageId = PageId::from_u128(0x2);
+pub const K1_NO: FunctionId = FunctionId::from_u128(0x205);
+pub const K1_NC: FunctionId = FunctionId::from_u128(0x206);
+
+/// The start circuit plus page 2, "Contacts", holding a normally open and a normally closed
+/// contact of -K1, so the coil on page 1 and the contacts on page 2 refer to each other.
+pub fn with_contacts() -> Result<Project> {
+    let mut p = start_circuit()?;
+    p.apply(Command::AddPage(Page { id: PAGE_2, name: "2".into(), description: "Contacts".into(), order: 1 }))?;
+    let k1 = DeviceId::from_u128(0x103);
+    // Placed relative to the coil, so both pages share the sheet's columns sensibly.
+    let coil = p.function(K1_COIL)?.position;
+    for (id, symbol, dx) in [(K1_NO, "iec.contact_no", 40.0), (K1_NC, "iec.contact_nc", 120.0)] {
+        let symbol = SymbolId::new(symbol);
+        let designations = p.next_contact_designations(k1, &symbol);
+        p.place(Function {
+            id,
+            device: k1,
+            symbol,
+            page: PAGE_2,
+            position: Point::new(coil.x + dx, coil.y),
+            rotation: Rotation::R0,
+            designations,
+        })?;
     }
     Ok(p)
 }
