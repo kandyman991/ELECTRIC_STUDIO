@@ -412,16 +412,16 @@ pub fn with_plc() -> Result<Project> {
         })?;
         Ok(())
     };
-    add(DeviceId::from_u128(0x101), "iec.supply", fid(0x211), (40.0, 56.0), Rotation::R0)?;
-    add(DeviceId::from_u128(0x10c), "iec.contact_no", fid(0x212), (40.0, 36.0), Rotation::R0)?;
-    add(KF1, "iec.plc_di", KF1_DI0, (40.0, 14.0), Rotation::R0)?;
-    add(DeviceId::from_u128(0x101), "iec.supply", fid(0x217), (88.0, 56.0), Rotation::R0)?;
-    add(DeviceId::from_u128(0x102), "iec.contact_nc", fid(0x213), (88.0, 36.0), Rotation::R0)?;
-    add(KF1, "iec.plc_di", fid(0x20f), (88.0, 14.0), Rotation::R0)?;
-    add(KF1, "iec.plc_do", KF1_DO0, (136.0, 14.0), Rotation::R0)?;
-    add(DeviceId::from_u128(0x10d), "iec.coil", fid(0x214), (136.0, -16.0), Rotation::R0)?;
-    add(DeviceId::from_u128(0x104), "iec.supply", fid(0x215), (136.0, -40.0), Rotation::R180)?;
-    add(KF1, "iec.plc_ai", fid(0x216), (184.0, 14.0), Rotation::R0)?;
+    add(DeviceId::from_u128(0x101), "iec.supply", fid(0x211), (-72.0, 56.0), Rotation::R0)?;
+    add(DeviceId::from_u128(0x10c), "iec.contact_no", fid(0x212), (-72.0, 36.0), Rotation::R0)?;
+    add(KF1, "iec.plc_di", KF1_DI0, (-72.0, 14.0), Rotation::R0)?;
+    add(DeviceId::from_u128(0x101), "iec.supply", fid(0x217), (-24.0, 56.0), Rotation::R0)?;
+    add(DeviceId::from_u128(0x102), "iec.contact_nc", fid(0x213), (-24.0, 36.0), Rotation::R0)?;
+    add(KF1, "iec.plc_di", fid(0x20f), (-24.0, 14.0), Rotation::R0)?;
+    add(KF1, "iec.plc_do", KF1_DO0, (24.0, 14.0), Rotation::R0)?;
+    add(DeviceId::from_u128(0x10d), "iec.coil", fid(0x214), (24.0, -16.0), Rotation::R0)?;
+    add(DeviceId::from_u128(0x104), "iec.supply", fid(0x215), (24.0, -40.0), Rotation::R180)?;
+    add(KF1, "iec.plc_ai", fid(0x216), (72.0, 14.0), Rotation::R0)?;
     let props =
         |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect::<Vec<_>>();
     let mut set = |f: FunctionId, pairs: &[(&str, &str)]| {
