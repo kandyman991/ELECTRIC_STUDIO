@@ -422,7 +422,7 @@ pub enum ModelError {
     NoPage(PageId),
     #[error("a tag or wire number format needs one {{n}} (or {{n:02}}) and only {{page}} and {{letters}} (tags only)")]
     InvalidNaming,
-    #[error("a wire's spare length and rounding must be 0 or more")]
+    #[error("a wire's spare length is 0 to 10000 mm, and its rounding 0 (off) or 1 to 10000 mm")]
     InvalidWireLengthSettings,
     #[error("the project name must not be empty")]
     EmptyProjectName,

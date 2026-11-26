@@ -16,10 +16,16 @@ pub struct WireListRow {
     /// The cable's tag and the core, when the wire runs in a cable.
     pub cable: String,
     pub core: String,
-    /// The estimated length in mm from the panel layout, empty when an end isn't on a plate.
+    /// The estimated length in mm from the panel layout (to 0.1 mm when not rounded), empty
+    /// when an end isn't on a plate or can't be told.
     pub length: String,
-    /// How the length was measured: `ducts`, `straight` (no ducts join the ends) or empty.
+    /// How the length was measured: `ducts`, `straight` (the nearest ducts aren't joined) or
+    /// empty.
     pub route: String,
+    /// `devices` when both ends are placed devices; `inferred` when an end is a junction,
+    /// potential point or arrow standing for the one placed device on its potential, so the real
+    /// route may differ; empty without a length.
+    pub length_basis: String,
 }
 
 /// One row per connection, sorted by wire number.
@@ -40,9 +46,15 @@ pub fn wire_list(project: &Project) -> Result<Vec<WireListRow>, ModelError> {
                 .as_ref()
                 .map(|k| (project.cables.get(&k.cable).map(|c| c.tag.clone()).unwrap_or_default(), k.core.clone()))
                 .unwrap_or_default();
-            let (length, route) = lengths
+            let (length, route, length_basis) = lengths
                 .get(&c.id)
-                .map(|l| (format!("{}", l.mm.round()), if l.direct { "straight" } else { "ducts" }.to_owned()))
+                .map(|l| {
+                    (
+                        format_mm(l.mm),
+                        if l.direct { "straight" } else { "ducts" }.to_owned(),
+                        if l.inferred { "inferred" } else { "devices" }.to_owned(),
+                    )
+                })
                 .unwrap_or_default();
             Ok(WireListRow {
                 wire: c.wire_number.clone().unwrap_or_default(),
@@ -57,6 +69,7 @@ pub fn wire_list(project: &Project) -> Result<Vec<WireListRow>, ModelError> {
                 core,
                 length,
                 route,
+                length_basis,
             })
         })
         .collect::<Result<Vec<_>, _>>()
@@ -66,13 +79,18 @@ pub fn wire_list(project: &Project) -> Result<Vec<WireListRow>, ModelError> {
         })
 }
 
+/// A length in mm to 0.1 mm, without trailing zeros (`650`, `412.5`).
+fn format_mm(mm: f64) -> String {
+    format!("{}", (mm * 10.0).round() / 10.0)
+}
+
 fn csv_field(s: &str) -> String {
     if s.contains([',', '"', '\n', '\r']) { format!("\"{}\"", s.replace('"', "\"\"")) } else { s.to_owned() }
 }
 
 pub fn wire_list_csv(rows: &[WireListRow]) -> String {
     let mut out = String::from(
-        "wire,potential,from_device,from_point,to_device,to_point,cross_section,colour,cable,core,length_mm,route\n",
+        "wire,potential,from_device,from_point,to_device,to_point,cross_section,colour,cable,core,length_mm,route,length_basis\n",
     );
     for r in rows {
         let fields = [
@@ -88,6 +106,7 @@ pub fn wire_list_csv(rows: &[WireListRow]) -> String {
             &r.core,
             &r.length,
             &r.route,
+            &r.length_basis,
         ];
         out += &fields.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(",");
         out.push('\n');
@@ -452,9 +471,11 @@ pub struct WireTotalRow {
     pub cross_section: String,
     pub colour: String,
     pub wires: usize,
-    /// Metres, from the wires with an estimate.
+    /// Metres, from the wires with an estimate, each counted as the wire list shows it.
     pub metres: f64,
-    /// Wires of this kind without an estimate (an end isn't on a plate).
+    /// Of those, wires whose length is inferred (see [`WireListRow::length_basis`]).
+    pub inferred: usize,
+    /// Wires of this kind without an estimate.
     pub not_estimated: usize,
 }
 
@@ -470,11 +491,16 @@ pub fn wire_totals(project: &Project) -> Vec<WireTotalRow> {
             colour: key.1,
             wires: 0,
             metres: 0.0,
+            inferred: 0,
             not_estimated: 0,
         });
         row.wires += 1;
         match lengths.get(&c.id) {
-            Some(l) => row.metres += l.mm / 1000.0,
+            Some(l) => {
+                // The same 0.1 mm the wire list shows, so the two add up exactly.
+                row.metres += (l.mm * 10.0).round() / 10_000.0;
+                row.inferred += usize::from(l.inferred);
+            }
             None => row.not_estimated += 1,
         }
     }
@@ -482,13 +508,15 @@ pub fn wire_totals(project: &Project) -> Vec<WireTotalRow> {
 }
 
 pub fn wire_totals_csv(rows: &[WireTotalRow]) -> String {
-    let mut out = String::from("cross_section,colour,wires,metres,not_estimated\n");
+    let mut out = String::from("cross_section,colour,wires,metres,inferred,not_estimated\n");
     for r in rows {
         let fields = [
             r.cross_section.clone(),
             r.colour.clone(),
             r.wires.to_string(),
-            format!("{:.1}", r.metres),
+            // To the millimetre: a short jumper still shows.
+            format!("{:.3}", r.metres),
+            r.inferred.to_string(),
             r.not_estimated.to_string(),
         ];
         out += &fields.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(",");
@@ -552,8 +580,8 @@ pub fn all_csv(project: &Project) -> Result<Vec<(&'static str, String)>, ModelEr
     if !cuts.is_empty() {
         files.push(("panel-cut-list.csv", panel_cut_list_csv(&cuts)));
     }
-    // Totals only mean something once wires have lengths, i.e. with a panel layout.
-    if !project.wire_lengths().is_empty() {
+    // With a panel layout, even if no wire could be measured: then not_estimated says so.
+    if !project.panels.is_empty() {
         files.push(("wire-totals.csv", wire_totals_csv(&wire_totals(project))));
     }
     Ok(files)
@@ -594,10 +622,10 @@ mod tests {
         let csv = wire_list_csv(&wire_list(&start_circuit().unwrap()).unwrap());
         assert_eq!(
             csv,
-            "wire,potential,from_device,from_point,to_device,to_point,cross_section,colour,cable,core,length_mm,route\n\
-             W1,L+,L+,1,-S1,13,,,,,,\n\
-             W2,,-S1,14,-K1,A1,,,,,,\n\
-             W3,M,-K1,A2,M,1,,,,,,\n"
+            "wire,potential,from_device,from_point,to_device,to_point,cross_section,colour,cable,core,length_mm,route,length_basis\n\
+             W1,L+,L+,1,-S1,13,,,,,,,\n\
+             W2,,-S1,14,-K1,A1,,,,,,,\n\
+             W3,M,-K1,A2,M,1,,,,,,,\n"
         );
     }
 
@@ -610,15 +638,55 @@ mod tests {
         assert!(p201.length.parse::<f64>().unwrap() >= 300.0);
         // A motor's wires leave the cabinet: no estimate.
         assert!(rows.iter().filter(|r| r.to_tag == "M3").all(|r| r.length.is_empty()));
-        // Totals are the wire list's lengths added up, in metres; wires in cables are left out.
-        let totals = wire_totals(&p);
+        // The totals CSV is the wire list CSV's lengths added up, in metres to the millimetre;
+        // wires in cables are left out.
         let listed: f64 =
             rows.iter().filter(|r| r.cable.is_empty()).filter_map(|r| r.length.parse::<f64>().ok()).sum::<f64>()
                 / 1000.0;
-        let summed: f64 = totals.iter().map(|t| t.metres).sum();
-        assert!((listed - summed).abs() < 0.01, "{listed} {summed}");
+        let totals = wire_totals_csv(&wire_totals(&p));
+        let column = |name: &str| totals.lines().next().unwrap().split(',').position(|h| h == name).unwrap();
+        // Split from the right: a cross-section like "1,5" is quoted and holds a comma.
+        let field = |line: &str, name: &str| {
+            let from_end = 6 - column(name);
+            line.rsplit(',').nth(from_end - 1).unwrap().parse::<f64>().unwrap()
+        };
+        let summed: f64 = totals.lines().skip(1).map(|l| field(l, "metres")).sum();
+        assert!((listed - summed).abs() < 0.0005 * totals.lines().count() as f64, "{listed} {summed}");
+        let inferred = rows.iter().filter(|r| r.cable.is_empty() && r.length_basis == "inferred").count();
+        let counted: f64 = totals.lines().skip(1).map(|l| field(l, "inferred")).sum();
+        assert_eq!(counted as usize, inferred);
         let names: Vec<&str> = all_csv(&p).unwrap().iter().map(|(n, _)| *n).collect();
         assert!(names.contains(&"panel-cut-list.csv") && names.contains(&"wire-totals.csv"), "{names:?}");
+    }
+
+    #[test]
+    fn short_and_unrounded_lengths_keep_their_precision() {
+        use ecad_model::{Command, Panel, PanelItem, PanelItemKind, WireLengthSettings, geometry::Point};
+        let mut p = ecad_model::sample::with_contacts().unwrap();
+        let page = ecad_model::sample::PAGE_1;
+        p.apply(Command::SetPanel { page, panel: Some(Panel { width: 500.0, height: 500.0 }) }).unwrap();
+        p.apply(Command::SetWireLengthSettings(WireLengthSettings { spare_per_end: 0.0, round_to: 0.0 })).unwrap();
+        // A layout without any device on it: totals still come, all not estimated.
+        let names: Vec<&str> = all_csv(&p).unwrap().iter().map(|(n, _)| *n).collect();
+        assert!(names.contains(&"wire-totals.csv"), "{names:?}");
+        assert!(wire_totals(&p).iter().all(|t| t.metres == 0.0 && t.not_estimated == t.wires));
+        // -S1 and -K1 12.5 mm apart (middle to middle): W2 is 12.5 mm, 0.013 m in the totals.
+        for (tag, x) in [("-S1", 100.0), ("-K1", 112.5)] {
+            let device = p.devices.values().find(|d| d.tag == tag).unwrap().id;
+            let item = PanelItem {
+                id: ecad_model::PanelItemId::new(),
+                page,
+                kind: PanelItemKind::Device { device },
+                at: Point::new(x, 100.0),
+                length: 0.0,
+                vertical: false,
+                part: String::new(),
+            };
+            p.apply(Command::AddPanelItem(item)).unwrap();
+        }
+        let w2 = wire_list(&p).unwrap().into_iter().find(|r| r.wire == "W2").unwrap();
+        assert_eq!((w2.length.as_str(), w2.route.as_str(), w2.length_basis.as_str()), ("12.5", "straight", "devices"));
+        assert!(wire_totals_csv(&wire_totals(&p)).contains(",0.013,"), "{}", wire_totals_csv(&wire_totals(&p)));
     }
 
     #[test]

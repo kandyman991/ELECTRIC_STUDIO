@@ -191,7 +191,8 @@ pub fn load(dir: &Path) -> Result<Project> {
     project.info = head.info;
     // Before the wires load, so per-potential numbering allows shared numbers.
     project.naming = head.naming;
-    project.wire_length_settings = head.wire_lengths;
+    // Through the command, so a hand-edited file can't bring in settings the editor would refuse.
+    project.apply(Command::SetWireLengthSettings(head.wire_lengths)).map_err(model(&path))?;
     for page in head.pages {
         project.add_page(page);
     }
@@ -299,6 +300,27 @@ mod tests {
         let first = std::fs::read(dir.path().join("devices.json")).unwrap();
         save(&load(dir.path()).unwrap(), dir.path()).unwrap();
         assert_eq!(std::fs::read(dir.path().join("devices.json")).unwrap(), first);
+    }
+
+    #[test]
+    fn wire_length_settings_out_of_range_are_rejected_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        save(&start_circuit().unwrap(), dir.path()).unwrap();
+        let path = dir.path().join("project.json");
+        let mut head: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        for bad in [
+            serde_json::json!({"spare_per_end": -500.0, "round_to": 50.0}),
+            serde_json::json!({"spare_per_end": 150.0, "round_to": -1.0}),
+            serde_json::json!({"spare_per_end": 1e300, "round_to": 1e-300}),
+        ] {
+            head["wire_lengths"] = bad;
+            std::fs::write(&path, serde_json::to_vec(&head).unwrap()).unwrap();
+            let e = load(dir.path()).unwrap_err().to_string();
+            assert!(e.contains("project.json") && e.contains("spare length"), "{e}");
+        }
+        head["wire_lengths"] = serde_json::json!({"spare_per_end": 0.0, "round_to": 0.0});
+        std::fs::write(&path, serde_json::to_vec(&head).unwrap()).unwrap();
+        assert_eq!(load(dir.path()).unwrap().wire_length_settings.round_to, 0.0);
     }
 
     #[test]

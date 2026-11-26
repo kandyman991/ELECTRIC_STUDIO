@@ -1196,7 +1196,9 @@ impl Session {
                     core: c.spec.cable.as_ref().map(|k| k.core.clone()).unwrap_or_default(),
                     bent: c.bend.is_some(),
                     length: project.wire_lengths().get(&c.id).map(|l| {
-                        format!("{} mm {}", l.mm.round(), if l.direct { "measured straight" } else { "along ducts" })
+                        let route = if l.direct { "measured straight" } else { "along ducts" };
+                        let basis = if l.inferred { ", an end inferred from its potential" } else { "" };
+                        format!("{} mm {route}{basis}", (l.mm * 10.0).round() / 10.0)
                     }),
                 })
             }
@@ -1837,7 +1839,7 @@ mod tests {
         s.handle(UiEvent::WireLengths {
             settings: ecad_model::WireLengthSettings { spare_per_end: -5.0, round_to: 10.0 },
         });
-        assert!(s.frame(None, [0, 0, 0]).status.contains("0 or more"));
+        assert!(s.frame(None, [0, 0, 0]).status.contains("0 to 10000 mm"));
         s.handle(UiEvent::Key { key: KeyName::Undo });
         assert_eq!(s.frame(None, [0, 0, 0]).wire_lengths, ecad_model::WireLengthSettings::default());
     }
