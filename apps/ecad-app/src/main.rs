@@ -32,8 +32,17 @@ struct App {
     size: Vec2,
     /// Side-panel edit buffers, reset when the selection changes.
     fields: Fields,
+    page_fields: PageFields,
     title: String,
     close_sent: bool,
+}
+
+/// Edit buffers for the current page's number and content.
+#[derive(Default)]
+struct PageFields {
+    key: Option<String>,
+    name: String,
+    description: String,
 }
 
 #[derive(Default)]
@@ -99,6 +108,11 @@ impl App {
         for ev in events {
             self.send(ev);
         }
+    }
+
+    /// A frame for the panels: everything except the page drawing, which only the canvas needs.
+    fn panels_frame(&self) -> Frame {
+        self.session.frame(Some(self.session.editor().scene_revision()), BG)
     }
 
     fn open_dialog(&mut self) {
@@ -217,6 +231,63 @@ impl App {
         ui.separator();
         ui.small("Middle-drag to pan, wheel to zoom, F to fit.");
         ui.small(format!("Project: {}", frame.project_dir));
+    }
+
+    fn pages(&mut self, ui: &mut egui::Ui, frame: &Frame) {
+        ui.heading("Pages");
+        let mut events = Vec::new();
+        egui::ScrollArea::vertical().max_height(ui.available_height() - 170.0).show(ui, |ui| {
+            for p in &frame.pages {
+                let label =
+                    if p.description.is_empty() { p.name.clone() } else { format!("{}  {}", p.name, p.description) };
+                if ui.selectable_label(p.id == frame.page, label).clicked() && p.id != frame.page {
+                    events.push(UiEvent::ShowPage { id: p.id });
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            if ui.button("Add").on_hover_text("New page after this one").clicked() {
+                events.push(UiEvent::AddPage);
+            }
+            let deletable = frame.pages.len() > 1;
+            if ui
+                .add_enabled(deletable, egui::Button::new("Delete"))
+                .on_hover_text("Delete this page and everything on it (undoable)")
+                .clicked()
+            {
+                events.push(UiEvent::DeletePage);
+            }
+            if ui.button("▲").on_hover_text("Move earlier").clicked() {
+                events.push(UiEvent::MovePage { delta: -1 });
+            }
+            if ui.button("▼").on_hover_text("Move later").clicked() {
+                events.push(UiEvent::MovePage { delta: 1 });
+            }
+        });
+        ui.separator();
+        if let Some(current) = frame.pages.iter().find(|p| p.id == frame.page) {
+            let key = Some(format!("{:?} {} {}", current.id, current.name, current.description));
+            if key != self.page_fields.key {
+                self.page_fields =
+                    PageFields { key, name: current.name.clone(), description: current.description.clone() };
+            }
+            ui.label("Page number");
+            if ui.text_edit_singleline(&mut self.page_fields.name).lost_focus()
+                && self.page_fields.name.trim() != current.name
+            {
+                events.push(UiEvent::RenamePage { name: self.page_fields.name.clone() });
+            }
+            ui.label("Page content");
+            if ui.text_edit_singleline(&mut self.page_fields.description).lost_focus()
+                && self.page_fields.description.trim() != current.description
+            {
+                events.push(UiEvent::DescribePage { text: self.page_fields.description.clone() });
+            }
+            ui.small("PageUp / PageDown switch pages.");
+        }
+        for ev in events {
+            self.send(ev);
+        }
     }
 
     fn prompt(&mut self, ctx: &egui::Context, question: &str) {
@@ -350,16 +421,32 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.send(UiEvent::CloseRequested);
         }
-        if self.session.frame(self.revision, BG).prompt.is_none() {
+        let now = self.panels_frame();
+        if now.prompt.is_none() {
             self.keys(&ctx);
+            if !ctx.egui_wants_keyboard_input() {
+                let (up, down) = ctx.input(|i| (i.key_pressed(egui::Key::PageUp), i.key_pressed(egui::Key::PageDown)));
+                let at = now.pages.iter().position(|p| p.id == now.page).unwrap_or(0);
+                let target = if up {
+                    at.checked_sub(1)
+                } else if down {
+                    Some(at + 1)
+                } else {
+                    None
+                };
+                if let Some(p) = target.and_then(|i| now.pages.get(i)) {
+                    self.send(UiEvent::ShowPage { id: p.id });
+                }
+            }
         }
         // The first frame computed only feeds the toolbars; the canvas uses a fresh one after
         // this frame's pointer events.
-        let before = self.session.frame(self.revision, BG);
+        let before = self.panels_frame();
         egui::Panel::top("tools").show(ui, |ui| self.toolbar(ui, &before));
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.label(if before.status.is_empty() { "Ready".to_owned() } else { before.status.clone() });
         });
+        egui::Panel::left("pages").default_size(170.0).show(ui, |ui| self.pages(ui, &before));
         egui::Panel::right("inspector").default_size(200.0).show(ui, |ui| self.inspector(ui, &before));
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
             let rect = self.canvas(ui);
@@ -407,6 +494,7 @@ fn main() -> eframe::Result {
                 revision: None,
                 size: Vec2::ZERO,
                 fields: Fields::default(),
+                page_fields: PageFields::default(),
                 title: String::new(),
                 close_sent: false,
             }))

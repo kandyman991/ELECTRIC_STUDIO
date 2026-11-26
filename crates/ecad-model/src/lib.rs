@@ -7,11 +7,13 @@ pub mod geometry;
 pub mod history;
 pub mod project;
 pub mod sample;
+pub mod sheet;
 pub mod symbol;
 
 pub use geometry::{Direction, Point, Rotation};
 pub use history::History;
 pub use project::*;
+pub use sheet::Sheet;
 pub use symbol::*;
 
 #[cfg(test)]
@@ -166,6 +168,51 @@ mod tests {
         assert_eq!(p.function_bounds(K1_COIL).unwrap(), Some((Point::new(-5.0, 4.0), Point::new(5.0, 20.0))));
         p.apply(Command::Rotate { id: K1_COIL, to: Rotation::R90 }).unwrap();
         assert_eq!(p.function_bounds(K1_COIL).unwrap(), Some((Point::new(-8.0, 7.0), Point::new(8.0, 17.0))));
+    }
+
+    #[test]
+    fn pages_are_added_renamed_reordered_and_removed_with_undo() {
+        let original = start_circuit().unwrap();
+        let mut p = original.clone();
+        let mut h = History::new();
+        let two = Page::new("2", 1);
+        let two_id = two.id;
+        h.execute(&mut p, "Add page 2", Command::AddPage(two)).unwrap();
+        assert_eq!(
+            p.apply(Command::AddPage(Page::new("2", 5))).unwrap_err(),
+            ModelError::DuplicatePageName("2".into())
+        );
+        assert_eq!(
+            p.apply(Command::RenamePage { id: two_id, name: "1".into() }).unwrap_err(),
+            ModelError::DuplicatePageName("1".into())
+        );
+        assert_eq!(
+            p.apply(Command::RenamePage { id: two_id, name: " ".into() }).unwrap_err(),
+            ModelError::EmptyPageName
+        );
+        h.execute(&mut p, "Rename", Command::RenamePage { id: two_id, name: " 2a ".into() }).unwrap();
+        h.execute(&mut p, "Describe", Command::DescribePage { id: two_id, description: "Motor".into() }).unwrap();
+        h.execute(&mut p, "Move first", Command::ReorderPages(vec![two_id, PAGE_1])).unwrap();
+        let names: Vec<&str> = p.pages_in_order().iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["2a", "1"]);
+        assert_eq!(p.apply(Command::ReorderPages(vec![two_id])).unwrap_err(), ModelError::BadPageOrder);
+        assert_eq!(p.apply(Command::RemovePage(PAGE_1)).unwrap_err(), ModelError::PageNotEmpty("1".into()));
+        h.execute(&mut p, "Remove", Command::RemovePage(two_id)).unwrap();
+        while h.can_undo() {
+            h.undo(&mut p).unwrap();
+        }
+        assert_eq!(p, original);
+    }
+
+    #[test]
+    fn locations_name_the_page_and_column() {
+        let p = start_circuit().unwrap();
+        let k1 = p.function(K1_COIL).unwrap();
+        let col = p.sheet.column_of(k1.position);
+        assert_eq!(p.location(PAGE_1, k1.position).unwrap(), format!("1.{col}"));
+        let (lo, hi) = p.sheet.frame();
+        let (c_lo, c_hi) = p.content_bounds(PAGE_1).unwrap();
+        assert!(lo.x < c_lo.x && lo.y < c_lo.y && hi.x > c_hi.x && hi.y > c_hi.y, "the sample sits on its sheet");
     }
 
     #[test]

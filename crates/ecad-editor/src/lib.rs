@@ -8,10 +8,10 @@
 
 use ecad_model::{
     Command, Connection, ConnectionId, ConnectionRef, Device, DeviceId, Direction, Function, FunctionId, History,
-    ModelError, PageId, Point, Project, Rotation, SymbolId, route_between,
+    ModelError, Page, PageId, Point, Project, Rotation, SymbolId, route_between,
 };
 pub use ecad_view::{Primitive, Shape};
-pub use session::{Button, Choice, Frame, KeyName, PaletteItem, SelectionInfo, Session, UiEvent};
+pub use session::{Button, Choice, Frame, KeyName, PageInfo, PaletteItem, SelectionInfo, Session, UiEvent};
 pub use view::Viewport;
 
 pub mod session;
@@ -117,7 +117,10 @@ pub struct Editor {
     /// How close (mm) the pointer must be to hit something; shells set it from the zoom.
     pub hit_tolerance: f64,
     revision: u64,
-    saved_revision: u64,
+    /// Undo depth at the last save; `None` once that state can't be reached by undo/redo.
+    saved_at: Option<usize>,
+    /// Increases on every model change and page switch: what the drawing depends on.
+    scene: u64,
     status: String,
 }
 
@@ -168,7 +171,8 @@ impl Editor {
             grid: GRID,
             hit_tolerance: 1.5,
             revision: 0,
-            saved_revision: 0,
+            saved_at: Some(0),
+            scene: 0,
             status: String::new(),
         })
     }
@@ -194,12 +198,19 @@ impl Editor {
     pub fn revision(&self) -> u64 {
         self.revision
     }
+    /// Increases whenever [`Editor::base`] would draw something different (model changes and
+    /// page switches); the UI caches the base by it.
+    pub fn scene_revision(&self) -> u64 {
+        self.scene
+    }
     /// Changes since the last [`Editor::mark_saved`].
+    /// True while the project differs from what was last saved: undoing back to the saved
+    /// state makes it clean again.
     pub fn is_dirty(&self) -> bool {
-        self.revision != self.saved_revision
+        self.saved_at != Some(self.history.depth()) || self.drag.is_some_and(|d| d.moved)
     }
     pub fn mark_saved(&mut self) {
-        self.saved_revision = self.revision;
+        self.saved_at = Some(self.history.depth());
     }
     /// The last message for the user (an error, or what undo/redo did).
     pub fn status(&self) -> &str {
@@ -217,21 +228,101 @@ impl Editor {
         ecad_view::page_primitives(&self.project, self.page, background)
     }
 
-    /// Bounding box (`min`, `max`) of everything on the page, for zoom to fit.
+    /// What zoom to fit shows: the whole sheet.
     pub fn extents(&self) -> Option<(Point, Point)> {
-        let mut pts = Vec::new();
-        for f in self.project.functions_on(self.page) {
-            if let Some((lo, hi)) = self.function_box(f.id) {
-                pts.extend([lo, hi]);
+        Some(self.project.sheet.bounds())
+    }
+
+    // ---- pages ----
+
+    /// Show another page. Selection and any wire being drawn are dropped.
+    pub fn set_page(&mut self, page: PageId) -> Result<(), ModelError> {
+        self.project.page(page)?;
+        if page != self.page {
+            self.page = page;
+            self.selection = None;
+            self.hover = None;
+            self.drag = None;
+            self.wire_start = None;
+            self.scene += 1;
+        }
+        Ok(())
+    }
+
+    /// Add a page after the current one, named with the next free number, and show it.
+    pub fn add_page(&mut self) -> Result<(), ModelError> {
+        let order: Vec<PageId> = self.project.pages_in_order().iter().map(|p| p.id).collect();
+        let at = order.iter().position(|p| *p == self.page).map_or(order.len(), |i| i + 1);
+        let highest = self.project.pages.values().filter_map(|p| p.name.parse::<u32>().ok()).max().unwrap_or(0);
+        let name = (highest + 1..).map(|n| n.to_string()).find(|n| !self.project.pages.values().any(|p| &p.name == n));
+        let page = Page::new(&name.unwrap_or_default(), 0);
+        let id = page.id;
+        let mut new_order = order;
+        new_order.insert(at, id);
+        let label = format!("Add page {}", page.name);
+        self.execute(&label, Command::Batch(vec![Command::AddPage(page), Command::ReorderPages(new_order)]))?;
+        self.set_page(id)
+    }
+
+    /// Delete the current page with everything on it (undoable). The last page can't go.
+    pub fn delete_page(&mut self) -> Result<(), ModelError> {
+        let order: Vec<PageId> = self.project.pages_in_order().iter().map(|p| p.id).collect();
+        if order.len() <= 1 {
+            self.status = "A project needs at least one page".into();
+            return Ok(());
+        }
+        let page = self.page;
+        let name = self.project.page(page)?.name.clone();
+        let mut cmds = Vec::new();
+        let on_page: Vec<&Function> = self.project.functions_on(page).collect();
+        for f in &on_page {
+            cmds.push(Command::Unplace(f.id));
+        }
+        // Devices drawn only on this page go with it.
+        let mut devices: Vec<DeviceId> = on_page.iter().map(|f| f.device).collect();
+        devices.sort();
+        devices.dedup();
+        for d in devices {
+            if self.project.functions.values().all(|f| f.device != d || f.page == page) {
+                cmds.push(Command::RemoveDevice(d));
             }
         }
-        for c in self.project.connections_on(self.page) {
-            pts.extend(self.project.route(c).unwrap_or_default());
+        cmds.push(Command::RemovePage(page));
+        let index = order.iter().position(|p| *p == page).unwrap_or(0);
+        let next = if index > 0 { order[index - 1] } else { order[1] };
+        self.execute(&format!("Delete page {name}"), Command::Batch(cmds))?;
+        self.set_page(next)
+    }
+
+    pub fn rename_page(&mut self, name: &str) -> Result<(), ModelError> {
+        let old = self.project.page(self.page)?.name.clone();
+        if name.trim() == old {
+            return Ok(());
         }
-        let first = *pts.first()?;
-        Some(pts.iter().fold((first, first), |(lo, hi), p| {
-            (Point::new(lo.x.min(p.x), lo.y.min(p.y)), Point::new(hi.x.max(p.x), hi.y.max(p.y)))
-        }))
+        let label = format!("Rename page {old} to {}", name.trim());
+        self.execute(&label, Command::RenamePage { id: self.page, name: name.to_owned() })
+    }
+
+    pub fn describe_page(&mut self, description: &str) -> Result<(), ModelError> {
+        let name = self.project.page(self.page)?.name.clone();
+        self.execute(
+            &format!("Describe page {name}"),
+            Command::DescribePage { id: self.page, description: description.to_owned() },
+        )
+    }
+
+    /// Move the current page `delta` places (negative: earlier).
+    pub fn move_page(&mut self, delta: i32) -> Result<(), ModelError> {
+        let mut order: Vec<PageId> = self.project.pages_in_order().iter().map(|p| p.id).collect();
+        let Some(from) = order.iter().position(|p| *p == self.page) else { return Ok(()) };
+        let to = (from as i64 + i64::from(delta)).clamp(0, order.len() as i64 - 1) as usize;
+        if to == from {
+            return Ok(());
+        }
+        let id = order.remove(from);
+        order.insert(to, id);
+        let name = self.project.page(self.page)?.name.clone();
+        self.execute(&format!("Move page {name}"), Command::ReorderPages(order))
     }
 
     // ---- commands from the shell ----
@@ -281,6 +372,7 @@ impl Editor {
                 drag.moved = true;
                 self.drag = Some(drag);
                 self.revision += 1;
+                self.scene += 1;
             }
             return;
         }
@@ -314,6 +406,7 @@ impl Editor {
             && drag.moved
         {
             let tag = self.tag_of(drag.function);
+            self.forget_saved_branch();
             self.history.record(&format!("Move {tag}"), Command::Move { id: drag.function, to: drag.from });
         }
         self.hover = self.hit(p);
@@ -488,6 +581,14 @@ impl Editor {
         self.project.route(self.project.connection(id).ok()?).ok()
     }
 
+    /// A new change made after undoing past the saved state throws away the redo steps that led
+    /// back to it, so that state is gone for good.
+    fn forget_saved_branch(&mut self) {
+        if self.saved_at.is_some_and(|m| self.history.depth() < m) {
+            self.saved_at = None;
+        }
+    }
+
     fn tag_of(&self, f: FunctionId) -> String {
         self.project.function(f).and_then(|f| self.project.device(f.device)).map(|d| d.tag.clone()).unwrap_or_default()
     }
@@ -560,7 +661,11 @@ impl Editor {
     }
 
     fn execute(&mut self, label: &str, cmd: Command) -> Result<(), ModelError> {
+        let depth = self.history.depth();
         self.history.execute(&mut self.project, label, cmd)?;
+        if self.saved_at.is_some_and(|m| depth < m) {
+            self.saved_at = None;
+        }
         self.changed(String::new());
         Ok(())
     }
@@ -573,7 +678,14 @@ impl Editor {
 
     fn changed(&mut self, status: String) {
         self.revision += 1;
+        self.scene += 1;
         self.status = status;
+        // Undo can remove the page being shown (undoing "Add page").
+        if self.project.page(self.page).is_err()
+            && let Some(first) = self.project.pages_in_order().first()
+        {
+            self.page = first.id;
+        }
         self.forget_missing();
     }
 

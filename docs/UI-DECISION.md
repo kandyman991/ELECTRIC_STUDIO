@@ -34,6 +34,7 @@ if needed.
 | Draw a wire | W (or Wire), click a connection point, then another |
 | Undo, redo, save | Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z), Ctrl+S |
 | New, open project | Ctrl+N, Ctrl+O (or the File menu); asks before discarding changes |
+| Pages | Left panel: click to show, Add, Delete, ▲ ▼ to reorder; PageUp / PageDown |
 | Pan, zoom, fit | Middle-drag, wheel, F |
 | Edit tag, description, wire number | Select, edit in the right panel; applied when the field loses focus (Enter, Tab or a click) |
 

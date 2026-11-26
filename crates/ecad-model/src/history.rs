@@ -59,6 +59,11 @@ impl History {
         }
     }
 
+    /// How many changes can be undone; the position in the history.
+    pub fn depth(&self) -> usize {
+        self.undo.len()
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }

@@ -60,7 +60,7 @@ pub fn start_circuit() -> Result<Project> {
     for s in symbols() {
         p.add_symbol(s);
     }
-    p.add_page(Page { id: PAGE_1, name: "1".into() });
+    p.add_page(Page { id: PAGE_1, name: "1".into(), description: "Start circuit".into(), order: 0 });
 
     let devices = [
         (0x101, "-X1:L+", "24 V DC supply", "iec.supply", 0x201, (0.0, 64.0), Rotation::R0),
@@ -93,6 +93,9 @@ pub fn start_circuit() -> Result<Project> {
             to: ConnectionRef::new(FunctionId::from_u128(fb), pb),
             wire_number: Some(number.into()),
         })?;
+    }
+    if let Some((min, max)) = p.content_bounds(PAGE_1) {
+        p.sheet = crate::Sheet::around(min, max);
     }
     Ok(p)
 }

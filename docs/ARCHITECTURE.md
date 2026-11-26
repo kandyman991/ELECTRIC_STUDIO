@@ -24,7 +24,8 @@ Dependencies point downward only. The core never depends on the UI or on CADCraf
 | Object | What it is |
 | --- | --- |
 | Project | The whole job: standards, numbering rules, structure, revisions |
-| Page | One sheet: type, title block, column grid |
+| Page | One sheet: number (`1`, `3a`), content description, position in the project |
+| Sheet | Size (A3 landscape by default), border, 10 numbered columns, title block; gives addresses like `2.4` (page 2, column 4) |
 | Device | A real component with an IEC 81346 tag (`-K1`, `=A1+B2-K1`) and a part number |
 | Function | One drawing of a device on a page (a coil here, its contacts elsewhere) |
 | Connection point | A designated terminal (`A1`, `13`) with the direction a wire leaves in |
