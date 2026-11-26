@@ -34,7 +34,25 @@ Dependencies point downward only. The core never depends on the UI or on CADCraf
 | Cable, terminal strip, PLC card | M2 to M3 |
 
 Every object has a stable UUID; tags and names are attributes. Implemented so far: project,
-page, symbol, device, function, connection point, connection, routing.
+page, symbol, device, function, connection point, connection, routing, commands and undo.
+
+## Editing
+
+`ecad-editor` holds all editing behaviour without any UI toolkit: Select (click, drag with
+grid snapping, R to rotate, Delete), Place (new device with the next free tag) and Wire (click
+two connection points; the next free wire number). A shell feeds it pointer events in page
+millimetres and keys, and draws `Editor::base` (the page as plain polylines and triangles from
+`ecad-view`) plus `Editor::overlays` (markers, outlines, rubber band, ghost symbol).
+
+CADCraft's own editing engine is not used: it treats the drawing as the source of truth, which
+is the opposite of this design. Only its drawing, rendering and file output are used.
+
+## Project files
+
+A project is a folder of pretty-printed JSON: `project.json`, `devices.json`,
+`symbols/<id>.json`, `pages/<page-id>.json`. Output is stable (sorted, no timestamps) so it
+diffs cleanly in git. Loading replays everything through the model's commands, so a broken
+hand edit is rejected with the file named.
 
 ## Standards
 
@@ -48,7 +66,7 @@ machine wiring rules. ANSI/NFPA 79 later.
 | Separate product from HMI Studio; they share only a tag-exchange format | Decided |
 | CADCraft crates as libraries, not a fork | Decided |
 | Milestones M0 to M6 with an MVP gate after M4 | Decided |
-| UI technology: egui with CADCraft's `engine`, or Tauri | *Open*, decided at the end of M1 |
-| Project files: a folder of text files, SQLite as cache | *Open*, proposed |
+| UI technology: egui or Tauri, both as thin shells over `ecad-editor` | *Open*, decided in M1b after trying both |
+| Project files: a folder of JSON files | Implemented in M1a |
 | Licence and business model | *Open*, no licence until the owner decides |
 | IEC first; Windows and Linux first | *Open*, proposed |

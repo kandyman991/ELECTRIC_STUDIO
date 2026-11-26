@@ -42,14 +42,24 @@ jobs:
       - name: Boundary check (only ecad-view may depend on CADCraft)
         if: runner.os == 'Linux'
         run: |
-          for crate in ecad-model ecad-reports; do
+          # The core must not reach CADCraft at all, even indirectly.
+          for crate in ecad-model ecad-reports ecad-project; do
             if cargo tree -p "$crate" --edges normal --prefix none | grep -q '^cadcraft'; then
               echo "::error::$crate depends on CADCraft"; exit 1
             fi
           done
-      - name: Demo output
+          # Every other crate except ecad-view must not depend on it directly.
+          for crate in ecad-editor ecad-cli; do
+            if cargo tree -p "$crate" --edges normal --prefix none --depth 1 | grep -q '^cadcraft'; then
+              echo "::error::$crate depends on CADCraft directly"; exit 1
+            fi
+          done
+      - name: Demo output and project round trip
         if: runner.os == 'Linux'
-        run: cargo run -p ecad-cli --locked -- demo out
+        run: |
+          cargo run -p ecad-cli --locked -- demo out
+          cargo run -p ecad-cli --locked -- new-sample out/sample-project
+          cargo run -p ecad-cli --locked -- check out/sample-project
       - uses: actions/upload-artifact@v4
         if: runner.os == 'Linux'
         with:
