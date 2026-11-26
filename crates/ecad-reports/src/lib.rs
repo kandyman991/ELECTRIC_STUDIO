@@ -54,8 +54,123 @@ pub fn wire_list_csv(rows: &[WireListRow]) -> String {
     out
 }
 
+/// One line of the bill of materials: a part, how many, and which devices use it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BomRow {
+    pub number: String,
+    pub manufacturer: String,
+    pub description: String,
+    pub quantity: u32,
+    /// Tags of the devices using it, sorted.
+    pub devices: Vec<String>,
+}
+
+/// The bill of materials: every part used by a device, with the total quantity, sorted by part
+/// number.
+pub fn bom(project: &Project) -> Vec<BomRow> {
+    let mut rows: std::collections::BTreeMap<&str, BomRow> = std::collections::BTreeMap::new();
+    for d in project.devices.values() {
+        for r in &d.parts {
+            let part = project.parts.get(&r.number);
+            let row = rows.entry(&r.number).or_insert_with(|| BomRow {
+                number: r.number.clone(),
+                manufacturer: part.map(|p| p.manufacturer.clone()).unwrap_or_default(),
+                description: part.map(|p| p.description.clone()).unwrap_or_default(),
+                quantity: 0,
+                devices: Vec::new(),
+            });
+            row.quantity += r.quantity;
+            row.devices.push(d.tag.clone());
+        }
+    }
+    rows.into_values()
+        .map(|mut r| {
+            r.devices.sort();
+            r
+        })
+        .collect()
+}
+
+/// Devices that need a part but have none: everything except potential points, interruption
+/// points and junctions, which are drawing aids rather than components. Sorted by tag.
+pub fn devices_without_parts(project: &Project) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = project
+        .devices
+        .values()
+        .filter(|d| d.parts.is_empty())
+        .filter(|d| {
+            project
+                .functions_of(d.id)
+                .any(|f| project.symbol(&f.symbol).is_ok_and(|s| !s.bridged && !s.role.joins_drawings()))
+        })
+        .map(|d| (d.tag.clone(), d.description.clone()))
+        .collect();
+    out.sort();
+    out
+}
+
+pub fn bom_csv(rows: &[BomRow]) -> String {
+    let mut out = String::from("part_number,manufacturer,description,quantity,devices\n");
+    for r in rows {
+        let fields = [
+            r.number.clone(),
+            r.manufacturer.clone(),
+            r.description.clone(),
+            r.quantity.to_string(),
+            r.devices.join(" "),
+        ];
+        out += &fields.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(",");
+        out.push('\n');
+    }
+    out
+}
+
+pub fn devices_without_parts_csv(rows: &[(String, String)]) -> String {
+    let mut out = String::from("device,description\n");
+    for (tag, description) in rows {
+        out += &format!("{},{}\n", csv_field(tag), csv_field(description));
+    }
+    out
+}
+
+/// Every report, as (file name, contents), for writing into an output folder. The list of
+/// devices without parts is only included when there are some.
+pub fn all_csv(project: &Project) -> Result<Vec<(&'static str, String)>, ModelError> {
+    let mut files = vec![("wire-list.csv", wire_list_csv(&wire_list(project)?)), ("bom.csv", bom_csv(&bom(project)))];
+    let missing = devices_without_parts(project);
+    if !missing.is_empty() {
+        files.push(("devices-without-parts.csv", devices_without_parts_csv(&missing)));
+    }
+    Ok(files)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_bom_adds_up_quantities_and_lists_devices() {
+        use ecad_model::{Command, DeviceId, PartRef, sample::with_potentials};
+        let mut p = with_potentials().unwrap();
+        // -K2 gets the same contactor; -K1 also gets two auxiliary blocks.
+        let k1 = DeviceId::from_u128(0x103);
+        let k2 = DeviceId::from_u128(0x108);
+        p.apply(Command::SetDeviceParts { id: k2, parts: vec![PartRef::new("EX-CT-24DC", 1)] }).unwrap();
+        let k1_parts = vec![PartRef::new("EX-CT-24DC", 1), PartRef::new("EX-AUX-1NO1NC", 2)];
+        p.apply(Command::SetDeviceParts { id: k1, parts: k1_parts }).unwrap();
+        assert_eq!(
+            bom_csv(&bom(&p)),
+            "part_number,manufacturer,description,quantity,devices\n\
+             EX-AUX-1NO1NC,Example,Auxiliary contact block 1 NO + 1 NC,2,-K1\n\
+             EX-CT-24DC,Example,\"Contactor 3 kW, 24 V DC coil, 1 NO auxiliary\",2,-K1 -K2\n\
+             EX-PB-GRN,Example,\"Pushbutton, green, 1 NO\",1,-S1\n"
+        );
+        // L+, M, I1 and J1 aren't components; everything else has a part now.
+        assert!(devices_without_parts(&p).is_empty());
+        p.apply(Command::SetDeviceParts { id: k2, parts: vec![] }).unwrap();
+        assert_eq!(devices_without_parts(&p), [("-K2".to_owned(), String::new())]);
+        let names: Vec<&str> = all_csv(&p).unwrap().iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, ["wire-list.csv", "bom.csv", "devices-without-parts.csv"]);
+    }
+
     use super::*;
     use ecad_model::sample::start_circuit;
 

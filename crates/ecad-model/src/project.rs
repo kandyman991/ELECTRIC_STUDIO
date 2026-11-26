@@ -5,6 +5,7 @@
 //! Every change goes through [`Project::apply`], which returns the command that undoes it.
 
 use crate::geometry::{Direction, Point, Rotation};
+use crate::parts::{Part, PartRef};
 use crate::sheet::Sheet;
 use crate::symbol::{ContactKind, Role, SymbolDef, SymbolId};
 use serde::{Deserialize, Serialize};
@@ -74,6 +75,15 @@ pub struct Device {
     pub tag: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
+    /// Catalogue parts this device is built from, with quantities.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<PartRef>,
+}
+
+impl Device {
+    pub fn new(id: DeviceId, tag: &str, description: &str) -> Self {
+        Device { id, tag: tag.to_owned(), description: description.to_owned(), parts: Vec::new() }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -189,6 +199,17 @@ pub enum Command {
         device: DeviceId,
         designations: BTreeMap<String, String>,
     },
+    /// Add a part to the catalogue (its number must be new).
+    AddPart(Part),
+    /// Replace a catalogue entry with the same number.
+    UpdatePart(Part),
+    /// Remove a catalogue entry no device uses.
+    RemovePart(String),
+    /// Set the parts a device is built from.
+    SetDeviceParts {
+        id: DeviceId,
+        parts: Vec<PartRef>,
+    },
     /// Several commands applied together: all of them or none.
     Batch(Vec<Command>),
 }
@@ -231,6 +252,16 @@ pub enum ModelError {
     BadPageOrder,
     #[error("there is no device `{0}`")]
     UnknownTag(String),
+    #[error("part `{0}` is already in the catalogue")]
+    DuplicatePart(String),
+    #[error("part `{0}` is not in the catalogue")]
+    UnknownPart(String),
+    #[error("part `{0}` is used by {1}")]
+    PartInUse(String, String),
+    #[error("part number must not be empty")]
+    EmptyPartNumber,
+    #[error("quantity must be at least 1")]
+    ZeroQuantity,
     #[error("id {0} is already used")]
     DuplicateId(Uuid),
 }
@@ -248,6 +279,9 @@ pub struct Project {
     /// The sheet every page is drawn on.
     #[serde(default)]
     pub sheet: Sheet,
+    /// The parts catalogue, by part number.
+    #[serde(default)]
+    pub parts: BTreeMap<String, Part>,
 }
 
 impl Project {
@@ -396,6 +430,7 @@ impl Project {
                 if self.devices.contains_key(&d.id) {
                     return Err(ModelError::DuplicateId(d.id.0));
                 }
+                self.check_part_refs(&d.parts)?;
                 self.check_tag(&d.tag, None)?;
                 let id = d.id;
                 self.devices.insert(id, d);
@@ -533,6 +568,44 @@ impl Project {
                 let old_designations = std::mem::replace(&mut f.designations, designations);
                 Ok(Command::Reassign { id, device: old_device, designations: old_designations })
             }
+            Command::AddPart(part) => {
+                let part = Part { number: part.number.trim().to_owned(), ..part };
+                if part.number.is_empty() {
+                    return Err(ModelError::EmptyPartNumber);
+                }
+                if self.parts.contains_key(&part.number) {
+                    return Err(ModelError::DuplicatePart(part.number));
+                }
+                let number = part.number.clone();
+                self.parts.insert(number.clone(), part);
+                Ok(Command::RemovePart(number))
+            }
+            Command::UpdatePart(part) => {
+                let slot =
+                    self.parts.get_mut(&part.number).ok_or_else(|| ModelError::UnknownPart(part.number.clone()))?;
+                let old = std::mem::replace(slot, part);
+                Ok(Command::UpdatePart(old))
+            }
+            Command::RemovePart(number) => {
+                let mut users: Vec<&str> = self
+                    .devices
+                    .values()
+                    .filter(|d| d.parts.iter().any(|p| p.number == number))
+                    .map(|d| d.tag.as_str())
+                    .collect();
+                if !users.is_empty() {
+                    users.sort();
+                    return Err(ModelError::PartInUse(number, users.join(", ")));
+                }
+                let part = self.parts.remove(&number).ok_or(ModelError::UnknownPart(number))?;
+                Ok(Command::AddPart(part))
+            }
+            Command::SetDeviceParts { id, parts } => {
+                self.check_part_refs(&parts)?;
+                let d = self.devices.get_mut(&id).ok_or(ModelError::NoDevice(id))?;
+                let old = std::mem::replace(&mut d.parts, parts);
+                Ok(Command::SetDeviceParts { id, parts: old })
+            }
             Command::Batch(cmds) => {
                 let mut undo = Vec::with_capacity(cmds.len());
                 for cmd in cmds {
@@ -561,6 +634,18 @@ impl Project {
             Some(d) if Some(d.id) != except => Err(ModelError::DuplicateTag(tag.to_owned())),
             _ => Ok(()),
         }
+    }
+
+    fn check_part_refs(&self, parts: &[PartRef]) -> Result<()> {
+        for p in parts {
+            if !self.parts.contains_key(&p.number) {
+                return Err(ModelError::UnknownPart(p.number.clone()));
+            }
+            if p.quantity == 0 {
+                return Err(ModelError::ZeroQuantity);
+            }
+        }
+        Ok(())
     }
 
     fn check_page_name(&self, name: &str, except: Option<PageId>) -> Result<()> {

@@ -34,7 +34,9 @@ Dependencies point downward only. The core never depends on the UI or on CADCraf
 | Potential | Calculated from the wiring: points joined by wires, inside junctions, and across all drawings of a potential or interruption device. Named by its potential points (device tag `L+`, `M`); two names on one potential is flagged |
 | Interruption point | An arrow; all arrows of one device (same tag) are connected, so a potential continues on another page. Each shows where its partners are |
 | Junction | A dot whose four connection points are one potential, so wiring can branch |
-| Cable, terminal strip, PLC card | M2 to M3 |
+| Part | Catalogue entry: part number (unique), manufacturer, description; kept in the project (`parts.json`), importable from CSV |
+| Device parts | The parts a device is built from, with quantities; the BOM adds them up |
+| Cable, terminal strip, PLC card | M3b, M3c and later |
 
 Every object has a stable UUID; tags and names are attributes. Implemented so far: project,
 page, symbol, device, function, connection point, connection, routing, commands and undo.

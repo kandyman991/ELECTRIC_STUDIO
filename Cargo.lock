@@ -1180,6 +1180,7 @@ version = "0.0.1"
 dependencies = [
  "ecad-model",
  "ecad-project",
+ "ecad-reports",
  "ecad-view",
  "serde",
  "serde_json",

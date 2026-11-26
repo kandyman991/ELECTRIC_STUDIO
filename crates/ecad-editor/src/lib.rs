@@ -10,8 +10,9 @@ use ecad_model::{
     Command, Connection, ConnectionId, ConnectionRef, Device, DeviceId, Direction, Function, FunctionId, History,
     ModelError, Page, PageId, Point, Potential, Project, Rotation, SymbolId, route_between,
 };
+pub use ecad_model::{Part, PartRef};
 pub use ecad_view::{Primitive, Shape};
-pub use session::{Button, Choice, Frame, KeyName, PageInfo, PaletteItem, SelectionInfo, Session, UiEvent};
+pub use session::{Button, Choice, DevicePart, Frame, KeyName, PageInfo, PaletteItem, SelectionInfo, Session, UiEvent};
 pub use view::Viewport;
 
 pub mod session;
@@ -244,6 +245,54 @@ impl Editor {
     /// What zoom to fit shows: the whole sheet.
     pub fn extents(&self) -> Option<(Point, Point)> {
         Some(self.project.sheet.bounds())
+    }
+
+    // ---- parts ----
+
+    pub fn add_part(&mut self, part: Part) -> Result<(), ModelError> {
+        let label = format!("Add part {}", part.number.trim());
+        self.execute(&label, Command::AddPart(part))
+    }
+
+    pub fn update_part(&mut self, part: Part) -> Result<(), ModelError> {
+        let label = format!("Edit part {}", part.number);
+        self.execute(&label, Command::UpdatePart(part))
+    }
+
+    pub fn remove_part(&mut self, number: &str) -> Result<(), ModelError> {
+        self.execute(&format!("Remove part {number}"), Command::RemovePart(number.to_owned()))
+    }
+
+    /// Add new parts and update existing ones (by part number) in one undoable step. Returns
+    /// how many were added and how many changed.
+    pub fn import_parts(&mut self, parts: Vec<Part>) -> Result<(usize, usize), ModelError> {
+        let (mut added, mut updated) = (0, 0);
+        let mut cmds = Vec::new();
+        for part in parts {
+            match self.project.parts.get(&part.number) {
+                None => {
+                    added += 1;
+                    cmds.push(Command::AddPart(part));
+                }
+                Some(existing) if *existing != part => {
+                    updated += 1;
+                    cmds.push(Command::UpdatePart(part));
+                }
+                Some(_) => {}
+            }
+        }
+        if !cmds.is_empty() {
+            self.execute(&format!("Import {} parts", added + updated), Command::Batch(cmds))?;
+        }
+        Ok((added, updated))
+    }
+
+    /// Set the parts of the selected symbol's device.
+    pub fn set_selected_parts(&mut self, parts: Vec<PartRef>) -> Result<(), ModelError> {
+        let Some(Selected::Function(f)) = self.selection else { return Ok(()) };
+        let device = self.project.function(f)?.device;
+        let label = format!("Parts of {}", self.tag_of(f));
+        self.execute(&label, Command::SetDeviceParts { id: device, parts })
     }
 
     // ---- pages ----
@@ -662,7 +711,7 @@ impl Editor {
         let device = DeviceId::new();
         let function = FunctionId::new();
         let cmd = Command::Batch(vec![
-            Command::AddDevice(Device { id: device, tag: tag.clone(), description: String::new() }),
+            Command::AddDevice(Device::new(device, &tag, "")),
             Command::Place(Function {
                 id: function,
                 device,

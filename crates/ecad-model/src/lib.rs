@@ -5,6 +5,7 @@
 
 pub mod geometry;
 pub mod history;
+pub mod parts;
 pub mod potential;
 pub mod project;
 pub mod sample;
@@ -13,6 +14,7 @@ pub mod symbol;
 
 pub use geometry::{Direction, Point, Rotation};
 pub use history::History;
+pub use parts::{Part, PartRef};
 pub use potential::Potential;
 pub use project::*;
 pub use sheet::Sheet;
@@ -107,7 +109,7 @@ mod tests {
             })
             .unwrap_err();
         assert!(matches!(err, ModelError::NoConnectionPoint { .. }));
-        let dup = p.add_device(Device { id: DeviceId::new(), tag: "-K1".into(), description: String::new() });
+        let dup = p.add_device(Device::new(DeviceId::new(), "-K1", ""));
         assert_eq!(dup.unwrap_err(), ModelError::DuplicateTag("-K1".into()));
         assert_eq!(p.connections_on(PAGE_1).count(), 3);
     }
@@ -253,6 +255,43 @@ mod tests {
         assert_eq!(p.contacts_of(DeviceId::from_u128(0x103)).len(), 1);
         assert_eq!(p.describe(&ConnectionRef::new(sample::K1_NO, "13")).unwrap(), ("-S1".into(), "13".into()));
         p.apply(undo).unwrap();
+        assert_eq!(p, original);
+    }
+
+    #[test]
+    fn the_parts_catalogue_and_device_parts_follow_their_rules() {
+        let original = start_circuit().unwrap();
+        let mut p = original.clone();
+        let mut h = History::new();
+        let k1 = DeviceId::from_u128(0x103);
+        let part = |n: &str| Part { number: n.into(), manufacturer: "M".into(), description: String::new() };
+        assert_eq!(
+            p.apply(Command::AddPart(part("EX-CT-24DC"))).unwrap_err(),
+            ModelError::DuplicatePart("EX-CT-24DC".into())
+        );
+        assert_eq!(p.apply(Command::AddPart(part("  "))).unwrap_err(), ModelError::EmptyPartNumber);
+        h.execute(&mut p, "Add", Command::AddPart(part(" EX-NEW "))).unwrap();
+        assert!(p.parts.contains_key("EX-NEW"), "trimmed");
+        assert_eq!(
+            p.apply(Command::RemovePart("EX-CT-24DC".into())).unwrap_err(),
+            ModelError::PartInUse("EX-CT-24DC".into(), "-K1".into())
+        );
+        assert_eq!(
+            p.apply(Command::SetDeviceParts { id: k1, parts: vec![PartRef::new("NOPE", 1)] }).unwrap_err(),
+            ModelError::UnknownPart("NOPE".into())
+        );
+        assert_eq!(
+            p.apply(Command::SetDeviceParts { id: k1, parts: vec![PartRef::new("EX-NEW", 0)] }).unwrap_err(),
+            ModelError::ZeroQuantity
+        );
+        let parts = vec![PartRef::new("EX-CT-24DC", 1), PartRef::new("EX-AUX-1NO1NC", 2)];
+        h.execute(&mut p, "Parts", Command::SetDeviceParts { id: k1, parts: parts.clone() }).unwrap();
+        assert_eq!(p.device(k1).unwrap().parts, parts);
+        h.execute(&mut p, "Edit", Command::UpdatePart(Part { description: "new".into(), ..part("EX-NEW") })).unwrap();
+        h.execute(&mut p, "Remove", Command::RemovePart("EX-NEW".into())).unwrap();
+        while h.can_undo() {
+            h.undo(&mut p).unwrap();
+        }
         assert_eq!(p, original);
     }
 

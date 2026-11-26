@@ -4,7 +4,8 @@
 //!   the start circuit (default), plus -K1's contacts on page 2, plus potentials and an
 //!   interruption point across both pages
 //! - `ecad check <project-dir>`: load a project and report what it contains
-//! - `ecad export <project-dir> <out-dir>`: each page as DXF and PNG, plus the wire list
+//! - `ecad export <project-dir> <out-dir>`: each page as DXF and PNG, plus the reports (wire
+//!   list, bill of materials, devices without parts)
 //! - `ecad demo <out-dir>`: `export` for the built-in sample, without a project folder
 
 use ecad_model::Project;
@@ -34,8 +35,10 @@ fn export(project: &Project, out: &Path) -> Result<(), String> {
         write(&format!("{stem}.dxf"), ecad_view::page_dxf(project, page.id).map_err(|e| e.to_string())?.as_bytes())?;
         write(&format!("{stem}.png"), &ecad_view::page_png(project, page.id, 1200, 1200).map_err(|e| e.to_string())?)?;
     }
-    let rows = ecad_reports::wire_list(project).map_err(|e| e.to_string())?;
-    write("wire-list.csv", ecad_reports::wire_list_csv(&rows).as_bytes())
+    for (name, csv) in ecad_reports::all_csv(project).map_err(|e| e.to_string())? {
+        write(name, csv.as_bytes())?;
+    }
+    Ok(())
 }
 
 fn run(args: &[String]) -> Result<(), String> {

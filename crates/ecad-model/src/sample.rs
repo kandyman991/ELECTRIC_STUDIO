@@ -2,6 +2,7 @@
 //! The three symbols here are placeholders until the IEC 60617 library lands.
 
 use crate::geometry::{Direction, Point, Rotation};
+use crate::parts::{Part, PartRef};
 use crate::project::*;
 use crate::symbol::*;
 
@@ -136,8 +137,7 @@ pub fn start_circuit() -> Result<Project> {
         (0x104, "M", "0 V", "iec.supply", 0x204, (0.0, -12.0), Rotation::R180),
     ];
     for (dev, tag, desc, sym, fun, (x, y), rotation) in devices {
-        let device =
-            p.add_device(Device { id: DeviceId::from_u128(dev), tag: tag.into(), description: desc.into() })?;
+        let device = p.add_device(Device::new(DeviceId::from_u128(dev), tag, desc))?;
         p.place(Function {
             id: FunctionId::from_u128(fun),
             device,
@@ -165,7 +165,26 @@ pub fn start_circuit() -> Result<Project> {
     if let Some((min, max)) = p.content_bounds(PAGE_1) {
         p.sheet = crate::Sheet::around(min, max);
     }
+    for part in catalogue() {
+        p.apply(Command::AddPart(part))?;
+    }
+    p.apply(Command::SetDeviceParts { id: DeviceId::from_u128(0x103), parts: vec![PartRef::new("EX-CT-24DC", 1)] })?;
+    p.apply(Command::SetDeviceParts { id: DeviceId::from_u128(0x102), parts: vec![PartRef::new("EX-PB-GRN", 1)] })?;
     Ok(p)
+}
+
+/// A small made-up catalogue for the samples (not real order numbers).
+pub fn catalogue() -> Vec<Part> {
+    let part = |number: &str, description: &str| Part {
+        number: number.into(),
+        manufacturer: "Example".into(),
+        description: description.into(),
+    };
+    vec![
+        part("EX-CT-24DC", "Contactor 3 kW, 24 V DC coil, 1 NO auxiliary"),
+        part("EX-AUX-1NO1NC", "Auxiliary contact block 1 NO + 1 NC"),
+        part("EX-PB-GRN", "Pushbutton, green, 1 NO"),
+    ]
 }
 
 pub const PAGE_2: PageId = PageId::from_u128(0x2);
@@ -209,7 +228,7 @@ pub fn with_potentials() -> Result<Project> {
     let add = |p: &mut Project, dev: u128, tag: &str, sym: &str, f: u128, page, (x, y), rotation| -> Result<()> {
         let device = DeviceId::from_u128(dev);
         if p.device(device).is_err() {
-            p.add_device(Device { id: device, tag: tag.into(), description: String::new() })?;
+            p.add_device(Device::new(device, tag, ""))?;
         }
         p.place(Function {
             id: fid(f),

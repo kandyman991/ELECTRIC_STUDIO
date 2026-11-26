@@ -5,7 +5,7 @@
 
 use crate::view::Viewport;
 use crate::{Editor, Key, Overlay, Primitive, Selected, Tool};
-use ecad_model::{Page, PageId, Point, Project, Role, SymbolId};
+use ecad_model::{Page, PageId, Part, PartRef, Point, Project, Role, SymbolId};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -120,6 +120,36 @@ pub enum UiEvent {
     AssignTo {
         tag: String,
     },
+    /// Add a part to the catalogue.
+    AddPart {
+        part: Part,
+    },
+    /// Replace the catalogue entry with this part's number.
+    UpdatePart {
+        part: Part,
+    },
+    RemovePart {
+        number: String,
+    },
+    /// Import a CSV catalogue: new part numbers are added, known ones updated.
+    ImportParts {
+        path: PathBuf,
+    },
+    /// Give the selected symbol's device one of this part (or one more).
+    AddDevicePart {
+        number: String,
+    },
+    RemoveDevicePart {
+        number: String,
+    },
+    SetDevicePartQuantity {
+        number: String,
+        quantity: u32,
+    },
+    /// Write every report as CSV into this folder.
+    ExportReports {
+        path: PathBuf,
+    },
 }
 
 /// Keys the UI maps from its own key events.
@@ -159,6 +189,8 @@ pub enum SelectionInfo {
         /// For a coil: its contacts. For a contact: its coil. Each can be shown with
         /// [`UiEvent::ShowPage`].
         references: Vec<Reference>,
+        /// Catalogue parts the device is built from.
+        parts: Vec<DevicePart>,
     },
     Wire {
         number: Option<String>,
@@ -169,6 +201,14 @@ pub enum SelectionInfo {
         /// Set when differently named potentials are connected on this wire's potential.
         warning: Option<String>,
     },
+}
+
+/// A part of the selected device, with its catalogue description.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct DevicePart {
+    pub number: String,
+    pub quantity: u32,
+    pub description: String,
 }
 
 /// A cross-reference the side panel lists, e.g. `13-14 NO 2.7`.
@@ -199,6 +239,8 @@ pub struct Frame {
     pub palette: Vec<PaletteItem>,
     /// Contact symbols, offered for adding contacts to the selected device.
     pub contact_palette: Vec<PaletteItem>,
+    /// The parts catalogue, by part number.
+    pub parts: Vec<Part>,
     /// All pages in order, and the one shown.
     pub pages: Vec<PageInfo>,
     pub page: PageId,
@@ -407,6 +449,34 @@ impl Session {
                 let r = self.editor.reassign_selected(&tag);
                 self.report(r);
             }
+            UiEvent::AddPart { part } => {
+                let r = self.editor.add_part(part);
+                self.report(r);
+            }
+            UiEvent::UpdatePart { part } => {
+                let r = self.editor.update_part(part);
+                self.report(r);
+            }
+            UiEvent::RemovePart { number } => {
+                let r = self.editor.remove_part(&number);
+                self.report(r);
+            }
+            UiEvent::ImportParts { path } => self.import_parts(&path),
+            UiEvent::AddDevicePart { number } => {
+                self.edit_device_parts(|parts| match parts.iter_mut().find(|p| p.number == number) {
+                    Some(p) => p.quantity += 1,
+                    None => parts.push(PartRef::new(&number, 1)),
+                })
+            }
+            UiEvent::RemoveDevicePart { number } => {
+                self.edit_device_parts(|parts| parts.retain(|p| p.number != number))
+            }
+            UiEvent::SetDevicePartQuantity { number, quantity } => self.edit_device_parts(|parts| {
+                if let Some(p) = parts.iter_mut().find(|p| p.number == number) {
+                    p.quantity = quantity;
+                }
+            }),
+            UiEvent::ExportReports { path } => self.export_reports(&path),
             UiEvent::Confirm { choice } => {
                 let Some(action) = self.pending.take() else { return };
                 match choice {
@@ -472,6 +542,47 @@ impl Session {
         });
     }
 
+    fn edit_device_parts(&mut self, change: impl FnOnce(&mut Vec<PartRef>)) {
+        let Some(device) = self.selected_device() else { return };
+        let Ok(d) = self.editor.project().device(device) else { return };
+        let mut parts = d.parts.clone();
+        change(&mut parts);
+        if parts != d.parts {
+            let r = self.editor.set_selected_parts(parts);
+            self.report(r);
+        }
+    }
+
+    fn import_parts(&mut self, path: &Path) {
+        let result = std::fs::read_to_string(path)
+            .map_err(|e| format!("{}: {e}", path.display()))
+            .and_then(|text| ecad_project::csv::read_parts(&text).map_err(|e| format!("{}: {e}", path.display())))
+            .and_then(|parts| self.editor.import_parts(parts).map_err(|e| e.to_string()));
+        self.message = Some(match result {
+            Ok((0, 0)) => "Nothing new to import: the catalogue already has these parts".into(),
+            Ok((added, updated)) => format!("Imported {added} new parts, updated {updated}"),
+            Err(e) => format!("Import failed: {e}"),
+        });
+    }
+
+    fn export_reports(&mut self, dir: &Path) {
+        let result = ecad_reports::all_csv(self.editor.project()).map_err(|e| e.to_string()).and_then(|files| {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            for (name, text) in &files {
+                std::fs::write(dir.join(name), text).map_err(|e| format!("{}: {e}", dir.join(name).display()))?;
+            }
+            Ok(files.len())
+        });
+        let missing = ecad_reports::devices_without_parts(self.editor.project()).len();
+        self.message = Some(match result {
+            Ok(n) if missing > 0 => {
+                format!("Wrote {n} reports to {}; {missing} devices have no part yet", dir.display())
+            }
+            Ok(n) => format!("Wrote {n} reports to {}", dir.display()),
+            Err(e) => format!("Export failed: {e}"),
+        });
+    }
+
     fn selected_device(&self) -> Option<ecad_model::DeviceId> {
         match self.editor.selection()? {
             Selected::Function(f) => self.editor.project().function(f).ok().map(|f| f.device),
@@ -526,6 +637,19 @@ impl Session {
                     }
                     .into(),
                     references,
+                    parts: d
+                        .parts
+                        .iter()
+                        .map(|r| DevicePart {
+                            number: r.number.clone(),
+                            quantity: r.quantity,
+                            description: project
+                                .parts
+                                .get(&r.number)
+                                .map(|p| p.description.clone())
+                                .unwrap_or_default(),
+                        })
+                        .collect(),
                 })
             }
             Selected::Connection(c) => {
@@ -586,6 +710,7 @@ impl Session {
                 .values()
                 .map(|s| PaletteItem { id: s.id.0.clone(), description: s.description.clone() })
                 .collect(),
+            parts: project.parts.values().cloned().collect(),
             contact_palette: project
                 .symbols
                 .values()
@@ -877,6 +1002,38 @@ mod tests {
         assert_eq!(role, "potential");
         assert_eq!(references.len(), 1, "L+ is also drawn on page 2");
         assert!(references[0].label.starts_with("Also at 2."), "{references:?}");
+    }
+
+    #[test]
+    fn parts_are_imported_assigned_and_exported() {
+        let (dir, mut s) = session();
+        let csv = dir.path().join("vendor.csv");
+        std::fs::write(&csv, "Part number;Manufacturer;Description\nEX-PB-GRN;Example;Pushbutton, green, 1 NO\nEX-LAMP;Example;Pilot lamp\n")
+            .unwrap();
+        s.handle(UiEvent::ImportParts { path: csv.clone() });
+        assert_eq!(s.frame(None, [0, 0, 0]).status, "Imported 1 new parts, updated 0");
+        assert_eq!(s.frame(None, [0, 0, 0]).parts.len(), 4);
+        s.handle(UiEvent::ImportParts { path: csv });
+        assert!(s.frame(None, [0, 0, 0]).status.starts_with("Nothing new"));
+
+        // Select -K1 and give it two auxiliary blocks.
+        let (x, y) = s.view().to_screen(Point::new(2.0, 12.0));
+        s.handle(UiEvent::PointerDown { x, y, button: Button::Primary });
+        s.handle(UiEvent::PointerUp { x, y, button: Button::Primary });
+        s.handle(UiEvent::AddDevicePart { number: "EX-AUX-1NO1NC".into() });
+        s.handle(UiEvent::AddDevicePart { number: "EX-AUX-1NO1NC".into() });
+        let Some(SelectionInfo::Device { parts, .. }) = s.frame(None, [0, 0, 0]).selection else { panic!() };
+        let summary: Vec<(String, u32)> = parts.iter().map(|p| (p.number.clone(), p.quantity)).collect();
+        assert_eq!(summary, [("EX-CT-24DC".to_owned(), 1), ("EX-AUX-1NO1NC".to_owned(), 2)]);
+        s.handle(UiEvent::SetDevicePartQuantity { number: "EX-AUX-1NO1NC".into(), quantity: 1 });
+        s.handle(UiEvent::RemovePart { number: "EX-AUX-1NO1NC".into() });
+        assert_eq!(s.frame(None, [0, 0, 0]).status, "part `EX-AUX-1NO1NC` is used by -K1");
+
+        let out = dir.path().join("reports");
+        s.handle(UiEvent::ExportReports { path: out.clone() });
+        assert_eq!(s.frame(None, [0, 0, 0]).status, format!("Wrote 2 reports to {}", out.display()));
+        let bom = std::fs::read_to_string(out.join("bom.csv")).unwrap();
+        assert!(bom.contains("EX-AUX-1NO1NC,Example,Auxiliary contact block 1 NO + 1 NC,1,-K1"), "{bom}");
     }
 
     #[test]

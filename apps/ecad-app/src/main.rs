@@ -33,6 +33,12 @@ struct App {
     /// Side-panel edit buffers, reset when the selection changes.
     fields: Fields,
     page_fields: PageFields,
+    /// The parts catalogue window.
+    show_parts: bool,
+    /// Edit buffers for catalogue rows: number → (manufacturer, description).
+    part_edits: std::collections::BTreeMap<String, (String, String)>,
+    /// The "new part" row: number, manufacturer, description.
+    new_part: (String, String, String),
     title: String,
     close_sent: bool,
 }
@@ -130,7 +136,8 @@ impl App {
     }
 
     fn toolbar(&mut self, ui: &mut egui::Ui, frame: &Frame) {
-        ui.horizontal(|ui| {
+        // Wraps onto a second row when the window is narrow or the library grows.
+        ui.horizontal_wrapped(|ui| {
             ui.menu_button("File", |ui| {
                 if ui.button("New project… (Ctrl+N)").clicked() {
                     ui.close();
@@ -144,7 +151,17 @@ impl App {
                     ui.close();
                     self.send(UiEvent::Save);
                 }
+                ui.separator();
+                if ui.button("Export reports…").on_hover_text("Wire list and bill of materials as CSV").clicked() {
+                    ui.close();
+                    if let Some(path) = pick_folder("Choose a folder for the reports") {
+                        self.send(UiEvent::ExportReports { path });
+                    }
+                }
             });
+            if ui.selectable_label(self.show_parts, "Parts").on_hover_text("The parts catalogue").clicked() {
+                self.show_parts = !self.show_parts;
+            }
             ui.separator();
             let mut tool = |ui: &mut egui::Ui, label: &str, id: &str, tip: &str| {
                 if ui.selectable_label(frame.tool == id, label).on_hover_text(tip).clicked() {
@@ -195,7 +212,7 @@ impl App {
         // A field is applied when it loses focus (Tab, Enter or a click elsewhere) with a change.
         let mut events = Vec::new();
         match &frame.selection {
-            Some(SelectionInfo::Device { tag, description, symbol, role, references }) => {
+            Some(SelectionInfo::Device { tag, description, symbol, role, references, parts }) => {
                 if self.fields.owner.is_empty() {
                     self.fields.owner = tag.clone();
                 }
@@ -210,6 +227,39 @@ impl App {
                 }
                 ui.add_space(4.0);
                 ui.small(format!("Symbol: {symbol}"));
+                if role != "potential" && role != "interruption" && !symbol.ends_with("junction") {
+                    ui.add_space(8.0);
+                    ui.strong("Parts");
+                    if parts.is_empty() {
+                        ui.small("None yet: this device is missing from the BOM.");
+                    }
+                    for p in parts {
+                        ui.horizontal(|ui| {
+                            let mut q = p.quantity;
+                            if ui.add(egui::DragValue::new(&mut q).range(1..=999).suffix("×")).changed() {
+                                events.push(UiEvent::SetDevicePartQuantity { number: p.number.clone(), quantity: q });
+                            }
+                            ui.label(&p.number).on_hover_text(&p.description);
+                            if ui.small_button("✕").on_hover_text("Remove from this device").clicked() {
+                                events.push(UiEvent::RemoveDevicePart { number: p.number.clone() });
+                            }
+                        });
+                    }
+                    egui::ComboBox::from_id_salt("add-part").selected_text("Add part…").width(180.0).show_ui(
+                        ui,
+                        |ui| {
+                            for part in &frame.parts {
+                                let label = format!("{}  {}", part.number, part.description);
+                                if ui.selectable_label(false, label).clicked() {
+                                    events.push(UiEvent::AddDevicePart { number: part.number.clone() });
+                                }
+                            }
+                            if frame.parts.is_empty() {
+                                ui.label("The catalogue is empty: open Parts to add or import some.");
+                            }
+                        },
+                    );
+                }
                 match role.as_str() {
                     "main" => {
                         ui.add_space(8.0);
@@ -359,6 +409,81 @@ impl App {
         }
     }
 
+    fn parts_window(&mut self, ctx: &egui::Context, frame: &Frame) {
+        let mut open = self.show_parts;
+        let mut events = Vec::new();
+        egui::Window::new("Parts catalogue").open(&mut open).default_size([640.0, 420.0]).show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                if ui
+                    .button("Import CSV…")
+                    .on_hover_text("Columns: part number, manufacturer, description; , or ; separated")
+                    .clicked()
+                    && let Some(path) = rfd::FileDialog::new().add_filter("CSV", &["csv", "txt"]).pick_file()
+                {
+                    events.push(UiEvent::ImportParts { path });
+                }
+                ui.label(format!("{} parts", frame.parts.len()));
+            });
+            ui.separator();
+            // Keep edit buffers in step with the catalogue.
+            self.part_edits.retain(|n, _| frame.parts.iter().any(|p| &p.number == n));
+            egui::ScrollArea::vertical().max_height(ui.available_height() - 40.0).show(ui, |ui| {
+                egui::Grid::new("parts-grid").striped(true).num_columns(4).show(ui, |ui| {
+                    ui.strong("Part number");
+                    ui.strong("Manufacturer");
+                    ui.strong("Description");
+                    ui.label("");
+                    ui.end_row();
+                    for part in &frame.parts {
+                        let buf = self
+                            .part_edits
+                            .entry(part.number.clone())
+                            .or_insert_with(|| (part.manufacturer.clone(), part.description.clone()));
+                        ui.label(&part.number);
+                        let m = ui.add_sized([130.0, 20.0], egui::TextEdit::singleline(&mut buf.0));
+                        let d = ui.add_sized([300.0, 20.0], egui::TextEdit::singleline(&mut buf.1));
+                        if (m.lost_focus() || d.lost_focus())
+                            && (buf.0 != part.manufacturer || buf.1 != part.description)
+                        {
+                            events.push(UiEvent::UpdatePart {
+                                part: ecad_editor::Part {
+                                    number: part.number.clone(),
+                                    manufacturer: buf.0.trim().to_owned(),
+                                    description: buf.1.trim().to_owned(),
+                                },
+                            });
+                        }
+                        if ui.small_button("✕").on_hover_text("Remove from the catalogue").clicked() {
+                            events.push(UiEvent::RemovePart { number: part.number.clone() });
+                        }
+                        ui.end_row();
+                    }
+                });
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                let (n, m, d) = &mut self.new_part;
+                ui.add(egui::TextEdit::singleline(n).hint_text("Part number").desired_width(120.0));
+                ui.add(egui::TextEdit::singleline(m).hint_text("Manufacturer").desired_width(120.0));
+                ui.add(egui::TextEdit::singleline(d).hint_text("Description").desired_width(240.0));
+                if ui.add_enabled(!n.trim().is_empty(), egui::Button::new("Add")).clicked() {
+                    events.push(UiEvent::AddPart {
+                        part: ecad_editor::Part {
+                            number: n.trim().to_owned(),
+                            manufacturer: m.trim().to_owned(),
+                            description: d.trim().to_owned(),
+                        },
+                    });
+                    self.new_part = Default::default();
+                }
+            });
+        });
+        self.show_parts = open;
+        for ev in events {
+            self.send(ev);
+        }
+    }
+
     fn prompt(&mut self, ctx: &egui::Context, question: &str) {
         let mut answer = None;
         egui::Modal::new(egui::Id::unique("unsaved-changes")).show(ctx, |ui| {
@@ -391,9 +516,11 @@ impl App {
             self.send(UiEvent::Resize { width: f64::from(rect.width()), height: f64::from(rect.height()) });
         }
         let mut events = Vec::new();
+        // Only when nothing (a menu, a dropdown, the parts window) is on top of the canvas.
+        let over_canvas = response.contains_pointer();
         ui.input(|i| {
             let Some(pos) = i.pointer.latest_pos() else { return };
-            let inside = rect.contains(pos);
+            let inside = over_canvas;
             let (x, y) = (f64::from(pos.x - rect.min.x), f64::from(pos.y - rect.min.y));
             if i.pointer.delta() != Vec2::ZERO || i.pointer.any_pressed() {
                 events.push(UiEvent::PointerMove { x, y });
@@ -522,12 +649,15 @@ impl eframe::App for App {
         egui::Panel::right("inspector").default_size(200.0).show(ui, |ui| self.inspector(ui, &before));
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
             let rect = self.canvas(ui);
-            let frame = self.session.frame(self.revision, BG);
-            if let Some(base) = frame.base {
+            let mut frame = self.session.frame(self.revision, BG);
+            if let Some(base) = frame.base.take() {
                 self.base = base;
                 self.revision = Some(frame.revision);
             }
             paint(ui.painter(), rect, &frame.view, &self.base, &frame.overlays);
+            if self.show_parts {
+                self.parts_window(&ctx, &frame);
+            }
             if let Some(question) = &frame.prompt {
                 self.prompt(&ctx, question);
             }
@@ -567,6 +697,9 @@ fn main() -> eframe::Result {
                 size: Vec2::ZERO,
                 fields: Fields::default(),
                 page_fields: PageFields::default(),
+                show_parts: false,
+                part_edits: Default::default(),
+                new_part: Default::default(),
                 title: String::new(),
                 close_sent: false,
             }))
