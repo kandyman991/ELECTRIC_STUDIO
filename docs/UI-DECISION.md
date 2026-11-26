@@ -33,8 +33,9 @@ if needed.
 | Place a symbol | Toolbar symbol button, then click |
 | Draw a wire | W (or Wire), click a connection point, then another |
 | Undo, redo, save | Ctrl+Z, Ctrl+Y (or Ctrl+Shift+Z), Ctrl+S |
+| New, open project | Ctrl+N, Ctrl+O (or the File menu); asks before discarding changes |
 | Pan, zoom, fit | Middle-drag, wheel, F |
-| Rename | Select, type a tag in the right panel, Enter |
+| Edit tag, description, wire number | Select, edit in the right panel; applied when the field loses focus (Enter, Tab or a click) |
 
 ## Comparison
 

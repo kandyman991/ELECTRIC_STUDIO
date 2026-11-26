@@ -149,3 +149,19 @@ fn escape_cancels_a_wire_then_leaves_the_tool() {
     e.key(Key::Escape);
     assert_eq!(e.selection(), None);
 }
+
+#[test]
+fn the_side_panel_edits_descriptions_and_wire_numbers() {
+    let mut e = editor();
+    click(&mut e, 2.0, 12.0);
+    e.describe_selected("  Pump contactor ").unwrap();
+    assert_eq!(e.project().device_by_tag("-K1").unwrap().description, "Pump contactor");
+    click(&mut e, 0.2, 26.0); // W2
+    assert_eq!(e.number_selected_wire("W1"), Err(ModelError::DuplicateWireNumber("W1".into())));
+    e.number_selected_wire("102").unwrap();
+    assert_eq!(wire_numbers(&e), ["102", "W1", "W3"]);
+    assert_eq!(e.undo_label(), Some("Renumber wire W2 to 102"));
+    e.key(Key::Undo);
+    e.key(Key::Undo);
+    assert_eq!(e.project(), &start_circuit().unwrap());
+}
