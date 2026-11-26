@@ -50,6 +50,12 @@ pub struct Check {
 /// Every rule, with its severity and what it looks for.
 pub const RULES: &[(&str, Severity, &str)] = &[
     ("potential-clash", Severity::Error, "Differently named potentials (L+ and M) are connected"),
+    ("wire-number-shared", Severity::Error, "One wire number is used on two different potentials"),
+    (
+        "wire-numbers-differ",
+        Severity::Warning,
+        "With one number per potential: a potential's wires carry different numbers",
+    ),
     ("unconnected-point", Severity::Warning, "A connection point has no wire"),
     ("junction-unused", Severity::Warning, "A junction joins fewer than three wires"),
     ("lonely-interruption", Severity::Warning, "An interruption point has no partner with the same name"),
@@ -116,6 +122,7 @@ fn is_junction(project: &Project, f: FunctionId) -> bool {
 pub fn check(project: &Project) -> Vec<Check> {
     let mut out = Out { project, checks: Vec::new() };
     potential_clashes(&mut out);
+    wire_numbers(&mut out);
     unconnected(&mut out);
     lonely_interruptions(&mut out);
     for c in project.connections.values() {
@@ -161,6 +168,40 @@ pub fn check(project: &Project) -> Vec<Check> {
         ))
     });
     checks
+}
+
+fn wire_numbers(out: &mut Out) {
+    let project = out.project;
+    let potentials = project.potentials();
+    let mut owner: BTreeMap<&str, (usize, ConnectionId)> = BTreeMap::new();
+    let mut reported = BTreeSet::new();
+    for (i, p) in potentials.iter().enumerate() {
+        let mut numbers: Vec<(&str, ConnectionId)> = p
+            .connections
+            .iter()
+            .filter_map(|c| project.connection(*c).ok())
+            .filter_map(|c| c.wire_number.as_deref().map(|n| (n, c.id)))
+            .collect();
+        numbers.sort();
+        let distinct: BTreeSet<&str> = numbers.iter().map(|(n, _)| *n).collect();
+        if project.naming.wire_numbering == ecad_model::WireNumbering::PerPotential && distinct.len() > 1 {
+            let list = distinct.iter().copied().collect::<Vec<_>>().join(", ");
+            if let Some((_, c)) = numbers.first() {
+                out.at_connection("wire-numbers-differ", *c, format!("One potential carries wire numbers {list}"));
+            }
+        }
+        for (n, c) in numbers {
+            match owner.get(n) {
+                None => {
+                    owner.insert(n, (i, c));
+                }
+                Some((j, _)) if *j != i && reported.insert(n) => {
+                    out.at_connection("wire-number-shared", c, format!("Wire number {n} is used on two potentials"));
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 fn potential_clashes(out: &mut Out) {
@@ -292,7 +333,9 @@ mod tests {
         let checks = check(&p);
         let found: BTreeSet<&str> = checks.iter().map(|c| c.rule).collect();
         for (rule, ..) in RULES {
-            if *rule != "lonely-interruption" && *rule != "overlap" {
+            // Covered by their own tests.
+            let elsewhere = ["lonely-interruption", "overlap", "wire-number-shared", "wire-numbers-differ"];
+            if !elsewhere.contains(rule) {
                 assert!(found.contains(rule), "{rule} missing from {:#?}", rules(&checks));
             }
         }
@@ -306,6 +349,21 @@ mod tests {
         );
         assert!(rules(&checks).iter().any(|r| r.contains("-KF1:3 is not connected")));
         assert!(!rules(&checks).iter().any(|r| r.contains("I1")), "I1 has two drawings");
+    }
+
+    #[test]
+    fn wire_numbers_shared_between_potentials_or_mixed_on_one() {
+        let mut p = sample::start_circuit().unwrap();
+        p.apply(Command::SetNaming(ecad_model::Naming::by_page())).unwrap();
+        let wire =
+            |p: &Project, n: &str| p.connections.values().find(|c| c.wire_number.as_deref() == Some(n)).unwrap().id;
+        // W1 (L+ to -S1) and W2 (-S1 to -K1) are different potentials: give W2 the number W1.
+        let w2 = wire(&p, "W2");
+        p.apply(Command::SetWireNumber { id: w2, number: Some("W1".into()) }).unwrap();
+        let r = rules(&check(&p));
+        assert!(r.iter().any(|r| r.contains("Wire number W1 is used on two potentials")), "{r:#?}");
+        // The sample's per-wire numbers are fine per potential: each potential has one wire.
+        assert!(!r.iter().any(|r| r.starts_with("wire-numbers-differ")), "{r:#?}");
     }
 
     #[test]

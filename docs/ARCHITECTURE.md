@@ -26,6 +26,7 @@ Dependencies point downward only. The core never depends on the UI or on CADCraf
 | Project | The whole job: standards, numbering rules, structure, revisions |
 | Page | One sheet: number (`1`, `3a`), content description, position in the project |
 | Sheet | Size (A3 landscape by default), border, numbered columns (from 1 or 0) and optional lettered rows, title block; gives addresses like `2.4` (page 2, column 4) or, with rows, `A3/2F` (page A3, column 2, row F) |
+| Naming | A project setting. Device tags from a format: `-{letters}{n}` (`-K1`, the default) or `{page}{letters}{n}` (`A2SB1`: page A2, letter code SB). Wire numbers one per wire (`W1`…) or one per potential: every wire of a potential carries its name (`+A100`, `L1`) or a number from a format such as `{page}{n:02}` (`P201`). A wire that joins two potentials brings them to one number; renumbering a wire renumbers its potential; "Renumber all wires" numbers everything again page by page |
 | Title block | Along the bottom of every page: the last three revisions, diagram code, project, customer, designer, plant, date, the page title in two lines (e.g. two languages), the page number and the next page. Set in File > Project settings |
 | Device | A real component with an IEC 81346 tag (`-K1`, `=A1+B2-K1`) and a part number |
 | Function | One drawing of a device on a page (a coil here, its contacts elsewhere), with its own terminal designations (`23`/`24` for a second NO contact) |
@@ -54,6 +55,8 @@ same list and exits with 1 when there are errors, for use in CI.
 | Rule | Severity | Finds |
 | --- | --- | --- |
 | `potential-clash` | error | Differently named potentials (L+ and M) connected |
+| `wire-number-shared` | error | One wire number on two different potentials |
+| `wire-numbers-differ` | warning | With one number per potential: a potential whose wires carry different numbers |
 | `unconnected-point` | warning | A connection point without a wire |
 | `junction-unused` | warning | A junction joining fewer than three wires |
 | `lonely-interruption` | warning | An interruption point without a partner of the same name |

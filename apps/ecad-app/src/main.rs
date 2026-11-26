@@ -65,6 +65,7 @@ struct ProjectFields {
     key: Option<String>,
     name: String,
     info: ecad_editor::ProjectInfo,
+    naming: ecad_editor::Naming,
 }
 
 #[derive(Default)]
@@ -575,9 +576,14 @@ impl App {
     }
 
     fn project_window(&mut self, ctx: &egui::Context, frame: &Frame) {
-        let key = Some(format!("{} {:?}", frame.project_name, frame.info));
+        let key = Some(format!("{} {:?} {:?}", frame.project_name, frame.info, frame.naming));
         if key != self.project_fields.key {
-            self.project_fields = ProjectFields { key, name: frame.project_name.clone(), info: frame.info.clone() };
+            self.project_fields = ProjectFields {
+                key,
+                name: frame.project_name.clone(),
+                info: frame.info.clone(),
+                naming: frame.naming.clone(),
+            };
         }
         let mut open = self.show_project;
         let mut events = Vec::new();
@@ -636,6 +642,38 @@ impl App {
                     f.key = None;
                 }
             });
+            ui.separator();
+            ui.strong("Naming");
+            egui::Grid::new("naming").num_columns(2).show(ui, |ui| {
+                ui.label("Device tags");
+                ui.add(egui::TextEdit::singleline(&mut f.naming.tag_format).desired_width(200.0))
+                    .on_hover_text("{page} page name, {letters} the symbol's letter code, {n} the next number: -{letters}{n} gives -K1, {page}{letters}{n} gives A2SB1");
+                ui.end_row();
+                ui.label("Wire numbers");
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut f.naming.wire_numbering, ecad_editor::WireNumbering::PerWire, "one per wire");
+                    ui.radio_value(&mut f.naming.wire_numbering, ecad_editor::WireNumbering::PerPotential, "one per potential");
+                });
+                ui.end_row();
+                ui.label("Wire number format");
+                ui.add(egui::TextEdit::singleline(&mut f.naming.wire_format).desired_width(200.0))
+                    .on_hover_text("{page} page name, {n} or {n:02} the next number: W{n} gives W1, {page}{n:02} gives P201. Per potential, a named potential (L+, +A100) uses its name");
+                ui.end_row();
+            });
+            let naming_changed = f.naming != frame.naming;
+            ui.horizontal(|ui| {
+                if ui.add_enabled(naming_changed, egui::Button::new("Apply naming")).clicked() {
+                    events.push(UiEvent::Naming { naming: f.naming.clone() });
+                }
+                if ui
+                    .add_enabled(!naming_changed, egui::Button::new("Renumber all wires"))
+                    .on_hover_text("Number every wire again from the format, page by page (undoable)")
+                    .clicked()
+                {
+                    events.push(UiEvent::RenumberWires);
+                }
+            });
+            ui.small("New devices and wires follow the naming; existing tags stay as they are.");
             ui.separator();
             ui.strong("Sheet grid");
             let mut grid = frame.sheet;
