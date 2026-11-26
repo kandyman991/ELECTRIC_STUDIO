@@ -255,6 +255,22 @@ pub fn plc_io_list_csv(rows: &[PlcIoRow]) -> String {
     out
 }
 
+/// Report names, as `ecad report` takes them and as their file names (`<name>.csv`).
+pub const REPORTS: [&str; 5] = ["wire-list", "bom", "terminal-diagram", "plc-io-list", "devices-without-parts"];
+
+/// One report as CSV, by name (see [`REPORTS`]); `None` for an unknown name. A report with no
+/// rows is just its header.
+pub fn csv(project: &Project, name: &str) -> Result<Option<String>, ModelError> {
+    Ok(Some(match name {
+        "wire-list" => wire_list_csv(&wire_list(project)?),
+        "bom" => bom_csv(&bom(project)),
+        "terminal-diagram" => terminal_diagram_csv(&terminal_diagram(project)),
+        "plc-io-list" => plc_io_list_csv(&plc_io_list(project)),
+        "devices-without-parts" => devices_without_parts_csv(&devices_without_parts(project)),
+        _ => return Ok(None),
+    }))
+}
+
 /// Every report, as (file name, contents), for writing into an output folder. The list of
 /// devices without parts is only included when there are some.
 pub fn all_csv(project: &Project) -> Result<Vec<(&'static str, String)>, ModelError> {
