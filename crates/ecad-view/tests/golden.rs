@@ -109,6 +109,12 @@ fn plc_channels() {
 }
 
 #[test]
+fn multi_pole_devices_and_contact_tables() {
+    let p = ecad_model::sample::with_power().unwrap();
+    check_page(&p, ecad_model::sample::PAGE_4, "with_power_page4");
+}
+
+#[test]
 fn dxf_output_is_deterministic() {
     let p = start_circuit().unwrap();
     assert_eq!(ecad_view::page_dxf(&p, PAGE_1).unwrap(), ecad_view::page_dxf(&p, PAGE_1).unwrap());

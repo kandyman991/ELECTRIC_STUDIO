@@ -15,9 +15,24 @@ impl SymbolId {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Graphic {
-    Line { a: Point, b: Point },
-    Circle { center: Point, radius: f64 },
-    Text { at: Point, height: f64, value: String },
+    Line {
+        a: Point,
+        b: Point,
+    },
+    /// A dashed line, e.g. the mechanical link between the poles of a switch.
+    Dashed {
+        a: Point,
+        b: Point,
+    },
+    Circle {
+        center: Point,
+        radius: f64,
+    },
+    Text {
+        at: Point,
+        height: f64,
+        value: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -33,6 +48,8 @@ pub struct ConnectionPointDef {
 pub enum ContactKind {
     NormallyOpen,
     NormallyClosed,
+    /// Main (power) contacts of a contactor, numbered 1-2, 3-4, 5-6 by the symbol itself.
+    Power,
 }
 
 impl ContactKind {
@@ -41,6 +58,7 @@ impl ContactKind {
         match self {
             ContactKind::NormallyOpen => "NO",
             ContactKind::NormallyClosed => "NC",
+            ContactKind::Power => "main",
         }
     }
 }
@@ -134,7 +152,7 @@ impl SymbolDef {
         let mut pts: Vec<Point> = self.connection_points.iter().map(|c| c.at).collect();
         for g in &self.graphics {
             match g {
-                Graphic::Line { a, b } => pts.extend([*a, *b]),
+                Graphic::Line { a, b } | Graphic::Dashed { a, b } => pts.extend([*a, *b]),
                 Graphic::Circle { center, radius } => {
                     pts.push(Point::new(center.x - radius, center.y - radius));
                     pts.push(Point::new(center.x + radius, center.y + radius));

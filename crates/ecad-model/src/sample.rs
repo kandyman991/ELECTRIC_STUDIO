@@ -136,7 +136,127 @@ pub fn symbols() -> Vec<SymbolDef> {
     ]
     .into_iter()
     .chain(plc_channel_symbols())
+    .chain(power_symbols())
     .collect()
+}
+
+fn dashed(ax: f64, ay: f64, bx: f64, by: f64) -> Graphic {
+    Graphic::Dashed { a: Point::new(ax, ay), b: Point::new(bx, by) }
+}
+
+fn rect(ax: f64, ay: f64, bx: f64, by: f64) -> Vec<Graphic> {
+    vec![line(ax, ay, bx, ay), line(bx, ay, bx, by), line(bx, by, ax, by), line(ax, by, ax, ay)]
+}
+
+/// Pole spacing of multi-pole symbols, in mm.
+pub const POLE: f64 = 8.0;
+
+/// Connection points of `n` poles: top names leave up at y = 10, bottom names leave down at
+/// y = -10 (room for the point labels clear of release boxes and fuses), pole `i` at x = 8·i. Listed top, bottom, top, bottom… so pairs are poles.
+fn pole_points(names: &[(&str, &str)]) -> Vec<ConnectionPointDef> {
+    names
+        .iter()
+        .enumerate()
+        .flat_map(|(i, (top, bottom))| {
+            let x = POLE * i as f64;
+            [cp(top, x, 10.0, Direction::Up), cp(bottom, x, -10.0, Direction::Down)]
+        })
+        .collect()
+}
+
+/// An open switching pole at `x`: terminals, and a blade from the lower contact up to the left.
+fn open_pole(x: f64) -> Vec<Graphic> {
+    vec![line(x, 10.0, x, 3.0), line(x, -3.0, x - 3.0, 3.0), line(x, -3.0, x, -10.0)]
+}
+
+/// Multi-pole switching devices drawn as one symbol, with the dashed link between their
+/// blades: contactor main contacts, circuit breakers, a motor-protection breaker, a residual-
+/// current breaker and a switch-disconnector with fuses.
+fn power_symbols() -> Vec<SymbolDef> {
+    let three = [("1", "2"), ("3", "4"), ("5", "6")];
+    let poles = |n: usize, extra: &dyn Fn(f64) -> Vec<Graphic>| -> Vec<Graphic> {
+        (0..n)
+            .flat_map(|i| {
+                let x = POLE * i as f64;
+                let mut g = open_pole(x);
+                g.extend(extra(x));
+                g
+            })
+            .collect()
+    };
+    // The breaker mark: a small cross on the fixed contact.
+    let cross = |x: f64| vec![line(x - 0.8, 2.2, x + 0.8, 3.8), line(x - 0.8, 3.8, x + 0.8, 2.2)];
+    let link = |n: usize| dashed(-6.0, 0.0, POLE * (n - 1) as f64 - 1.5, 0.0);
+    let def = |id: &str, description: &str, prefix: &str, role: Role, graphics: Vec<Graphic>, points| SymbolDef {
+        id: SymbolId::new(id),
+        description: description.into(),
+        tag_prefix: prefix.into(),
+        role,
+        bridged: false,
+        hide_tag: false,
+        hide_point_labels: false,
+        graphics,
+        connection_points: points,
+    };
+    let mut contactor = poles(3, &|_| Vec::new());
+    contactor.push(link(3));
+    let mut breaker = poles(3, &cross);
+    breaker.push(link(3));
+    let mut motor = poles(3, &cross);
+    motor.push(link(3));
+    // Thermal and magnetic releases: one box across the poles, marked I>.
+    motor.extend(rect(-2.0, -4.0, POLE * 2.0 + 2.0, -6.5));
+    motor.push(Graphic::Text { at: Point::new(-7.5, -6.2), height: 2.0, value: "I>".into() });
+    let mut rcd = poles(4, &cross);
+    rcd.push(link(4));
+    rcd.extend(rect(-2.0, -4.0, POLE * 3.0 + 2.0, -6.5));
+    rcd.push(Graphic::Text { at: Point::new(-7.5, -6.2), height: 2.0, value: "ID".into() });
+    // Switch-disconnector: a bar on each fixed contact, and a fuse below each blade.
+    let mut disconnector: Vec<Graphic> = (0..3)
+        .flat_map(|i| {
+            let x = POLE * i as f64;
+            let mut g = vec![line(x, 10.0, x, 4.0), line(x - 1.0, 4.0, x + 1.0, 4.0), line(x, -0.5, x - 3.0, 4.0)];
+            g.extend(rect(x - 1.0, -1.5, x + 1.0, -6.5));
+            g.push(line(x, -0.5, x, -10.0));
+            g
+        })
+        .collect();
+    disconnector.push(dashed(-6.0, 2.0, POLE * 2.0 - 1.5, 2.0));
+    vec![
+        def(
+            "iec.contact_main_3",
+            "Main contacts, 3 poles",
+            "-K",
+            Role::Contact { kind: ContactKind::Power },
+            contactor,
+            pole_points(&three),
+        ),
+        def("iec.breaker_3", "Circuit breaker, 3 poles", "-QF", Role::Main, breaker, pole_points(&three)),
+        def(
+            "iec.motor_protection_3",
+            "Motor-protection circuit breaker, 3 poles",
+            "-QF",
+            Role::Main,
+            motor,
+            pole_points(&three),
+        ),
+        def(
+            "iec.breaker_3pn_rcd",
+            "Residual-current circuit breaker, 3 poles + N",
+            "-QF",
+            Role::Main,
+            rcd,
+            pole_points(&[("1", "2"), ("3", "4"), ("5", "6"), ("N", "N'")]),
+        ),
+        def(
+            "iec.disconnector_fuse_3",
+            "Switch-disconnector with fuses, 3 poles",
+            "-QS",
+            Role::Main,
+            disconnector,
+            pole_points(&three),
+        ),
+    ]
 }
 
 /// One symbol per PLC channel kind: a box with the kind written in it. Inputs are fed from
@@ -481,5 +601,92 @@ pub fn with_plc() -> Result<Project> {
             wire_number: Some(number.into()),
         })?;
     }
+    Ok(p)
+}
+
+pub const PAGE_4: PageId = PageId::from_u128(0x4);
+pub const QF1: DeviceId = DeviceId::from_u128(0x111);
+
+/// [`with_plc`] plus a power page 4: L1-L3 feed switch-disconnector -QS1, motor-protection
+/// breaker -QF1 and -K1's main contacts; a second feed with N goes through residual-current
+/// breaker -QF2. -QF1's auxiliary contact 13-14 is drawn on page 3, so -QF1 has a contact
+/// table and the contact points back.
+pub fn with_power() -> Result<Project> {
+    let mut p = with_plc()?;
+    p.apply(Command::AddPage(Page {
+        id: PAGE_4,
+        name: "4".into(),
+        description: "Power distribution".into(),
+        subtitle: "Distribuzione potenza".into(),
+        order: 3,
+    }))?;
+    let fid = FunctionId::from_u128;
+    let device = |p: &mut Project, id: u128, tag: &str, desc: &str| -> Result<DeviceId> {
+        let d = DeviceId::from_u128(id);
+        if p.device(d).is_err() {
+            p.add_device(Device::new(d, tag, desc))?;
+        }
+        Ok(d)
+    };
+    let place = |p: &mut Project, dev: DeviceId, sym: &str, f: u128, page: PageId, (x, y): (f64, f64)| -> Result<()> {
+        let symbol = SymbolId::new(sym);
+        let designations = p.next_designations(dev, &symbol);
+        p.place(Function {
+            id: fid(f),
+            device: dev,
+            symbol,
+            page,
+            position: Point::new(x, y),
+            rotation: Rotation::R0,
+            designations,
+            properties: Default::default(),
+        })
+        .map(drop)
+    };
+    let l1 = device(&mut p, 0x10e, "L1", "400 V")?;
+    let l2 = device(&mut p, 0x10f, "L2", "400 V")?;
+    let l3 = device(&mut p, 0x110, "L3", "400 V")?;
+    let n = device(&mut p, 0x114, "N", "Neutral")?;
+    let qs1 = device(&mut p, 0x112, "-QS1", "Main switch")?;
+    let qf1 = device(&mut p, 0x111, "-QF1", "Motor protection")?;
+    let qf2 = device(&mut p, 0x113, "-QF2", "Heating cables")?;
+    let k1 = DeviceId::from_u128(0x103);
+    // Feed 1: L1-L3 → -QS1 → -QF1 → -K1 main contacts.
+    for (i, (dev, f)) in [(l1, 0x220), (l2, 0x221), (l3, 0x222)].into_iter().enumerate() {
+        // Stepped down, so each name stays clear of the next phase's wire.
+        place(&mut p, dev, "iec.supply", f, PAGE_4, (-100.0 + POLE * i as f64, 72.0 - 4.0 * i as f64))?;
+    }
+    place(&mut p, qs1, "iec.disconnector_fuse_3", 0x223, PAGE_4, (-100.0, 44.0))?;
+    place(&mut p, qf1, "iec.motor_protection_3", 0x224, PAGE_4, (-100.0, 16.0))?;
+    place(&mut p, k1, "iec.contact_main_3", 0x225, PAGE_4, (-100.0, -12.0))?;
+    // Feed 2: L1-L3 and N → -QF2.
+    for (i, (dev, f)) in [(l1, 0x226), (l2, 0x227), (l3, 0x228), (n, 0x229)].into_iter().enumerate() {
+        place(&mut p, dev, "iec.supply", f, PAGE_4, (-20.0 + POLE * i as f64, 72.0 - 4.0 * i as f64))?;
+    }
+    place(&mut p, qf2, "iec.breaker_3pn_rcd", 0x22a, PAGE_4, (-20.0, 44.0))?;
+    // -QF1's auxiliary contact, on the PLC page.
+    place(&mut p, qf1, "iec.contact_no", 0x22b, PageId::from_u128(0x3), (120.0, 36.0))?;
+
+    let mut wires: Vec<(u128, u128, &str, u128, &str)> = Vec::new();
+    for (i, (top, bottom)) in [("1", "2"), ("3", "4"), ("5", "6")].into_iter().enumerate() {
+        let i = i as u128;
+        wires.push((0x320 + i, 0x220 + i, "1", 0x223, top));
+        wires.push((0x323 + i, 0x223, bottom, 0x224, top));
+        wires.push((0x326 + i, 0x224, bottom, 0x225, top));
+        wires.push((0x329 + i, 0x226 + i, "1", 0x22a, top));
+    }
+    wires.push((0x32c, 0x229, "1", 0x22a, "N"));
+    for (id, fa, pa, fb, pb) in wires {
+        p.connect(Connection {
+            id: ConnectionId::from_u128(id),
+            from: ConnectionRef::new(fid(fa), pa),
+            to: ConnectionRef::new(fid(fb), pb),
+            wire_number: None,
+        })?;
+    }
+    // Number every wire as the reference project does: one number per potential, named
+    // potentials by their name, the others by page (101, 401…).
+    p.apply(Command::SetNaming(crate::Naming::by_page()))?;
+    p.apply(Command::Batch(p.renumber_all_wires()))?;
     Ok(p)
 }
