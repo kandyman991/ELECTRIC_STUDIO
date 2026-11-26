@@ -50,6 +50,8 @@ pub enum ContactKind {
     NormallyClosed,
     /// Main (power) contacts of a contactor, numbered 1-2, 3-4, 5-6 by the symbol itself.
     Power,
+    /// A changeover contact: common 1, normally closed 2, normally open 4 (`11-12-14`).
+    Changeover,
 }
 
 impl ContactKind {
@@ -59,6 +61,7 @@ impl ContactKind {
             ContactKind::NormallyOpen => "NO",
             ContactKind::NormallyClosed => "NC",
             ContactKind::Power => "main",
+            ContactKind::Changeover => "CO",
         }
     }
 }

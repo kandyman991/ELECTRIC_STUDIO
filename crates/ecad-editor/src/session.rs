@@ -190,6 +190,11 @@ pub enum UiEvent {
     UpdatePart {
         part: Part,
     },
+    /// A part's contact blocks, as typed: `13-14 21-22` or `11-12-14`.
+    PartContacts {
+        number: String,
+        contacts: String,
+    },
     RemovePart {
         number: String,
     },
@@ -684,6 +689,21 @@ impl Session {
                 let r = self.editor.update_part(part);
                 self.report(r);
             }
+            UiEvent::PartContacts { number, contacts } => match ecad_model::parts::parse_blocks(&contacts) {
+                Err(bad) => {
+                    self.message =
+                        Some(format!("`{bad}` isn't a contact: write 13-14 (NO), 21-22 (NC) or 11-12-14 (CO)"));
+                }
+                Ok(blocks) => {
+                    if let Some(mut part) = self.editor.project().parts.get(&number).cloned()
+                        && part.contacts != blocks
+                    {
+                        part.contacts = blocks;
+                        let r = self.editor.update_part(part);
+                        self.report(r);
+                    }
+                }
+            },
             UiEvent::RemovePart { number } => {
                 let r = self.editor.remove_part(&number);
                 self.report(r);

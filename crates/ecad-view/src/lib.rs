@@ -147,14 +147,20 @@ fn cross_reference_lines(project: &Project, f: ecad_model::FunctionId, role: Rol
 }
 
 /// The contact table under a coil or breaker: one row per pole of each of its contacts, as in
-/// `14 _/_ 13  2/4C`: the designations around a small NO or NC contact, then where it is drawn.
+/// `14 _/_ 13  2/4C`: the designations around a small NO, NC or changeover contact (`11 12/14`),
+/// then where it is drawn.
 /// `top` is the top-left corner of the first row.
 fn contact_table(project: &Project, main: ecad_model::FunctionId, top: Point) -> Result<ContactTable> {
     let device = project.function(main)?.device;
     let step = XREF_HEIGHT * 1.5;
     let mut table = ContactTable::default();
     let mut row = 0.0;
-    for c in project.contacts_of(device) {
+    let contacts = project.contacts_of(device);
+    // The location column starts after the widest right-hand number (`12/14` of a changeover).
+    let widest =
+        contacts.iter().flat_map(|c| c.poles.iter()).map(|(first, _)| first.chars().count()).max().unwrap_or(0);
+    let location_x = 7.8 + f64::max(5.2, widest as f64 * XREF_HEIGHT * 0.9 + 1.6);
+    for c in contacts {
         for (first, second) in &c.poles {
             let y = top.y - step * row - XREF_HEIGHT / 2.0;
             let x = top.x;
@@ -172,10 +178,16 @@ fn contact_table(project: &Project, main: ecad_model::FunctionId, top: Point) ->
                     (Point::new(glyph + 1.0, base), Point::new(glyph + 2.4, base - 0.7)),
                     (Point::new(glyph + 2.0, base), Point::new(glyph + 2.0, base - 0.9)),
                 ]),
+                // The blade rests on the closed side (a hook below) with the open side above.
+                ecad_model::ContactKind::Changeover => table.lines.extend([
+                    (Point::new(glyph + 1.0, base), Point::new(glyph + 2.4, base - 0.7)),
+                    (Point::new(glyph + 2.0, base), Point::new(glyph + 2.0, base - 0.9)),
+                    (Point::new(glyph + 2.0, base + 1.1), Point::new(glyph + 3.0, base + 1.1)),
+                ]),
                 _ => table.lines.push((Point::new(glyph + 1.0, base), Point::new(glyph + 2.3, base + 1.1))),
             }
             table.texts.push(mid(x + 7.8, first, HAlign::Left));
-            table.texts.push(mid(x + 13.0, &c.location, HAlign::Left));
+            table.texts.push(mid(x + location_x, &c.location, HAlign::Left));
             row += 1.0;
         }
     }

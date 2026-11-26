@@ -97,23 +97,6 @@ impl Builder {
         Ok(id)
     }
 
-    /// A contact numbered as on the original: `n` is its first digit (2 for 21-22, 23-24).
-    fn contact(&mut self, tag: &str, symbol: &str, x: f64, y: f64, n: u32) -> Result<F> {
-        let device = self.device(tag)?;
-        let symbol = SymbolId::new(symbol);
-        let sym = self.p.symbol(&symbol)?.clone();
-        let designations = sym
-            .connection_points
-            .iter()
-            .map(|cp| {
-                let last = cp.name.chars().last().map(String::from).unwrap_or_default();
-                (cp.name.clone(), format!("{n}{last}"))
-            })
-            .collect();
-        self.place(device, symbol, x, y, Rotation::R0, designations, BTreeMap::new())
-    }
-
-    /// A terminal or connector pin with the number it has on the original.
     fn terminal(&mut self, strip: &str, symbol: &str, number: &str, x: f64, y: f64) -> Result<F> {
         let device = self.device(strip)?;
         let symbol = SymbolId::new(symbol);
@@ -243,6 +226,11 @@ impl Builder {
                     manufacturer: (*manufacturer).into(),
                     description: (*description).into(),
                     code: String::new(),
+                    contacts: CONTACT_BLOCKS
+                        .iter()
+                        .find(|(n, _)| n == number)
+                        .map(|(_, blocks)| blocks.iter().map(|b| (*b).to_owned()).collect())
+                        .unwrap_or_default(),
                 }))?;
             }
         }
@@ -261,6 +249,16 @@ fn names(list: &[&str]) -> Vec<String> {
 }
 
 use crate::Direction::{Down, Left, Right, Up};
+
+/// The auxiliary contacts printed on the parts used here, as the catalogue gives them.
+const CONTACT_BLOCKS: &[(&str, &[&str])] = &[
+    ("ZBE101", &["13-14"]),
+    ("ZBE102", &["11-12"]),
+    ("1122880000", &["11-12-14"]),
+    ("3RT2016-2BB41", &["13-14"]),
+    ("3RT2036-1NB30", &["13-14", "21-22"]),
+    ("3RT2038-1NB30", &["13-14", "21-22"]),
+];
 
 const SIEMENS: &str = "Siemens";
 const SCHNEIDER: &str = "Schneider Electric";
@@ -685,9 +683,11 @@ fn supply_24v(b: &mut Builder) -> Result<()> {
         let out = b.arrow(n, x, 100.0, Up)?;
         b.ws((fe1, pin), (out, "1"), n, "1,5", "BU")?;
     }
-    // Channel 4 feeds the PLC outputs, cut by the emergency relay -A3KA1.
-    let ka1 = b.put("A3KA1", "iec.contact_no", 132.0, 136.0)?;
-    b.wn((fe1, "4"), (ka1, "13"), "A104")?;
+    // Channel 4 feeds the PLC outputs, cut by the emergency relay -A3KA1: its changeover drawn
+    // upside down, common 11 on top, the open side 14 below.
+    b.parts("A3KA1", &[("1122880000", 1, WEIDMULLER, "Relay 24 V DC, 1 CO 6 A, with LED")])?;
+    let ka1 = b.put_r("A3KA1", "iec.contact_co", 132.0, 136.0, Rotation::R180)?;
+    b.wn((fe1, "4"), (ka1, "11"), "A104")?;
     let out = b.arrow("+A104", 132.0, 100.0, Up)?;
     b.ws((ka1, "14"), (out, "1"), "+A104", "1,5", "BU")?;
     Ok(())
@@ -741,7 +741,6 @@ fn emergency_chain(b: &mut Builder) -> Result<()> {
         #[allow(clippy::needless_range_loop)] // `ch` is the channel: it picks numbers and symbols.
         for ch in 0..2 {
             let x = x0 + 16.0 * ch as f64;
-            let n = 1 + ch as u32;
             let symbol = if ch == 0 { "iec.emergency_stop_nc" } else { "iec.contact_nc" };
             let mut y = y0;
             // Into the box: terminal, connector pin.
@@ -754,7 +753,8 @@ fn emergency_chain(b: &mut Builder) -> Result<()> {
                 chain.push((pin, "1", "2"));
                 y -= 34.0;
             }
-            let c = b.contact(tag, symbol, x, y, n)?;
+            // Numbered from the stop's contact blocks (or counted, without parts): 11-12, 21-22.
+            let c = b.put(tag, symbol, x, y)?;
             chain.push((c, if ch == 0 { "11" } else { "21" }, if ch == 0 { "12" } else { "22" }));
             if let Some((strip, plug, _)) = via {
                 let base = if *strip == "X90" { 6 } else { 5 };
@@ -869,8 +869,8 @@ fn safety_module(b: &mut Builder) -> Result<()> {
     let relay = [("1122880000", 1, WEIDMULLER, "Relay 24 V DC, 1 CO 6 A, with LED")];
     b.parts("A3KA2", &relay)?;
     // -A3KA2 releases -A3KM4; -A3KM4 releases -A3KM5 and -A3KA1.
-    let ka2 = b.put("A3KA2", "iec.contact_no", 64.0, 200.0)?;
-    b.w((rail[&64], "2"), (ka2, "13"))?;
+    let ka2 = b.put_r("A3KA2", "iec.contact_co", 64.0, 200.0, Rotation::R180)?;
+    b.w((rail[&64], "2"), (ka2, "11"))?;
     let km4 = b.put("A3KM4", "iec.coil_contactor", 64.0, 88.0)?;
     b.describe("A3KM4", "Defrost resistors contactor")?;
     b.parts("A3KM4", &[("3RT2038-1NB30", 1, SIEMENS, "Contactor 37 kW, 24 V DC")])?;
@@ -967,10 +967,11 @@ fn inputs_cpu(b: &mut Builder) -> Result<()> {
     b.boxed("XCPR3", (x - 16.0, 168.0), (x + 12.0, 222.0))?;
     // I0.6 cabinet emergency stop pressed: a spare NO of -A2SB1.
     let x = columns[6];
-    let sb1 = b.contact("A2SB1", "iec.contact_no", x, 184.0, 3)?;
-    b.w((taps[6], "2"), (sb1, "33"))?;
+    // The stop's NO block: 13-14.
+    let sb1 = b.put("A2SB1", "iec.contact_no", x, 184.0)?;
+    b.w((taps[6], "2"), (sb1, "13"))?;
     let i6 = input(b, 6, x, "Emergency_Cabinet")?;
-    b.wn((sb1, "34"), (i6, "1"), "I006")?;
+    b.wn((sb1, "14"), (i6, "1"), "I006")?;
     Ok(())
 }
 
@@ -1096,19 +1097,23 @@ fn outputs_card(b: &mut Builder) -> Result<()> {
         (6usize, "O3KM6", "O3KA5", "O3KM5", 288.0, 310.0, ja, ["O308", "O309"]),
         (7, "O3KM5", "O3KA6", "O3KM6", 332.0, 356.0, jb, ["O310", "O311"]),
     ];
+    // Parts first, so that the contacts take their numbers from them.
+    for (_, _, relay_tag, contactor_tag, ..) in pairs {
+        b.parts(relay_tag, &relay)?;
+        b.parts(contactor_tag, &[("3RT2036-1NB30", 1, SIEMENS, "Contactor 22 kW, 24 V DC")])?;
+    }
     for (k, nc_of, relay_tag, contactor_tag, x, x_no, j, numbers) in pairs {
-        let nc = b.contact(nc_of, "iec.contact_nc", x, 164.0, 2)?;
+        let nc = b.put(nc_of, "iec.contact_nc", x, 164.0)?;
         b.wn((outs[k], "1"), (nc, "21"), &format!("O30{k}"))?;
         let ka = b.put(relay_tag, "iec.coil_relay", x, 112.0)?;
         b.wn((nc, "22"), (ka, "A1"), numbers[0])?;
         b.w((ka, "A2"), (rail[&(x as i64)], "1"))?;
-        b.parts(relay_tag, &relay)?;
-        let no = b.contact(relay_tag, "iec.contact_no", x_no, 164.0, 1)?;
-        b.w((j, "2"), (no, "13"))?;
+        // The relay's changeover as on the original: the open side 14 on top, common 11 below.
+        let co = b.put(relay_tag, "iec.contact_co", x_no, 164.0)?;
+        b.w((j, "2"), (co, "14"))?;
         let km = b.put(contactor_tag, "iec.coil_contactor", x_no, 112.0)?;
-        b.wn((no, "14"), (km, "A1"), numbers[1])?;
+        b.wn((co, "11"), (km, "A1"), numbers[1])?;
         b.w((km, "A2"), (rail[&(x_no as i64)], "1"))?;
-        b.parts(contactor_tag, &[("3RT2036-1NB30", 1, SIEMENS, "Contactor 22 kW, 24 V DC")])?;
     }
     let end = b.arrow("-A100", 368.0, 72.0, Left)?;
     b.wn(last, (end, "1"), "-A100")?;
