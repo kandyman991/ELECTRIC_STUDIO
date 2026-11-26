@@ -72,6 +72,11 @@ struct PageFile {
     /// Location boxes; missing in projects saved before G4b.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     boxes: Vec<LocationBox>,
+    /// A layout page's mounting plate and what is on it; missing before M5a.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    panel: Option<ecad_model::Panel>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    panel_items: Vec<ecad_model::PanelItem>,
 }
 
 fn io(path: &Path) -> impl FnOnce(std::io::Error) -> ProjectError + '_ {
@@ -158,6 +163,8 @@ pub fn save(project: &Project, dir: &Path) -> Result<()> {
             functions: project.functions_on(*page).cloned().collect(),
             connections: project.connections_on(*page).cloned().collect(),
             boxes: project.boxes_on(*page).cloned().collect(),
+            panel: project.panels.get(page).copied(),
+            panel_items: project.panel_items_on(*page).into_iter().cloned().collect(),
         };
         let name = format!("{}.json", page.0);
         write_json(&pages_dir.join(&name), &file)?;
@@ -225,6 +232,12 @@ pub fn load(dir: &Path) -> Result<Project> {
         for b in &file.boxes {
             project.apply(Command::AddBox(b.clone())).map_err(model(&path))?;
         }
+        if let Some(panel) = file.panel {
+            project.apply(Command::SetPanel { page: id, panel: Some(panel) }).map_err(model(&path))?;
+        }
+        for item in &file.panel_items {
+            project.apply(Command::AddPanelItem(item.clone())).map_err(model(&path))?;
+        }
         pages.push((path, file.connections));
     }
     for (path, connections) in pages {
@@ -268,6 +281,11 @@ mod tests {
         let other = tempfile::tempdir().unwrap();
         save(&plc, other.path()).unwrap();
         assert_eq!(load(other.path()).unwrap(), plc);
+        // The reference project: contact blocks, bridges, mirrored drawings, the layout page.
+        let reference = ecad_model::reference::reference_project().unwrap();
+        let third = tempfile::tempdir().unwrap();
+        save(&reference, third.path()).unwrap();
+        assert_eq!(load(third.path()).unwrap(), reference);
         // Saving again writes identical bytes (stable order, no timestamps).
         let first = std::fs::read(dir.path().join("devices.json")).unwrap();
         save(&load(dir.path()).unwrap(), dir.path()).unwrap();

@@ -12,6 +12,7 @@ use ecad_model::{Direction, Graphic, PageId, Point, Project, Role};
 use std::sync::Arc;
 
 pub mod clash;
+mod panel;
 mod place;
 
 use place::{Placer, Side, TagSize};
@@ -22,6 +23,8 @@ pub const LAYER_TAGS: &str = "TAGS";
 pub const LAYER_FRAME: &str = "FRAME";
 pub const LAYER_XREF: &str = "XREF";
 pub const LAYER_BOXES: &str = "BOXES";
+/// Layout pages: the mounting plate, rails, ducts and device footprints.
+pub const LAYER_PANEL: &str = "PANEL";
 /// Text height of cross-reference lines.
 pub const XREF_HEIGHT: f64 = 1.8;
 
@@ -273,6 +276,11 @@ pub fn page_drawing(project: &Project, page: PageId) -> Result<Drawing> {
     let mut d = Drawing::new_metric();
     let err = |e: cadcraft_doc::DocError| ViewError::Drawing(e.to_string());
     draw_sheet(&mut d, project, page)?;
+    // A layout page shows its mounting plate at scale instead of a schematic.
+    if let Some(panel) = project.panels.get(&page) {
+        panel::draw(&mut d, project, page, *panel)?;
+        return Ok(d);
+    }
 
     // Only the symbols this page uses, in a stable order; a mirrored drawing uses a mirrored
     // copy of its symbol's block.

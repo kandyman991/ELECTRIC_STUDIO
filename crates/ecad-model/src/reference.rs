@@ -10,6 +10,7 @@
 use crate::geometry::{Point, Rotation};
 use crate::library::{BlackBox, black_box};
 use crate::naming::Naming;
+use crate::panel::{Panel, PanelItem, PanelItemKind, RAIL_WIDTH};
 use crate::parts::{Part, PartRef};
 use crate::project::*;
 use crate::sheet::Sheet;
@@ -237,6 +238,9 @@ impl Builder {
                         .find(|(n, _)| n == number)
                         .map(|(_, blocks)| blocks.iter().map(|b| (*b).to_owned()).collect())
                         .unwrap_or_default(),
+                    width: size_of(number).map(|s| s.0),
+                    height: size_of(number).map(|s| s.1),
+                    depth: size_of(number).map(|s| s.2),
                 }))?;
             }
         }
@@ -265,6 +269,39 @@ const CONTACT_BLOCKS: &[(&str, &[&str])] = &[
     ("3RT2036-1NB30", &["13-14", "21-22"]),
     ("3RT2038-1NB30", &["13-14", "21-22"]),
 ];
+
+/// Sizes (width along the rail, height, depth; mm) of the parts mounted in the cabinet, from
+/// the makers' data sheets where known, otherwise typical for the kind (marked ~).
+const PART_SIZES: &[(&str, f64, f64, f64)] = &[
+    ("38316006", 128.0, 150.0, 120.0),   // ~ switch-disconnector 4P NH00
+    ("563930", 108.0, 90.0, 60.0),       // ~ distribution block 4P
+    ("5SU1344-1KK80", 72.0, 90.0, 70.0), // RCBO 3P+N, 4 modules
+    ("5SU1356-1KK25", 36.0, 90.0, 70.0), // RCBO 1P+N, 2 modules
+    ("5SU1356-1KK06", 36.0, 90.0, 70.0),
+    ("09967", 45.0, 90.0, 60.0),                // ~ DIN-rail socket
+    ("TMF", 17.5, 88.0, 46.0),                  // ~ cabinet thermostat
+    ("2301137", 36.0, 81.0, 68.0),              // fuse holder 1P+N 10x38
+    ("2303038", 54.0, 81.0, 68.0),              // fuse holder 3P 10x38
+    ("S8VK-C24024", 40.0, 125.0, 110.0),        // power supply 240 W
+    ("6SL3210-1KE13-2AF1", 73.0, 196.0, 225.0), // inverter, frame size AA
+    ("3RV2011-1HA10", 45.0, 97.0, 97.0),        // motor protection, size S00
+    ("2906032", 45.0, 99.0, 112.0),             // ~ electronic protection, 4 channels
+    ("CS MP202M0", 45.0, 108.0, 114.0),         // ~ safety module
+    ("3RT2016-2BB41", 45.0, 77.0, 98.0),        // contactor S00, spring terminals
+    ("3RT2036-1NB30", 55.0, 114.0, 130.0),      // contactor S2
+    ("3RT2038-1NB30", 55.0, 114.0, 130.0),
+    ("1122880000", 6.4, 90.0, 87.0),            // relay module, 6.4 mm
+    ("6ES7214-1AG40-0XB0", 110.0, 100.0, 75.0), // CPU 1214C
+    ("6ES7223-1BL32-0XB0", 70.0, 100.0, 75.0),  // SM 1223, 32 I/O
+    ("1608510000", 5.1, 60.0, 47.0),            // ZDU 2.5
+    ("1608640000", 5.1, 60.0, 47.0),            // ZPE 2.5
+    ("0383560000", 8.5, 46.0, 30.0),            // end bracket EW 35
+    ("1608740000", 2.1, 60.0, 30.0),            // end plate ZAP/TW1
+];
+
+fn size_of(number: &str) -> Option<(f64, f64, f64)> {
+    PART_SIZES.iter().find(|(n, ..)| *n == number).map(|(_, w, h, d)| (*w, *h, *d))
+}
 
 const SIEMENS: &str = "Siemens";
 const SCHNEIDER: &str = "Schneider Electric";
@@ -306,6 +343,7 @@ pub fn reference_project() -> Result<Project> {
     outputs_cpu(&mut b)?;
     outputs_card(&mut b)?;
     terminal_strips(&mut b)?;
+    cabinet_layout(&mut b)?;
     // As the editor does for each new wire: move middle runs off other wires and symbols.
     let pages: Vec<PageId> = b.p.pages.keys().copied().collect();
     for page in pages {
@@ -315,6 +353,91 @@ pub fn reference_project() -> Result<Project> {
     }
     number_wires(&mut b.p)?;
     Ok(b.p)
+}
+
+/// L7: the mounting plate as on the original's inner-cabinet layout: 895 x 1870 mm, horizontal
+/// ducts at the original's heights with ducts up both sides, a rail between each pair, the
+/// inverter on the plate in the tall gap and the terminal strips along the bottom.
+fn cabinet_layout(b: &mut Builder) -> Result<()> {
+    const W: f64 = 895.0;
+    const H: f64 = 1870.0;
+    b.page("L7", "Inner cabinet layout", "Layout interno quadro")?;
+    let page = b.page;
+    b.p.apply(Command::SetPanel { page, panel: Some(Panel { width: W, height: H }) })?;
+    let item = |b: &mut Builder, kind: PanelItemKind, x: f64, y: f64, length: f64, vertical: bool| {
+        let id = PanelItemId::from_u128(b.id());
+        b.p.apply(Command::AddPanelItem(PanelItem {
+            id,
+            page,
+            kind,
+            at: Point::new(x, y),
+            length,
+            vertical,
+            part: String::new(),
+        }))
+        .map(drop)
+    };
+    let duct = |width: f64| PanelItemKind::Duct { width, depth: 80.0 };
+    // Horizontal ducts, by their top's distance from the top of the plate (as dimensioned on
+    // the original), and width; the top and bottom ones run the full width.
+    let ducts = [
+        (0.0, 40.0),
+        (230.0, 60.0),
+        (430.0, 60.0),
+        (675.0, 40.0),
+        (1035.0, 60.0),
+        (1255.0, 60.0),
+        (1445.0, 60.0),
+        (1635.0, 80.0),
+    ];
+    let (left, right) = (60.0, 80.0);
+    for (k, (from_top, width)) in ducts.iter().enumerate() {
+        let full = k == 0 || k == ducts.len() - 1;
+        let (x, length) = if full { (0.0, W) } else { (left, W - left - right) };
+        item(b, duct(*width), x, H - from_top - width, length, false)?;
+    }
+    // Up both sides between the top and bottom ducts.
+    let (low, high) = (H - 1635.0, H - 40.0);
+    item(b, duct(left), 0.0, low, high - low, true)?;
+    item(b, duct(right), W - right, low, high - low, true)?;
+    // A rail in the middle of each gap between ducts, devices along it from the left; the
+    // tall gap (675-1035) has the inverter and the main switch straight on the plate.
+    let gaps: Vec<(f64, f64)> = ducts.windows(2).map(|p| (p[0].0 + p[0].1, p[1].0)).collect();
+    let rows: [&[&str]; 7] = [
+        &["P2QF1", "P2QF3", "P3Q1", "P3Q2", "P3FU4", "P3FU3", "M3FU1", "P3XS2", "P3S1"],
+        &["P2WB1", "A1FE1", "P3GD1"],
+        &["C1D1", "C1A3", "A3S1", "A3KA1", "A3KA2", "A3KM1", "A3KM2"],
+        &[],
+        &["A3KM4", "A3KM5", "O0KM1", "O0KA1"],
+        &["M10QF1", "M10QF2", "O3KM1", "O3KM2", "O3KM3", "O3KM4", "O3KM5", "O3KM6", "O3KA0", "O3KA1", "O3KA5", "O3KA6"],
+        &["X22", "X31", "X32", "X33", "X90"],
+    ];
+    let place = |b: &mut Builder, tag: &str, x: f64, centre: f64| -> Result<f64> {
+        let device = b.device(tag)?;
+        let (w, h) = b.p.device_size(device).0;
+        item(b, PanelItemKind::Device { device }, x, centre - h / 2.0, 0.0, false)?;
+        Ok(x + w + 5.0)
+    };
+    for ((top, bottom), tags) in gaps.iter().zip(rows) {
+        let centre = H - (top + bottom) / 2.0;
+        if tags.is_empty() {
+            let mut x = left + 40.0;
+            for tag in ["MU3", "P2QS1"] {
+                x = place(b, tag, x, centre)? + 60.0;
+            }
+            continue;
+        }
+        item(b, PanelItemKind::Rail, left, centre - RAIL_WIDTH / 2.0, W - left - right, false)?;
+        let mut x = left + 10.0;
+        for tag in tags {
+            x = place(b, tag, x, centre)?;
+        }
+    }
+    // Under the bottom duct: the full-width rail with -X0.
+    let centre = (H - 1635.0 - 80.0) / 2.0;
+    item(b, PanelItemKind::Rail, 0.0, centre - RAIL_WIDTH / 2.0, W, false)?;
+    place(b, "X0", 20.0, centre)?;
+    Ok(())
 }
 
 /// Feed-through terminals per terminal; end brackets and end plates once per strip; on -X0 the
@@ -1184,6 +1307,6 @@ mod tests {
     fn the_reference_project_builds_and_has_its_pages() {
         let p = reference_project().unwrap();
         let pages: Vec<&str> = p.pages_in_order().iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(pages, ["P2", "P3", "M3", "M10A", "A1", "A2", "A3", "I1", "O1", "O3"]);
+        assert_eq!(pages, ["P2", "P3", "M3", "M10A", "A1", "A2", "A3", "I1", "O1", "O3", "L7"]);
     }
 }

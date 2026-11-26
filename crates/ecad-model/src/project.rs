@@ -50,6 +50,10 @@ id_type!(
 id_type!(ConnectionId);
 id_type!(CableId);
 id_type!(BoxId);
+id_type!(
+    /// A rail, duct or device footprint on a mounting plate.
+    PanelItemId
+);
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Page {
@@ -353,6 +357,14 @@ pub enum Command {
         designations: BTreeMap<String, String>,
     },
     /// Draw a location box (at least 4 mm each way).
+    /// Make a page a layout page with this mounting plate (`None`: an ordinary page again).
+    SetPanel {
+        page: PageId,
+        panel: Option<crate::panel::Panel>,
+    },
+    AddPanelItem(crate::panel::PanelItem),
+    UpdatePanelItem(crate::panel::PanelItem),
+    RemovePanelItem(PanelItemId),
     AddBox(LocationBox),
     /// Move, resize or relabel a box.
     UpdateBox(LocationBox),
@@ -460,6 +472,16 @@ pub enum ModelError {
     InvalidBlackBox,
     #[error("no box {0:?}")]
     NoBox(BoxId),
+    #[error("no panel item {0:?}")]
+    NoPanelItem(PanelItemId),
+    #[error("page `{0}` has no mounting plate")]
+    NoPanel(String),
+    #[error("a plate, rail or duct needs a size above zero")]
+    InvalidPanelSize,
+    #[error("`{0}` is already on a mounting plate")]
+    AlreadyOnPanel(String),
+    #[error("page `{0}` still has a mounting plate with items on it")]
+    PanelNotEmpty(String),
     #[error("a box must be at least 4 mm wide and high")]
     BoxTooSmall,
     #[error("no cable {0:?}")]
@@ -518,6 +540,12 @@ pub struct Project {
     /// Location boxes on the pages.
     #[serde(default)]
     pub boxes: BTreeMap<BoxId, LocationBox>,
+    /// The mounting plate of each layout page.
+    #[serde(default)]
+    pub panels: BTreeMap<PageId, crate::panel::Panel>,
+    /// Rails, ducts and device footprints on the plates.
+    #[serde(default)]
+    pub panel_items: BTreeMap<PanelItemId, crate::panel::PanelItem>,
 }
 
 /// Title-block fields of a project. All free text.
@@ -921,6 +949,9 @@ impl Project {
                 if self.functions.values().any(|f| f.device == id) {
                     return Err(ModelError::DeviceInUse(tag));
                 }
+                if self.panel_item_of(id).is_some() {
+                    return Err(ModelError::AlreadyOnPanel(tag));
+                }
                 let d = self.devices.remove(&id).ok_or(ModelError::NoDevice(id))?;
                 Ok(Command::AddDevice(d))
             }
@@ -1017,7 +1048,10 @@ impl Project {
             }
             Command::RemovePage(id) => {
                 let name = self.page(id)?.name.clone();
-                if self.functions.values().any(|f| f.page == id) || self.boxes.values().any(|b| b.page == id) {
+                if self.functions.values().any(|f| f.page == id)
+                    || self.boxes.values().any(|b| b.page == id)
+                    || self.panels.contains_key(&id)
+                {
                     return Err(ModelError::PageNotEmpty(name));
                 }
                 let page = self.pages.remove(&id).ok_or(ModelError::NoPage(id))?;
@@ -1082,6 +1116,43 @@ impl Project {
                 let old_device = std::mem::replace(&mut f.device, device);
                 let old_designations = std::mem::replace(&mut f.designations, designations);
                 Ok(Command::Reassign { id, device: old_device, designations: old_designations })
+            }
+            Command::SetPanel { page, panel } => {
+                let name = self.page(page)?.name.clone();
+                if let Some(p) = &panel
+                    && !(p.width > 0.0 && p.height > 0.0 && p.width.is_finite() && p.height.is_finite())
+                {
+                    return Err(ModelError::InvalidPanelSize);
+                }
+                if panel.is_none() && self.panel_items.values().any(|i| i.page == page) {
+                    return Err(ModelError::PanelNotEmpty(name));
+                }
+                let old = match panel {
+                    Some(p) => self.panels.insert(page, p),
+                    None => self.panels.remove(&page),
+                };
+                Ok(Command::SetPanel { page, panel: old })
+            }
+            Command::AddPanelItem(item) => {
+                self.check_panel_item(&item, None)?;
+                if self.panel_items.contains_key(&item.id) {
+                    return Err(ModelError::DuplicateId(item.id.0));
+                }
+                let id = item.id;
+                self.panel_items.insert(id, item);
+                Ok(Command::RemovePanelItem(id))
+            }
+            Command::UpdatePanelItem(item) => {
+                if !self.panel_items.contains_key(&item.id) {
+                    return Err(ModelError::NoPanelItem(item.id));
+                }
+                self.check_panel_item(&item, Some(item.id))?;
+                let slot = self.panel_items.get_mut(&item.id).ok_or(ModelError::NoPanelItem(item.id))?;
+                Ok(Command::UpdatePanelItem(std::mem::replace(slot, item)))
+            }
+            Command::RemovePanelItem(id) => {
+                let item = self.panel_items.remove(&id).ok_or(ModelError::NoPanelItem(id))?;
+                Ok(Command::AddPanelItem(item))
             }
             Command::AddBox(b) => {
                 let b = self.checked_box(b)?;
@@ -1318,6 +1389,36 @@ impl Project {
     }
 
     /// A box with its corners in order, its label trimmed, on an existing page.
+    /// A panel item must be on a layout page; a rail or duct needs a length (and a duct a
+    /// width); a device must exist and be on no other plate position.
+    fn check_panel_item(&self, item: &crate::panel::PanelItem, replacing: Option<PanelItemId>) -> Result<()> {
+        use crate::panel::PanelItemKind;
+        let name = self.page(item.page)?.name.clone();
+        if !self.panels.contains_key(&item.page) {
+            return Err(ModelError::NoPanel(name));
+        }
+        if !(item.at.x.is_finite() && item.at.y.is_finite()) {
+            return Err(ModelError::InvalidPanelSize);
+        }
+        let positive = |v: f64| v > 0.0 && v.is_finite();
+        match &item.kind {
+            PanelItemKind::Rail if !positive(item.length) => Err(ModelError::InvalidPanelSize),
+            PanelItemKind::Duct { width, depth }
+                if !(positive(item.length) && positive(*width) && positive(*depth)) =>
+            {
+                Err(ModelError::InvalidPanelSize)
+            }
+            PanelItemKind::Device { device } => {
+                let tag = self.device(*device)?.tag.clone();
+                match self.panel_item_of(*device) {
+                    Some(other) if Some(other.id) != replacing => Err(ModelError::AlreadyOnPanel(tag)),
+                    _ => Ok(()),
+                }
+            }
+            _ => Ok(()),
+        }
+    }
+
     fn checked_box(&self, b: LocationBox) -> Result<LocationBox> {
         self.page(b.page)?;
         let min = Point::new(b.min.x.min(b.max.x), b.min.y.min(b.max.y));

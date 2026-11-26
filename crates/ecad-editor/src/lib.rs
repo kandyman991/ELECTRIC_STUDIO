@@ -7,6 +7,7 @@
 //! shell gets the same editor.
 
 pub use ecad_model::library::BlackBox;
+pub use ecad_model::parts::format_size;
 use ecad_model::{
     Command, Connection, ConnectionId, ConnectionRef, Device, DeviceId, Direction, Function, FunctionId, History,
     ModelError, Page, PageId, Point, Potential, Project, Rotation, SymbolId, route_between,
@@ -304,11 +305,14 @@ impl Editor {
         let (mut added, mut updated) = (0, 0);
         let mut cmds = Vec::new();
         for mut part in parts {
-            // A catalogue without contact blocks doesn't wipe the ones already entered.
-            if let Some(existing) = self.project.parts.get(&part.number)
-                && part.contacts.is_empty()
-            {
-                part.contacts = existing.contacts.clone();
+            // A catalogue without contact blocks or sizes doesn't wipe the ones already entered.
+            if let Some(existing) = self.project.parts.get(&part.number) {
+                if part.contacts.is_empty() {
+                    part.contacts = existing.contacts.clone();
+                }
+                if part.width.is_none() && part.height.is_none() {
+                    (part.width, part.height, part.depth) = (existing.width, existing.height, existing.depth);
+                }
             }
             match self.project.parts.get(&part.number) {
                 None => {
@@ -834,10 +838,12 @@ impl Editor {
     /// Go to a check's page and select what it points at.
     pub fn show_check(&mut self, check: &ecad_rules::Check) -> Result<(), ModelError> {
         self.set_page(check.page)?;
-        self.select(Some(match check.target {
-            ecad_rules::Target::Function(f) => Selected::Function(f),
-            ecad_rules::Target::Connection(c) => Selected::Connection(c),
-        }));
+        self.select(match check.target {
+            ecad_rules::Target::Function(f) => Some(Selected::Function(f)),
+            ecad_rules::Target::Connection(c) => Some(Selected::Connection(c)),
+            // Layout items can't be selected yet (M5b): the page is shown.
+            ecad_rules::Target::PanelItem(_) => None,
+        });
         Ok(())
     }
 

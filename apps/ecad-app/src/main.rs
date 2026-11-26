@@ -50,7 +50,7 @@ struct App {
     show_project: bool,
     project_fields: ProjectFields,
     /// Edit buffers for catalogue rows: number → (manufacturer, description).
-    part_edits: std::collections::BTreeMap<String, (String, String, String, String)>,
+    part_edits: std::collections::BTreeMap<String, (String, String, String, String, String)>,
     /// The "new part" row: number, manufacturer, description.
     new_part: (String, String, String, String),
     title: String,
@@ -100,6 +100,11 @@ impl Default for BoxFields {
             bridges: String::new(),
         }
     }
+}
+
+/// A part's size as the catalogue window shows it.
+fn ecad_model_size(part: &ecad_editor::Part) -> String {
+    ecad_editor::format_size(part)
 }
 
 fn names(list: &str) -> Vec<String> {
@@ -1103,7 +1108,7 @@ impl App {
             // Keep edit buffers in step with the catalogue.
             self.part_edits.retain(|n, _| frame.parts.iter().any(|p| &p.number == n));
             egui::ScrollArea::vertical().max_height(ui.available_height() - 40.0).show(ui, |ui| {
-                egui::Grid::new("parts-grid").striped(true).num_columns(6).show(ui, |ui| {
+                egui::Grid::new("parts-grid").striped(true).num_columns(7).show(ui, |ui| {
                     ui.strong("Part number");
                     ui.strong("Manufacturer");
                     ui.strong("Description");
@@ -1112,6 +1117,8 @@ impl App {
                         "Auxiliary contacts as printed on the part: 13-14 (NO), 21-22 (NC), 11-12-14 (changeover). \
                          Contacts drawn for a device take their numbers from these.",
                     );
+                    ui.strong("Size (mm)")
+                        .on_hover_text("Width x height (x depth), for the panel layout: 45 x 90 x 75");
                     ui.label("");
                     ui.end_row();
                     for part in &frame.parts {
@@ -1121,6 +1128,7 @@ impl App {
                                 part.description.clone(),
                                 part.code.clone(),
                                 part.contacts.join(" "),
+                                ecad_model_size(part),
                             )
                         });
                         ui.label(&part.number);
@@ -1129,6 +1137,8 @@ impl App {
                         let c = ui.add_sized([90.0, 20.0], egui::TextEdit::singleline(&mut buf.2));
                         let k = ui
                             .add_sized([110.0, 20.0], egui::TextEdit::singleline(&mut buf.3).hint_text("13-14 21-22"));
+                        let z =
+                            ui.add_sized([110.0, 20.0], egui::TextEdit::singleline(&mut buf.4).hint_text("45 x 90"));
                         if (m.lost_focus() || d.lost_focus() || c.lost_focus())
                             && (buf.0 != part.manufacturer || buf.1 != part.description || buf.2 != part.code)
                         {
@@ -1139,8 +1149,17 @@ impl App {
                                     description: buf.1.trim().to_owned(),
                                     code: buf.2.trim().to_owned(),
                                     contacts: part.contacts.clone(),
+                                    width: part.width,
+                                    height: part.height,
+                                    depth: part.depth,
                                 },
                             });
+                        }
+                        if z.lost_focus() && buf.4.trim() != ecad_model_size(part) {
+                            events.push(UiEvent::PartSize { number: part.number.clone(), size: buf.4.clone() });
+                            self.part_edits.remove(&part.number);
+                            ui.end_row();
+                            continue;
                         }
                         if k.lost_focus() && buf.3.trim() != part.contacts.join(" ") {
                             events.push(UiEvent::PartContacts { number: part.number.clone(), contacts: buf.3.clone() });
@@ -1169,6 +1188,9 @@ impl App {
                             description: d.trim().to_owned(),
                             code: c.trim().to_owned(),
                             contacts: Vec::new(),
+                            width: None,
+                            height: None,
+                            depth: None,
                         },
                     });
                     self.new_part = Default::default();

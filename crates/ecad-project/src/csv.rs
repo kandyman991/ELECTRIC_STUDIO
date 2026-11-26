@@ -79,8 +79,9 @@ fn column(header: &[String], names: &[&str]) -> Option<usize> {
 }
 
 /// Parts from a CSV catalogue. The header must have a part-number column (`part number`,
-/// `number`, `order number`, `article`…); `manufacturer`, `description`, `code` and
-/// `contacts` (blocks like `13-14 21-22`) are optional. Other columns are ignored.
+/// `number`, `order number`, `article`…); `manufacturer`, `description`, `code`, `contacts`
+/// (blocks like `13-14 21-22`) and `width`, `height`, `depth` (mm) are optional. Other columns
+/// are ignored.
 pub fn read_parts(text: &str) -> Result<Vec<Part>, CsvError> {
     let rows = records(text, detect_separator(text))?;
     let Some((header_line, header)) = rows.first() else { return Err(err(1, "the file is empty")) };
@@ -90,8 +91,24 @@ pub fn read_parts(text: &str) -> Result<Vec<Part>, CsvError> {
     let description = column(header, &["description", "desc", "text", "name"]);
     let code = column(header, &["code", "internal code", "article code", "item code", "codice", "codice interno"]);
     let contacts = column(header, &["contacts", "contact blocks", "auxiliary contacts", "contatti"]);
+    let width = column(header, &["width", "width mm", "larghezza"]);
+    let height = column(header, &["height", "height mm", "altezza"]);
+    let depth = column(header, &["depth", "depth mm", "profondita", "profondità"]);
     let get =
         |r: &[String], i: Option<usize>| i.and_then(|i| r.get(i)).map(|s| s.trim().to_owned()).unwrap_or_default();
+    // A size in mm; empty is none, a decimal comma is fine.
+    let size = |r: &[String], i: Option<usize>, line: usize| -> Result<Option<f64>, CsvError> {
+        let text = get(r, i);
+        if text.is_empty() {
+            return Ok(None);
+        }
+        text.replace(',', ".")
+            .parse::<f64>()
+            .ok()
+            .filter(|v| *v > 0.0 && v.is_finite())
+            .map(Some)
+            .ok_or_else(|| err(line, format!("`{text}` isn't a size in mm")))
+    };
 
     let mut parts: Vec<Part> = Vec::new();
     for (line, r) in &rows[1..] {
@@ -110,6 +127,9 @@ pub fn read_parts(text: &str) -> Result<Vec<Part>, CsvError> {
             description: get(r, description),
             code: get(r, code),
             contacts,
+            width: size(r, width, *line)?,
+            height: size(r, height, *line)?,
+            depth: size(r, depth, *line)?,
         });
     }
     Ok(parts)
@@ -140,6 +160,9 @@ mod tests {
                 description: "Contactor; 24 V".into(),
                 code: String::new(),
                 contacts: Vec::new(),
+                width: None,
+                height: None,
+                depth: None,
             }
         );
         assert_eq!(parts[1].manufacturer, "");
@@ -147,6 +170,8 @@ mod tests {
         assert_eq!(with[0].contacts, ["13-14", "21-22"]);
         assert_eq!(with[1].contacts, ["11-12-14"]);
         assert_eq!(read_parts("number,contacts\nK,13-15\n").unwrap_err().line, 2);
+        let sized = read_parts("number;width;height;depth\nK;45;90;\"73,5\"\n").unwrap();
+        assert_eq!((sized[0].width, sized[0].height, sized[0].depth), (Some(45.0), Some(90.0), Some(73.5)));
     }
 
     #[test]

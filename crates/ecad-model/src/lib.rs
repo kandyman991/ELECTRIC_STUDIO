@@ -8,6 +8,7 @@ pub mod history;
 pub mod layout;
 pub mod library;
 pub mod naming;
+pub mod panel;
 pub mod parts;
 pub mod potential;
 pub mod project;
@@ -19,6 +20,7 @@ pub mod symbol;
 pub use geometry::{Direction, Point, Rotation};
 pub use history::History;
 pub use naming::{Naming, WireNumbering};
+pub use panel::{Panel, PanelItem, PanelItemKind};
 pub use parts::{Part, PartRef};
 pub use potential::Potential;
 pub use project::*;
@@ -289,6 +291,9 @@ mod tests {
             description: String::new(),
             code: String::new(),
             contacts: vec!["11-12-14".into()],
+            width: None,
+            height: None,
+            depth: None,
         }))
         .unwrap();
         p.apply(Command::AddPart(Part {
@@ -297,6 +302,9 @@ mod tests {
             description: String::new(),
             code: String::new(),
             contacts: vec!["13-14".into()],
+            width: None,
+            height: None,
+            depth: None,
         }))
         .unwrap();
         // Drop the sample's two contacts so the parts decide.
@@ -415,6 +423,9 @@ mod tests {
             description: String::new(),
             code: String::new(),
             contacts: Vec::new(),
+            width: None,
+            height: None,
+            depth: None,
         };
         assert_eq!(
             p.apply(Command::AddPart(part("EX-CT-24DC"))).unwrap_err(),

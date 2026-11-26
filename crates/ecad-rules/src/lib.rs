@@ -33,6 +33,8 @@ impl Severity {
 pub enum Target {
     Function(FunctionId),
     Connection(ConnectionId),
+    /// A rail, duct or device footprint on a layout page.
+    PanelItem(ecad_model::PanelItemId),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -75,6 +77,13 @@ pub const RULES: &[(&str, Severity, &str)] = &[
         "Two wires run on top of each other, side by side too close, or line up end to end",
     ),
     ("wire-through-symbol", Severity::Warning, "A wire runs through or along a symbol it isn't connected to"),
+    ("panel-overlap", Severity::Warning, "Two devices overlap on a mounting plate"),
+    ("panel-off-plate", Severity::Warning, "A rail, duct or device sticks out of its mounting plate"),
+    (
+        "panel-no-size",
+        Severity::Warning,
+        "A device on a mounting plate has no part with a size, so its footprint is a guess",
+    ),
 ];
 
 fn severity(rule: &str) -> Severity {
@@ -113,6 +122,22 @@ impl Out<'_> {
             message,
             target: Target::Connection(c),
             page,
+            location,
+        });
+    }
+}
+
+impl Out<'_> {
+    /// Located by the layout page's name.
+    fn at_panel(&mut self, rule: &'static str, id: ecad_model::PanelItemId, message: String) {
+        let Some(item) = self.project.panel_items.get(&id) else { return };
+        let location = self.project.page(item.page).map(|p| p.name.clone()).unwrap_or_default();
+        self.checks.push(Check {
+            rule,
+            severity: severity(rule),
+            message,
+            target: Target::PanelItem(id),
+            page: item.page,
             location,
         });
     }
@@ -161,6 +186,7 @@ pub fn check(project: &Project) -> Vec<Check> {
     overlaps(&mut out);
     wire_layout(&mut out);
     contacts_on_parts(&mut out);
+    panels(&mut out);
     for cable in project.cables.values() {
         let wires: Vec<&ecad_model::Connection> = project
             .connections
@@ -182,6 +208,7 @@ pub fn check(project: &Project) -> Vec<Check> {
         let f = match c.target {
             Target::Function(f) => Some(f),
             Target::Connection(id) => project.connection(id).ok().map(|c| c.from.function),
+            Target::PanelItem(_) => None,
         };
         let at = f.and_then(|f| project.function(f).ok()).map_or(Point::ZERO, |f| f.position);
         (project.sheet.column_of(at), project.sheet.row_of(at).unwrap_or(0))
@@ -285,6 +312,35 @@ fn lonely_interruptions(out: &mut Out) {
         if let [only] = fs.as_slice() {
             let tag = project.device(device).map(|d| d.tag.clone()).unwrap_or_default();
             out.at_function("lonely-interruption", *only, format!("Interruption point {tag} has no partner"));
+        }
+    }
+}
+
+/// Layout pages: footprints that overlap or leave the plate, and devices drawn at a guessed size.
+fn panels(out: &mut Out) {
+    let project = out.project;
+    let name = |id: &ecad_model::PanelItemId| {
+        project.panel_items.get(id).map_or_else(String::new, |i| match &i.kind {
+            ecad_model::PanelItemKind::Device { device } => {
+                project.device(*device).map(|d| d.tag.clone()).unwrap_or_default()
+            }
+            ecad_model::PanelItemKind::Rail => format!("A rail ({} mm)", i.length),
+            ecad_model::PanelItemKind::Duct { width, depth } => format!("A duct {width} x {depth} ({} mm)", i.length),
+        })
+    };
+    for page in project.panels.keys() {
+        for (a, b) in project.panel_overlaps(*page) {
+            out.at_panel("panel-overlap", a, format!("{} overlaps {}", name(&a), name(&b)));
+        }
+        for id in project.panel_off_plate(*page) {
+            out.at_panel("panel-off-plate", id, format!("{} sticks out of the plate", name(&id)));
+        }
+        for item in project.panel_items_on(*page) {
+            if let ecad_model::PanelItemKind::Device { device } = item.kind
+                && !project.device_size(device).1
+            {
+                out.at_panel("panel-no-size", item.id, format!("{} has no part with a size", name(&item.id)));
+            }
         }
     }
 }
@@ -430,6 +486,9 @@ mod tests {
                 "wire-numbers-differ",
                 "cable-cores",
                 "contact-not-on-part",
+                "panel-overlap",
+                "panel-off-plate",
+                "panel-no-size",
             ];
             if !elsewhere.contains(rule) {
                 assert!(found.contains(rule), "{rule} missing from {:#?}", rules(&checks));
@@ -488,12 +547,44 @@ mod tests {
             description: String::new(),
             code: String::new(),
             contacts: vec!["13-14".into()],
+            width: None,
+            height: None,
+            depth: None,
         }))
         .unwrap();
         p.apply(Command::SetDeviceParts { id: k1, parts: vec![ecad_model::PartRef::new("CT-1NO", 1)] }).unwrap();
         let r: Vec<String> = rules(&check(&p)).into_iter().filter(|r| r.starts_with("contact-not-on-part")).collect();
         assert_eq!(r.len(), 1, "{r:#?}");
         assert!(r[0].ends_with("-K1 contact 21-22 isn't on its parts (13-14)"), "{r:#?}");
+    }
+
+    #[test]
+    fn devices_overlapping_or_off_the_plate_are_reported() {
+        let mut p = ecad_model::reference::reference_project().unwrap();
+        assert!(!rules(&check(&p)).iter().any(|r| r.starts_with("panel-")), "the reference layout is clean");
+        let find = |p: &ecad_model::Project, tag: &str| {
+            let d = p.device_by_tag(tag).unwrap().id;
+            p.panel_item_of(d).unwrap().clone()
+        };
+        // -P2QF3 onto -P2QF1, -X0 off the plate's left edge.
+        let qf1 = find(&p, "P2QF1");
+        let qf3 = find(&p, "P2QF3");
+        p.apply(Command::UpdatePanelItem(ecad_model::PanelItem { at: qf1.at, ..qf3 })).unwrap();
+        let x0 = find(&p, "X0");
+        p.apply(Command::UpdatePanelItem(ecad_model::PanelItem { at: Point::new(-10.0, x0.at.y), ..x0 })).unwrap();
+        let r = rules(&check(&p));
+        assert!(
+            r.iter()
+                .any(|r| r == "panel-overlap L7 P2QF1 overlaps P2QF3" || r == "panel-overlap L7 P2QF3 overlaps P2QF1"),
+            "{r:#?}"
+        );
+        assert!(r.iter().any(|r| r == "panel-off-plate L7 X0 sticks out of the plate"), "{r:#?}");
+        // The thermostat's part loses its size: its footprint is a guess.
+        let mut tmf = p.parts["TMF"].clone();
+        (tmf.width, tmf.height) = (None, None);
+        p.apply(Command::UpdatePart(tmf)).unwrap();
+        let r = rules(&check(&p));
+        assert!(r.iter().any(|r| r == "panel-no-size L7 P3S1 has no part with a size"), "{r:#?}");
     }
 
     #[test]
