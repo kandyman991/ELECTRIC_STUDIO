@@ -12,6 +12,7 @@ publish = false
 ecad-model = { path = "crates/ecad-model" }
 ecad-view = { path = "crates/ecad-view" }
 ecad-reports = { path = "crates/ecad-reports" }
+ecad-rules = { path = "crates/ecad-rules" }
 ecad-project = { path = "crates/ecad-project" }
 ecad-editor = { path = "crates/ecad-editor" }
 serde_json = "1"

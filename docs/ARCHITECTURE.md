@@ -43,6 +43,28 @@ Dependencies point downward only. The core never depends on the UI or on CADCraf
 Every object has a stable UUID; tags and names are attributes. Implemented so far: project,
 page, symbol, device, function, connection point, connection, routing, commands and undo.
 
+## Checks
+
+`ecad-rules` reads the model and lists what looks wrong; it never changes anything. The editor
+reruns it after every change (cached per revision) and shows the result in the checks panel,
+where clicking a finding opens its page and selects the symbol or wire. `ecad check` prints the
+same list and exits with 1 when there are errors, for use in CI.
+
+| Rule | Severity | Finds |
+| --- | --- | --- |
+| `potential-clash` | error | Differently named potentials (L+ and M) connected |
+| `unconnected-point` | warning | A connection point without a wire |
+| `junction-unused` | warning | A junction joining fewer than three wires |
+| `lonely-interruption` | warning | An interruption point without a partner of the same name |
+| `wire-unnumbered` | warning | A wire without a number |
+| `missing-part` | warning | A device without a catalogue part (missing from the BOM) |
+| `plc-no-address` | warning | A PLC channel without an address |
+| `overlap` | warning | Two symbols overlapping on a page |
+
+Some mistakes can't be made at all, because the model refuses the command: duplicate device
+tags, wire numbers, terminal or channel numbers, PLC addresses or symbols, and a second wire on
+one connection point.
+
 ## Editing
 
 `ecad-editor` holds all editing behaviour without any UI toolkit: Select (click, drag with

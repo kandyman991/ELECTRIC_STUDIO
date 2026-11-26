@@ -43,7 +43,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           # The core must not reach CADCraft at all, even indirectly.
-          for crate in ecad-model ecad-reports ecad-project; do
+          for crate in ecad-model ecad-rules ecad-reports ecad-project; do
             if cargo tree -p "$crate" --edges normal --prefix none | grep -q '^cadcraft'; then
               echo "::error::$crate depends on CADCraft"; exit 1
             fi

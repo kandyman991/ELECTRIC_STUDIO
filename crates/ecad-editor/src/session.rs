@@ -98,6 +98,10 @@ pub enum UiEvent {
     ShowPage {
         id: PageId,
     },
+    /// Show the page of [`Frame::checks`]`[index]` and select what it points at.
+    ShowCheck {
+        index: usize,
+    },
     /// Add a page after the current one and show it.
     AddPage,
     /// Delete the current page and everything on it (undoable).
@@ -176,6 +180,17 @@ pub enum KeyName {
 pub struct PaletteItem {
     pub id: String,
     pub description: String,
+}
+
+/// One finding of the checks, for the checks panel.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct CheckInfo {
+    /// `error` or `warning`.
+    pub severity: String,
+    pub rule: String,
+    pub message: String,
+    /// Page and column, e.g. `2.4`.
+    pub location: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -269,6 +284,8 @@ pub struct Frame {
     pub parts: Vec<Part>,
     /// All pages in order, and the one shown.
     pub pages: Vec<PageInfo>,
+    /// The project's checks, errors first; updated on every change.
+    pub checks: Vec<CheckInfo>,
     pub page: PageId,
     /// An unsaved-changes question waiting for [`UiEvent::Confirm`].
     pub prompt: Option<String>,
@@ -438,6 +455,15 @@ impl Session {
             UiEvent::CloseRequested => {
                 if self.pending.is_none() {
                     self.request(Pending::Close);
+                }
+            }
+            UiEvent::ShowCheck { index } => {
+                let checks = self.editor.checks();
+                if let Some(check) = checks.get(index) {
+                    self.message = Some(match self.editor.show_check(check) {
+                        Ok(()) => format!("{} {}", check.location, check.message),
+                        Err(e) => e.to_string(),
+                    });
                 }
             }
             UiEvent::ShowPage { id } => {
@@ -799,6 +825,16 @@ impl Session {
                 .map(|p| PageInfo { id: p.id, name: p.name.clone(), description: p.description.clone() })
                 .collect(),
             page: editor.page(),
+            checks: editor
+                .checks()
+                .into_iter()
+                .map(|c| CheckInfo {
+                    severity: c.severity.as_str().into(),
+                    rule: c.rule.into(),
+                    message: c.message,
+                    location: c.location,
+                })
+                .collect(),
             prompt,
             close: self.closing,
         }
@@ -1177,6 +1213,31 @@ mod tests {
         assert_eq!(plc(&s).2.address, "I0.1");
         s.handle(UiEvent::RenumberTerminal { number: "7".into() });
         assert_eq!(plc(&s).2.channel, "7");
+    }
+
+    #[test]
+    fn checks_follow_every_change_and_lead_to_the_problem() {
+        let (_dir, mut s) = session();
+        let before = s.frame(None, [0, 0, 0]).checks.len();
+        s.handle(UiEvent::Tool { tool: "iec.coil".into() });
+        let (x, y) = s.view().to_screen(Point::new(120.0, 40.0));
+        s.handle(UiEvent::PointerDown { x, y, button: Button::Primary });
+        s.handle(UiEvent::PointerUp { x, y, button: Button::Primary });
+        s.handle(UiEvent::Key { key: KeyName::Escape });
+        s.handle(UiEvent::PointerDown { x: 1.0, y: 1.0, button: Button::Primary });
+        s.handle(UiEvent::PointerUp { x: 1.0, y: 1.0, button: Button::Primary });
+        let f = s.frame(None, [0, 0, 0]);
+        let new: Vec<&str> = f.checks.iter().map(|c| c.message.as_str()).collect();
+        assert_eq!(f.checks.len(), before + 3, "{new:?}");
+        let index = f.checks.iter().position(|c| c.message == "-K2:A1 is not connected").unwrap();
+        assert_eq!(f.checks[index].severity, "warning");
+        assert!(f.selection.is_none());
+        s.handle(UiEvent::ShowCheck { index });
+        let f = s.frame(None, [0, 0, 0]);
+        assert!(matches!(f.selection, Some(SelectionInfo::Device { ref tag, .. }) if tag == "-K2"));
+        assert!(f.status.ends_with("-K2:A1 is not connected"), "{}", f.status);
+        s.handle(UiEvent::Key { key: KeyName::Undo });
+        assert_eq!(s.frame(None, [0, 0, 0]).checks.len(), before);
     }
 
     #[test]
