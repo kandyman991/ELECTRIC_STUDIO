@@ -65,6 +65,8 @@ struct ProjectFields {
     key: Option<String>,
     name: String,
     info: ecad_editor::ProjectInfo,
+    /// Applied with a button, so dragging a number doesn't make one undo step per value.
+    grid: ecad_editor::SheetGrid,
 }
 
 #[derive(Default)]
@@ -575,9 +577,10 @@ impl App {
     }
 
     fn project_window(&mut self, ctx: &egui::Context, frame: &Frame) {
-        let key = Some(format!("{} {:?}", frame.project_name, frame.info));
+        let key = Some(format!("{} {:?} {:?}", frame.project_name, frame.info, frame.sheet));
         if key != self.project_fields.key {
-            self.project_fields = ProjectFields { key, name: frame.project_name.clone(), info: frame.info.clone() };
+            self.project_fields =
+                ProjectFields { key, name: frame.project_name.clone(), info: frame.info.clone(), grid: frame.sheet };
         }
         let mut open = self.show_project;
         let mut events = Vec::new();
@@ -638,7 +641,7 @@ impl App {
             });
             ui.separator();
             ui.strong("Sheet grid");
-            let mut grid = frame.sheet;
+            let grid = &mut f.grid;
             ui.horizontal(|ui| {
                 ui.label("Columns");
                 ui.add(egui::DragValue::new(&mut grid.columns).range(1..=50));
@@ -660,7 +663,7 @@ impl App {
                 "References look like 3.2 (page 3, column 2)."
             };
             ui.small(example);
-            if grid != frame.sheet {
+            if ui.add_enabled(*grid != frame.sheet, egui::Button::new("Apply grid")).clicked() {
                 events.push(UiEvent::SheetGrid {
                     columns: grid.columns,
                     first_column: grid.first_column,

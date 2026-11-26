@@ -221,7 +221,7 @@ pub struct PageInfo {
 }
 
 /// The sheet's grid, for the project settings.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
 pub struct SheetGrid {
     pub columns: u32,
     pub first_column: u32,
