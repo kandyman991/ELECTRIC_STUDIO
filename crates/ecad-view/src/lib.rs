@@ -433,15 +433,38 @@ pub fn page_file_stem(name: &str) -> String {
     format!("page-{clean}")
 }
 
-/// Every drawing output, as (file name, contents): `<project>.pdf` with all pages, plus a DXF,
-/// a DWG and a PNG preview per page (`page-1.dxf`…).
-pub fn drawing_files(project: &Project) -> Result<Vec<(String, Vec<u8>)>> {
-    let mut files = vec![("drawings.pdf".to_owned(), project_pdf(project)?)];
+/// Which drawing files [`drawing_files`] writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Formats {
+    pub pdf: bool,
+    pub dxf: bool,
+    pub dwg: bool,
+    pub png: bool,
+}
+
+impl Formats {
+    pub const ALL: Formats = Formats { pdf: true, dxf: true, dwg: true, png: true };
+    pub const NONE: Formats = Formats { pdf: false, dxf: false, dwg: false, png: false };
+}
+
+/// Drawing outputs, as (file name, contents): `drawings.pdf` with all pages, plus a DXF, a DWG
+/// and a PNG preview per page (`page-1.dxf`…), as far as `formats` asks for them.
+pub fn drawing_files(project: &Project, formats: Formats) -> Result<Vec<(String, Vec<u8>)>> {
+    let mut files = Vec::new();
+    if formats.pdf {
+        files.push(("drawings.pdf".to_owned(), project_pdf(project)?));
+    }
     for page in project.pages_in_order() {
         let stem = page_file_stem(&page.name);
-        files.push((format!("{stem}.dxf"), page_dxf(project, page.id)?.into_bytes()));
-        files.push((format!("{stem}.dwg"), page_dwg(project, page.id)?));
-        files.push((format!("{stem}.png"), page_png(project, page.id, 1200, 1200)?));
+        if formats.dxf {
+            files.push((format!("{stem}.dxf"), page_dxf(project, page.id)?.into_bytes()));
+        }
+        if formats.dwg {
+            files.push((format!("{stem}.dwg"), page_dwg(project, page.id)?));
+        }
+        if formats.png {
+            files.push((format!("{stem}.png"), page_png(project, page.id, 1200, 1200)?));
+        }
     }
     Ok(files)
 }
@@ -512,7 +535,7 @@ mod tests {
     fn drawing_files_cover_every_page_with_safe_names() {
         assert_eq!(page_file_stem("3/a b"), "page-3_a_b");
         let p = ecad_model::sample::with_contacts().unwrap();
-        let names: Vec<String> = drawing_files(&p).unwrap().into_iter().map(|(n, _)| n).collect();
+        let names: Vec<String> = drawing_files(&p, Formats::ALL).unwrap().into_iter().map(|(n, _)| n).collect();
         assert_eq!(
             names,
             ["drawings.pdf", "page-1.dxf", "page-1.dwg", "page-1.png", "page-2.dxf", "page-2.dwg", "page-2.png"]

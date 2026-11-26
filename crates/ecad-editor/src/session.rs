@@ -631,13 +631,15 @@ impl Session {
     }
 
     fn export_drawings(&mut self, dir: &Path) {
-        let result = ecad_view::drawing_files(self.editor.project()).map_err(|e| e.to_string()).and_then(|files| {
-            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-            for (name, bytes) in &files {
-                std::fs::write(dir.join(name), bytes).map_err(|e| format!("{}: {e}", dir.join(name).display()))?;
-            }
-            Ok(files.len())
-        });
+        let result = ecad_view::drawing_files(self.editor.project(), ecad_view::Formats::ALL)
+            .map_err(|e| e.to_string())
+            .and_then(|files| {
+                std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+                for (name, bytes) in &files {
+                    std::fs::write(dir.join(name), bytes).map_err(|e| format!("{}: {e}", dir.join(name).display()))?;
+                }
+                Ok(files.len())
+            });
         self.message = Some(match result {
             Ok(n) => format!("Wrote drawings.pdf and {} page files to {}", n - 1, dir.display()),
             Err(e) => format!("Export failed: {e}"),

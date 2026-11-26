@@ -1173,6 +1173,8 @@ dependencies = [
  "ecad-reports",
  "ecad-rules",
  "ecad-view",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

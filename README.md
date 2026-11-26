@@ -6,8 +6,9 @@ truth; schematics, panel layouts and manufacturing reports are generated from it
 Drawing, DXF/DWG/PDF output and rendering come from the Rust crates of
 [CADCraft](https://github.com/storytold/cadcraft) (MIT OR Apache-2.0), used as libraries.
 
-> Status: **M4b**: drawing export (one PDF for the project; DXF, DWG and PNG per page), live
-> checks, multi-page schematics, parts, BOM, terminal strips and PLC I/O. Early development: an eleven-symbol placeholder library.
+> Status: **M4 complete**: live checks, drawing export (one PDF for the project; DXF, DWG and
+> PNG per page) and the `ecad` command for scripts and CI, on top of multi-page schematics,
+> parts, BOM, terminal strips and PLC I/O. Next: the MVP gate. Early development: an eleven-symbol placeholder library.
 
 ## Try it
 
@@ -26,6 +27,24 @@ cargo run -p ecad-cli -- new-sample my-project plc    # or: start, contacts, pot
 cargo run -p ecad-cli -- check my-project          # summarise and list errors and warnings (exit 1 on errors)
 cargo run -p ecad-cli -- export my-project out     # drawings.pdf, DXF/DWG/PNG per page, and the reports
 ```
+
+## Use it in scripts and CI
+
+The `ecad` command does everything the editor's checks and exports do, without a window:
+
+```sh
+ecad check my-project                      # exit 1 on errors
+ecad check my-project --strict             # exit 1 on warnings too
+ecad check my-project --json               # the findings as JSON, each with its page, location and target
+ecad export my-project out --only pdf,reports   # any of pdf, dxf, dwg, png, reports
+ecad report my-project bom > bom.csv       # one report on stdout: wire-list, bom, terminal-diagram,
+                                           # plc-io-list, devices-without-parts
+ecad --help
+```
+
+Exit codes: 0 done, 1 the check failed, 2 the command couldn't run (bad arguments, a project
+that doesn't load, a file that can't be written). The project folder diffs cleanly in git, so a
+CI job can run `ecad check --strict` and `ecad export` on every push.
 
 ## Try the editor
 
@@ -47,7 +66,7 @@ are attached to each CI run of the "Windows build" workflow (unsigned for now).
 | `ecad-editor` | UI-independent editing controller and session: tools, hit-testing, snapping, undo, overlays, pan/zoom, saving |
 | `ecad-rules` | Checks on the model (unconnected points, potential clashes, missing parts…), live in the editor and in `ecad check` |
 | `ecad-reports` | Reports as queries on the model: wire list, BOM, terminal diagram, PLC I/O list |
-| `ecad-cli` | The `ecad` command |
+| `ecad-cli` | The `ecad` command: check, export and reports for scripts and CI |
 | `apps/ecad-app` | The editor application (`electric-studio`): a thin egui shell over `ecad_editor::Session` |
 
 Planned: `ecad-symbols`, `ecad-parts`, `ecad-mcp`. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -60,7 +79,7 @@ Planned: `ecad-symbols`, `ecad-parts`, `ecad-mcp`. See [docs/ARCHITECTURE.md](do
 | M1 One-page editor | M1a editing core · M1b UI chosen: egui · M1c Open/New, unsaved-changes prompt, readable labels, side-panel edits |
 | M2 Multi-page projects | M2a pages, sheet, title block · M2b cross-references · M2c potentials, junctions, interruption points |
 | **M3 Parts and reports** | M3a parts catalogue, BOM, report export · M3b terminal strips, terminal diagram · M3c PLC channels, PLC I/O list |
-| **M4 Checks and output** | M4a live checks, checks panel, `ecad check` · M4b PDF/DXF/DWG export (this) · M4c headless CLI |
+| **M4 Checks and output** | M4a live checks, checks panel, `ecad check` · M4b PDF/DXF/DWG export · M4c `ecad` for scripts and CI (this) |
 | *MVP release gate* | *One real panel drawn end to end; BOM and wire list match it; checks clean* |
 | M5 Panel layout | 2D mounting plate, DIN rails, ducts, parts at scale, cables |
 | M6 Integrations | HMI Studio tag exchange, TIA Portal tag table, MCP server, DXF import |

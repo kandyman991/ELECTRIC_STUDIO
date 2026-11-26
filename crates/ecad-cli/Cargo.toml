@@ -1,6 +1,6 @@
 [package]
 name = "ecad-cli"
-description = "Headless entry point: exports and reports without a UI."
+description = "The ecad command: checks, exports and reports without a UI."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,6 +16,10 @@ ecad-view = { workspace = true }
 ecad-reports = { workspace = true }
 ecad-rules = { workspace = true }
 ecad-project = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
