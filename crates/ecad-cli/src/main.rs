@@ -3,7 +3,8 @@
 //! - `ecad new-sample <project-dir> [start|contacts|potentials|terminals|plc]`: write a sample
 //!   project: the start circuit (default), plus -K1's contacts on page 2, plus potentials and an
 //!   interruption point across both pages, plus terminal strip -X2, plus PLC card -KF1 on page 3
-//! - `ecad check <project-dir>`: load a project and report what it contains
+//! - `ecad check <project-dir>`: load a project, summarise it and list its errors and warnings;
+//!   exits with 1 when there are errors
 //! - `ecad export <project-dir> <out-dir>`: each page as DXF and PNG, plus the reports (wire
 //!   list, bill of materials, terminal diagram, PLC I/O list, devices without parts)
 //! - `ecad demo <out-dir>`: `export` for the built-in sample, without a project folder
@@ -41,7 +42,8 @@ fn export(project: &Project, out: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn run(args: &[String]) -> Result<(), String> {
+/// Exit codes: 0 done, 1 `check` found errors, 2 the command failed.
+fn run(args: &[String]) -> Result<ExitCode, String> {
     match args {
         [cmd, dir, rest @ ..] if cmd == "new-sample" && rest.len() <= 1 => {
             use ecad_model::sample;
@@ -56,7 +58,7 @@ fn run(args: &[String]) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
             ecad_project::save(&project, Path::new(dir)).map_err(|e| e.to_string())?;
             println!("wrote project {dir}");
-            Ok(())
+            Ok(ExitCode::SUCCESS)
         }
         [cmd, dir] if cmd == "check" => {
             let p = load(Path::new(dir))?;
@@ -68,11 +70,18 @@ fn run(args: &[String]) -> Result<(), String> {
                 p.functions.len(),
                 p.connections.len()
             );
-            Ok(())
+            let checks = ecad_rules::check(&p);
+            let errors = checks.iter().filter(|c| c.severity == ecad_rules::Severity::Error).count();
+            print!("{}", ecad_rules::summary(&checks));
+            println!("{errors} errors, {} warnings", checks.len() - errors);
+            Ok(if errors > 0 { ExitCode::from(1) } else { ExitCode::SUCCESS })
         }
-        [cmd, dir, out] if cmd == "export" => export(&load(Path::new(dir))?, &PathBuf::from(out)),
+        [cmd, dir, out] if cmd == "export" => {
+            export(&load(Path::new(dir))?, &PathBuf::from(out)).map(|()| ExitCode::SUCCESS)
+        }
         [cmd, out] if cmd == "demo" => {
             export(&ecad_model::sample::start_circuit().map_err(|e| e.to_string())?, &PathBuf::from(out))
+                .map(|()| ExitCode::SUCCESS)
         }
         _ => Err(USAGE.to_owned()),
     }
@@ -81,10 +90,10 @@ fn run(args: &[String]) -> Result<(), String> {
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match run(&args) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(e) => {
             eprintln!("ecad: {e}");
-            ExitCode::FAILURE
+            ExitCode::from(2)
         }
     }
 }

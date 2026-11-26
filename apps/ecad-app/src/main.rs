@@ -19,6 +19,8 @@ const ACCENT: Color32 = Color32::from_rgb(64, 156, 255);
 const TARGET: Color32 = Color32::from_rgb(255, 170, 40);
 const START: Color32 = Color32::from_rgb(80, 220, 120);
 const QUIET: Color32 = Color32::from_rgb(140, 150, 165);
+const ERROR: Color32 = Color32::from_rgb(240, 90, 90);
+const WARNING: Color32 = Color32::from_rgb(230, 180, 60);
 
 fn default_dir() -> PathBuf {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).unwrap_or_default();
@@ -35,6 +37,8 @@ struct App {
     page_fields: PageFields,
     /// The parts catalogue window.
     show_parts: bool,
+    /// Whether the checks panel is open.
+    show_checks: bool,
     /// Edit buffers for catalogue rows: number → (manufacturer, description).
     part_edits: std::collections::BTreeMap<String, (String, String)>,
     /// The "new part" row: number, manufacturer, description.
@@ -165,6 +169,20 @@ impl App {
             });
             if ui.selectable_label(self.show_parts, "Parts").on_hover_text("The parts catalogue").clicked() {
                 self.show_parts = !self.show_parts;
+            }
+            let errors = frame.checks.iter().filter(|c| c.severity == "error").count();
+            let warnings = frame.checks.len() - errors;
+            let label = match (errors, warnings) {
+                (0, 0) => egui::RichText::new("Checks ✔"),
+                (0, w) => egui::RichText::new(format!("Checks: {w} ⚠")).color(WARNING),
+                (e, w) => egui::RichText::new(format!("Checks: {e} ✖ {w} ⚠")).color(ERROR),
+            };
+            if ui
+                .selectable_label(self.show_checks, label)
+                .on_hover_text("Errors and warnings in the project")
+                .clicked()
+            {
+                self.show_checks = !self.show_checks;
             }
             ui.separator();
             let mut tool = |ui: &mut egui::Ui, label: &str, id: &str, tip: &str| {
@@ -436,6 +454,32 @@ impl App {
         ui.separator();
         ui.small("Middle-drag to pan, wheel to zoom, F to fit.");
         ui.small(format!("Project: {}", frame.project_dir));
+    }
+
+    fn checks(&mut self, ui: &mut egui::Ui, frame: &Frame) {
+        let mut events = Vec::new();
+        ui.horizontal(|ui| {
+            ui.strong("Checks");
+            ui.small("Click one to show it on its page.");
+        });
+        if frame.checks.is_empty() {
+            ui.label("No errors or warnings.");
+        }
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            for (index, c) in frame.checks.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    let (mark, color) = if c.severity == "error" { ("✖", ERROR) } else { ("⚠", WARNING) };
+                    ui.label(egui::RichText::new(mark).color(color));
+                    ui.add_sized([40.0, 16.0], egui::Label::new(&c.location));
+                    if ui.link(&c.message).on_hover_text(&c.rule).clicked() {
+                        events.push(UiEvent::ShowCheck { index });
+                    }
+                });
+            }
+        });
+        for ev in events {
+            self.send(ev);
+        }
     }
 
     fn pages(&mut self, ui: &mut egui::Ui, frame: &Frame) {
@@ -731,6 +775,9 @@ impl eframe::App for App {
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.label(if before.status.is_empty() { "Ready".to_owned() } else { before.status.clone() });
         });
+        if self.show_checks {
+            egui::Panel::bottom("checks").resizable(true).default_size(150.0).show(ui, |ui| self.checks(ui, &before));
+        }
         egui::Panel::left("pages").default_size(170.0).show(ui, |ui| self.pages(ui, &before));
         egui::Panel::right("inspector").default_size(200.0).show(ui, |ui| self.inspector(ui, &before));
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
@@ -784,6 +831,7 @@ fn main() -> eframe::Result {
                 fields: Fields::default(),
                 page_fields: PageFields::default(),
                 show_parts: false,
+                show_checks: false,
                 part_edits: Default::default(),
                 new_part: Default::default(),
                 title: String::new(),

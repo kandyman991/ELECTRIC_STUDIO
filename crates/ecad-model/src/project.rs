@@ -492,6 +492,15 @@ impl Project {
         (self.role(f).ok()? == Role::Terminal).then(|| self.drawing_number(f))?
     }
 
+    /// Whether a device should have catalogue parts: anything drawn with a real symbol, but not
+    /// junctions, potential points or interruption points, which are drawing aids.
+    pub fn needs_part(&self, device: DeviceId) -> bool {
+        self.functions_of(device).any(|f| {
+            self.symbol(&f.symbol).is_ok_and(|s| !s.bridged || s.role == Role::Terminal)
+                && !self.role(f.id).is_ok_and(Role::joins_drawings)
+        })
+    }
+
     /// A PLC card's channels, in channel order.
     pub fn plc_channels_of(&self, card: DeviceId) -> Vec<ChannelRef> {
         let mut out: Vec<ChannelRef> = self

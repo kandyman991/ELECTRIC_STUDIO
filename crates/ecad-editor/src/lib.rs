@@ -130,6 +130,8 @@ pub struct Editor {
     revision: u64,
     /// Potentials computed for `revision`; recomputed only after a change.
     potentials: std::cell::RefCell<Option<(u64, Vec<Potential>)>>,
+    /// Checks run for `revision`; rerun only after a change.
+    checks: std::cell::RefCell<Option<(u64, Vec<ecad_rules::Check>)>>,
     /// Undo depth at the last save; `None` once that state can't be reached by undo/redo.
     saved_at: Option<usize>,
     /// Increases on every model change and page switch: what the drawing depends on.
@@ -186,6 +188,7 @@ impl Editor {
             revision: 0,
             saved_at: Some(0),
             potentials: std::cell::RefCell::new(None),
+            checks: std::cell::RefCell::new(None),
             scene: 0,
             status: String::new(),
         })
@@ -536,6 +539,25 @@ impl Editor {
             *cache = Some((self.revision, self.project.potentials()));
         }
         f(cache.as_ref().map_or(&[], |(_, p)| p.as_slice()))
+    }
+
+    /// The project's checks, run once per change.
+    pub fn checks(&self) -> Vec<ecad_rules::Check> {
+        let mut cache = self.checks.borrow_mut();
+        if cache.as_ref().is_none_or(|(rev, _)| *rev != self.revision) {
+            *cache = Some((self.revision, ecad_rules::check(&self.project)));
+        }
+        cache.as_ref().map(|(_, c)| c.clone()).unwrap_or_default()
+    }
+
+    /// Go to a check's page and select what it points at.
+    pub fn show_check(&mut self, check: &ecad_rules::Check) -> Result<(), ModelError> {
+        self.set_page(check.page)?;
+        self.select(Some(match check.target {
+            ecad_rules::Target::Function(f) => Selected::Function(f),
+            ecad_rules::Target::Connection(c) => Selected::Connection(c),
+        }));
+        Ok(())
     }
 
     /// The potential of a wire.

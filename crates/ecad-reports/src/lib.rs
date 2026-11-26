@@ -100,11 +100,7 @@ pub fn devices_without_parts(project: &Project) -> Vec<(String, String)> {
         .devices
         .values()
         .filter(|d| d.parts.is_empty())
-        .filter(|d| {
-            project
-                .functions_of(d.id)
-                .any(|f| project.symbol(&f.symbol).is_ok_and(|s| !s.bridged && !s.role.joins_drawings()))
-        })
+        .filter(|d| project.needs_part(d.id))
         .map(|d| (d.tag.clone(), d.description.clone()))
         .collect();
     out.sort();
