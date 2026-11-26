@@ -8,13 +8,16 @@ use cadcraft_doc::{
     Attrib, Block, Circle, Common, Drawing, Entity, EntityKind, HAlign, Insert, Line, Space, Text, VAlign,
     color::Color, geom::Vec3,
 };
-use ecad_model::{Direction, Graphic, PageId, Point, Project};
+use ecad_model::{Direction, Graphic, PageId, Point, Project, Role};
 use std::sync::Arc;
 
 pub const LAYER_SYMBOLS: &str = "SYMBOLS";
 pub const LAYER_WIRES: &str = "WIRES";
 pub const LAYER_TAGS: &str = "TAGS";
 pub const LAYER_FRAME: &str = "FRAME";
+pub const LAYER_XREF: &str = "XREF";
+/// Text height of cross-reference lines.
+pub const XREF_HEIGHT: f64 = 1.8;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ViewError {
@@ -89,6 +92,38 @@ fn tag_text(min: Point, max: Point, sideways: bool, tag: &str) -> Text {
     }
 }
 
+/// Cross-reference text for a function: under a coil, one line per contact
+/// (`13-14 NO 2.4`); at a contact of a device that has a coil, where that coil is (`/1.3`).
+/// Each entry is (line index, text).
+fn cross_reference_lines(project: &Project, f: ecad_model::FunctionId, role: Role) -> Result<Vec<(usize, String)>> {
+    let device = project.function(f)?.device;
+    Ok(match role {
+        Role::Main => project
+            .contacts_of(device)
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (i, format!("{} {} {}", c.terminals, c.kind.short(), c.location)))
+            .collect(),
+        Role::Contact { .. } => match project.main_function(device) {
+            Some(main) => vec![(0, format!("/{}", project.function_location(main.id)?))],
+            None => Vec::new(),
+        },
+        Role::Single => Vec::new(),
+    })
+}
+
+/// Where cross-reference lines go: under the tag, which sits right of an upright symbol and
+/// above a sideways one (so the lines go below a sideways symbol instead, clear of the tag).
+fn line_text(min: Point, max: Point, sideways: bool, (i, s): &(usize, String)) -> Text {
+    let step = XREF_HEIGHT * 1.5;
+    let at = if sideways {
+        Point::new(min.x, min.y - TAG_GAP - step * *i as f64)
+    } else {
+        Point::new(max.x + TAG_GAP, (min.y + max.y) / 2.0 - TAG_HEIGHT - step * *i as f64)
+    };
+    justified(at, XREF_HEIGHT, s, HAlign::Left, VAlign::Top)
+}
+
 /// A wire number at the middle of the wire's longest segment: beside a vertical run, above a
 /// horizontal one.
 fn wire_label(route: &[Point], number: &str) -> Text {
@@ -146,10 +181,14 @@ pub fn page_drawing(project: &Project, page: PageId) -> Result<Drawing> {
         for cp in &sym.connection_points {
             let (at, leaves) = project.connection_point(&ecad_model::ConnectionRef::new(f.id, &cp.name))?;
             sideways |= !leaves.is_vertical();
-            let label = point_label(at, leaves, &cp.name);
+            let label = point_label(at, leaves, f.designation(&cp.name));
             d.add(&Space::Model, on(LAYER_TAGS), EntityKind::Text(label)).map_err(err)?;
         }
         let (min, max) = project.function_bounds(f.id)?.unwrap_or((f.position, f.position));
+        for line in cross_reference_lines(project, f.id, sym.role)? {
+            d.add(&Space::Model, on(LAYER_XREF), EntityKind::Text(line_text(min, max, sideways, &line)))
+                .map_err(err)?;
+        }
         let tag = Attrib {
             tag: "TAG".into(),
             text: tag_text(min, max, sideways, &device.tag),
@@ -325,6 +364,37 @@ mod tests {
         assert_eq!(tags, ["-K1", "-S1", "-X1:L+", "-X1:M"]);
         let wires = back.model.iter().filter(|e| e.common.layer == LAYER_WIRES).count();
         assert_eq!(wires, 3, "three straight wires in the unmoved sample");
+    }
+
+    fn texts_on(project: &Project, page: PageId, layer: &str) -> Vec<String> {
+        let d = page_drawing(project, page).unwrap();
+        let mut v: Vec<String> = d
+            .model
+            .iter()
+            .filter(|e| e.common.layer == layer)
+            .filter_map(|e| match &e.kind {
+                EntityKind::Text(t) => Some(t.value.clone()),
+                _ => None,
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn coils_list_their_contacts_and_contacts_point_back() {
+        use ecad_model::sample::{K1_COIL, K1_NC, K1_NO, PAGE_2, with_contacts};
+        let p = with_contacts().unwrap();
+        let col = |f| p.sheet.column_of(p.function(f).unwrap().position);
+        assert_eq!(
+            texts_on(&p, PAGE_1, LAYER_XREF),
+            [format!("13-14 NO 2.{}", col(K1_NO)), format!("21-22 NC 2.{}", col(K1_NC))]
+        );
+        let back = format!("/1.{}", col(K1_COIL));
+        assert_eq!(texts_on(&p, PAGE_2, LAYER_XREF), [back.clone(), back]);
+        // The contacts show their own terminal numbers.
+        let labels = texts_on(&p, PAGE_2, LAYER_TAGS);
+        assert!(["13", "14", "21", "22"].iter().all(|d| labels.contains(&d.to_string())), "{labels:?}");
     }
 
     #[test]

@@ -52,6 +52,8 @@ struct Fields {
     tag: String,
     description: String,
     number: String,
+    /// "Belongs to" device tag for a contact.
+    owner: String,
 }
 
 /// Ask for a project folder with the system's folder picker.
@@ -176,7 +178,7 @@ impl App {
     fn inspector(&mut self, ui: &mut egui::Ui, frame: &Frame) {
         ui.heading("Selection");
         let key = frame.selection.as_ref().map(|sel| match sel {
-            SelectionInfo::Device { tag, description, .. } => format!("device {tag} {description}"),
+            SelectionInfo::Device { tag, description, symbol, .. } => format!("device {tag} {description} {symbol}"),
             SelectionInfo::Wire { number, from, to } => format!("wire {from} {to} {number:?}"),
         });
         if key != self.fields.key {
@@ -193,7 +195,10 @@ impl App {
         // A field is applied when it loses focus (Tab, Enter or a click elsewhere) with a change.
         let mut events = Vec::new();
         match &frame.selection {
-            Some(SelectionInfo::Device { tag, description, symbol }) => {
+            Some(SelectionInfo::Device { tag, description, symbol, role, references }) => {
+                if self.fields.owner.is_empty() {
+                    self.fields.owner = tag.clone();
+                }
                 ui.label("Device tag");
                 if ui.text_edit_singleline(&mut self.fields.tag).lost_focus() && self.fields.tag.trim() != tag {
                     events.push(UiEvent::Rename { tag: self.fields.tag.clone() });
@@ -205,6 +210,41 @@ impl App {
                 }
                 ui.add_space(4.0);
                 ui.small(format!("Symbol: {symbol}"));
+                match role.as_str() {
+                    "main" => {
+                        ui.add_space(8.0);
+                        ui.strong("Contacts");
+                        if references.is_empty() {
+                            ui.small("None yet.");
+                        }
+                        for r in references {
+                            if ui.link(&r.label).on_hover_text("Show this page").clicked() {
+                                events.push(UiEvent::ShowPage { id: r.page });
+                            }
+                        }
+                        for item in &frame.contact_palette {
+                            let label = format!("Add {}", item.description.to_lowercase());
+                            if ui.button(label).on_hover_text("Then click where it goes, on any page").clicked() {
+                                events.push(UiEvent::AddContact { symbol: item.id.clone() });
+                            }
+                        }
+                    }
+                    "contact" => {
+                        ui.add_space(8.0);
+                        for r in references {
+                            if ui.link(&r.label).on_hover_text("Show this page").clicked() {
+                                events.push(UiEvent::ShowPage { id: r.page });
+                            }
+                        }
+                        ui.label("Belongs to device");
+                        let edit = ui.text_edit_singleline(&mut self.fields.owner);
+                        if edit.lost_focus() && self.fields.owner.trim() != tag {
+                            events.push(UiEvent::AssignTo { tag: self.fields.owner.clone() });
+                        }
+                        ui.small("Type a coil's tag, e.g. -K1, to make this one of its contacts.");
+                    }
+                    _ => {}
+                }
                 ui.add_space(8.0);
                 ui.label("R rotates, Delete removes.");
             }

@@ -6,7 +6,7 @@
 
 use crate::geometry::{Direction, Point, Rotation};
 use crate::sheet::Sheet;
-use crate::symbol::{SymbolDef, SymbolId};
+use crate::symbol::{ContactKind, Role, SymbolDef, SymbolId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uuid::Uuid;
@@ -85,9 +85,19 @@ pub struct Function {
     pub position: Point,
     #[serde(default)]
     pub rotation: Rotation,
+    /// Terminal designations shown for this drawing, by connection-point name, where they
+    /// differ from the symbol's: a device's second NO contact shows `23`/`24` for the
+    /// symbol's `13`/`14`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub designations: BTreeMap<String, String>,
 }
 
 impl Function {
+    /// The designation shown for one of this function's connection points.
+    pub fn designation<'a>(&'a self, point: &'a str) -> &'a str {
+        self.designations.get(point).map_or(point, String::as_str)
+    }
+
     /// A symbol-local point in page coordinates.
     pub fn to_page(&self, local: Point) -> Point {
         self.position.offset(self.rotation.apply(local))
@@ -114,6 +124,18 @@ pub struct Connection {
     pub to: ConnectionRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wire_number: Option<String>,
+}
+
+/// One contact of a device, for cross-reference lists.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ContactRef {
+    pub function: FunctionId,
+    pub page: PageId,
+    pub kind: ContactKind,
+    /// Terminal designations joined with `-`, e.g. `13-14`.
+    pub terminals: String,
+    /// Where the contact is drawn, e.g. `2.4`.
+    pub location: String,
 }
 
 /// One undoable change. [`Project::apply`] returns the command that reverses it.
@@ -161,6 +183,12 @@ pub enum Command {
     },
     /// Put the pages in this order (every page, once).
     ReorderPages(Vec<PageId>),
+    /// Make a function part of another device, with the designations it gets there.
+    Reassign {
+        id: FunctionId,
+        device: DeviceId,
+        designations: BTreeMap<String, String>,
+    },
     /// Several commands applied together: all of them or none.
     Batch(Vec<Command>),
 }
@@ -201,6 +229,8 @@ pub enum ModelError {
     PageNotEmpty(String),
     #[error("the new page order must list every page once")]
     BadPageOrder,
+    #[error("there is no device `{0}`")]
+    UnknownTag(String),
     #[error("id {0} is already used")]
     DuplicateId(Uuid),
 }
@@ -270,7 +300,74 @@ impl Project {
     /// `(device tag, point)` for display and reports.
     pub fn describe(&self, r: &ConnectionRef) -> Result<(String, String)> {
         let f = self.function(r.function)?;
-        Ok((self.device(f.device)?.tag.clone(), r.point.clone()))
+        Ok((self.device(f.device)?.tag.clone(), f.designation(&r.point).to_owned()))
+    }
+
+    // ---- cross-references ----
+
+    /// The role of a function's symbol (main function, contact, single).
+    pub fn role(&self, f: FunctionId) -> Result<Role> {
+        Ok(self.symbol(&self.function(f)?.symbol)?.role)
+    }
+
+    /// All drawings of a device, in id order.
+    pub fn functions_of(&self, device: DeviceId) -> impl Iterator<Item = &Function> {
+        self.functions.values().filter(move |f| f.device == device)
+    }
+
+    /// A device's main function (its coil), if it has one.
+    pub fn main_function(&self, device: DeviceId) -> Option<&Function> {
+        self.functions_of(device).find(|f| self.role(f.id) == Ok(Role::Main))
+    }
+
+    /// Where a function is drawn: `<page>.<column>`.
+    pub fn function_location(&self, f: FunctionId) -> Result<String> {
+        let f = self.function(f)?;
+        self.location(f.page, f.position)
+    }
+
+    /// A device's contacts with their terminals and addresses, sorted by terminals.
+    pub fn contacts_of(&self, device: DeviceId) -> Vec<ContactRef> {
+        let mut out: Vec<ContactRef> = self
+            .functions_of(device)
+            .filter_map(|f| {
+                let sym = self.symbol(&f.symbol).ok()?;
+                let Role::Contact { kind } = sym.role else { return None };
+                let terminals: Vec<&str> = sym.connection_points.iter().map(|cp| f.designation(&cp.name)).collect();
+                Some(ContactRef {
+                    function: f.id,
+                    page: f.page,
+                    kind,
+                    terminals: terminals.join("-"),
+                    location: self.location(f.page, f.position).ok()?,
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| a.terminals.cmp(&b.terminals));
+        out
+    }
+
+    /// Designations for a new contact of `device` drawn with `symbol`: IEC numbering, where
+    /// the first digit counts the device's contacts (1x, 2x, 3x…) and the second is the
+    /// symbol's own (3/4 for NO, 1/2 for NC). Empty for symbols that aren't contacts.
+    pub fn next_contact_designations(&self, device: DeviceId, symbol: &SymbolId) -> BTreeMap<String, String> {
+        let Ok(sym) = self.symbol(symbol) else { return BTreeMap::new() };
+        if !matches!(sym.role, Role::Contact { .. }) {
+            return BTreeMap::new();
+        }
+        let used: Vec<u32> = self
+            .contacts_of(device)
+            .iter()
+            .filter_map(|c| c.terminals.split('-').next()?.parse::<u32>().ok().map(|n| n / 10))
+            .collect();
+        let n = (1..).find(|n| !used.contains(n)).unwrap_or(1);
+        sym.connection_points
+            .iter()
+            .map(|cp| {
+                let last = cp.name.chars().last().map(String::from).unwrap_or_default();
+                (cp.name.clone(), format!("{n}{last}"))
+            })
+            .collect()
     }
 
     /// The lowest free tag `<prefix><n>`, n from 1.
@@ -428,6 +525,13 @@ impl Project {
                     }
                 }
                 Ok(Command::ReorderPages(old))
+            }
+            Command::Reassign { id, device, designations } => {
+                self.device(device)?;
+                let f = self.functions.get_mut(&id).ok_or(ModelError::NoFunction(id))?;
+                let old_device = std::mem::replace(&mut f.device, device);
+                let old_designations = std::mem::replace(&mut f.designations, designations);
+                Ok(Command::Reassign { id, device: old_device, designations: old_designations })
             }
             Command::Batch(cmds) => {
                 let mut undo = Vec::with_capacity(cmds.len());

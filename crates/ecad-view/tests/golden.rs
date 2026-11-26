@@ -37,8 +37,12 @@ fn decode(bytes: &[u8]) -> (u32, u32, Vec<u8>) {
 }
 
 fn check(project: &Project, stem: &str) {
-    let dxf = ecad_view::page_dxf(project, PAGE_1).unwrap();
-    let png = ecad_view::page_png(project, PAGE_1, PNG_SIZE, PNG_SIZE).unwrap();
+    check_page(project, PAGE_1, stem);
+}
+
+fn check_page(project: &Project, page: ecad_model::PageId, stem: &str) {
+    let dxf = ecad_view::page_dxf(project, page).unwrap();
+    let png = ecad_view::page_png(project, page, PNG_SIZE, PNG_SIZE).unwrap();
     let (dxf_path, png_path) = (golden(&format!("{stem}.dxf")), golden(&format!("{stem}.png")));
     if updating() {
         std::fs::write(&dxf_path, &dxf).unwrap();
@@ -76,6 +80,13 @@ fn start_circuit_with_moved_and_rotated_coil() {
     p.move_function(K1_COIL, Point::new(40.0, 16.0)).unwrap();
     p.apply(Command::Rotate { id: K1_COIL, to: Rotation::R90 }).unwrap();
     check(&p, "start_circuit_moved");
+}
+
+#[test]
+fn cross_references_on_both_pages() {
+    let p = ecad_model::sample::with_contacts().unwrap();
+    check(&p, "with_contacts_page1");
+    check_page(&p, ecad_model::sample::PAGE_2, "with_contacts_page2");
 }
 
 #[test]

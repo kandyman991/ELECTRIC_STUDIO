@@ -25,6 +25,12 @@ pub enum Tool {
     Select,
     /// Click to place a new device drawn with this symbol.
     Place(SymbolId),
+    /// Click to place one more drawing of an existing device, e.g. a contact of a coil. It
+    /// gets the device's next contact numbers; the tool returns to Select afterwards.
+    PlaceFor {
+        symbol: SymbolId,
+        device: DeviceId,
+    },
     /// Click a connection point, then another, to draw a wire.
     Wire,
 }
@@ -396,6 +402,7 @@ impl Editor {
                 None => self.selection = None,
             },
             Tool::Place(symbol) => self.place(&symbol, snap(p, self.grid)),
+            Tool::PlaceFor { symbol, device } => self.place_for(&symbol, device, snap(p, self.grid)),
             Tool::Wire => self.wire_click(hit),
         }
     }
@@ -524,7 +531,7 @@ impl Editor {
             let (b, db) = target.unwrap_or((snap(self.cursor, self.grid), opposite(da)));
             out.push(Overlay::RubberBand { points: route_between(a, da, b, db) });
         }
-        if let Tool::Place(symbol) = &self.tool
+        if let Tool::Place(symbol) | Tool::PlaceFor { symbol, .. } = &self.tool
             && let Ok(sym) = self.project.symbol(symbol)
         {
             let at = snap(self.cursor, self.grid);
@@ -622,6 +629,7 @@ impl Editor {
                 page: self.page,
                 position: at,
                 rotation: Rotation::R0,
+                designations: Default::default(),
             }),
         ]);
         let result = self.execute(&format!("Place {tag}"), cmd);
@@ -629,6 +637,58 @@ impl Editor {
             self.selection = Some(Selected::Function(function));
         }
         self.report(result);
+    }
+
+    fn place_for(&mut self, symbol: &SymbolId, device: DeviceId, at: Point) {
+        let tag = match self.project.device(device) {
+            Ok(d) => d.tag.clone(),
+            Err(e) => return self.status = e.to_string(),
+        };
+        let designations = self.project.next_contact_designations(device, symbol);
+        let mut terminals: Vec<&String> = designations.values().collect();
+        terminals.sort();
+        let what = if terminals.is_empty() {
+            String::new()
+        } else {
+            format!(" contact {}", terminals.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("-"))
+        };
+        let function = FunctionId::new();
+        let cmd = Command::Place(Function {
+            id: function,
+            device,
+            symbol: symbol.clone(),
+            page: self.page,
+            position: at,
+            rotation: Rotation::R0,
+            designations,
+        });
+        let result = self.execute(&format!("Place {tag}{what}"), cmd);
+        if result.is_ok() {
+            self.tool = Tool::Select;
+            self.selection = Some(Selected::Function(function));
+        }
+        self.report(result);
+    }
+
+    /// Make the selected drawing part of the device tagged `tag` (e.g. turn a stray contact
+    /// into a contact of -K1). It takes that device's next contact numbers; its old device is
+    /// removed when nothing else draws it.
+    pub fn reassign_selected(&mut self, tag: &str) -> Result<(), ModelError> {
+        let Some(Selected::Function(f)) = self.selection else { return Ok(()) };
+        let tag = tag.trim();
+        let func = self.project.function(f)?.clone();
+        let target =
+            self.project.device_by_tag(tag).map(|d| d.id).ok_or_else(|| ModelError::UnknownTag(tag.to_owned()))?;
+        if target == func.device {
+            return Ok(());
+        }
+        let old_tag = self.project.device(func.device)?.tag.clone();
+        let designations = self.project.next_contact_designations(target, &func.symbol);
+        let mut cmds = vec![Command::Reassign { id: f, device: target, designations }];
+        if self.project.functions_of(func.device).count() == 1 {
+            cmds.push(Command::RemoveDevice(func.device));
+        }
+        self.execute(&format!("Move {old_tag} to {tag}"), Command::Batch(cmds))
     }
 
     fn wire_click(&mut self, hit: Option<Hit>) {
