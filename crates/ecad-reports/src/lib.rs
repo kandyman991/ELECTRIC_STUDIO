@@ -374,7 +374,7 @@ mod tests {
                 "-KF1:3 AI IW256 Tank_Level [Tank level 4-20 mA] ",
             ]
         );
-        assert!(rows.iter().all(|r| r.location.starts_with("3.")), "{rows:?}");
+        assert!(rows.iter().all(|r| r.location.starts_with("3/")), "{rows:?}");
         let names: Vec<&str> = all_csv(&p).unwrap().iter().map(|(n, _)| *n).collect();
         assert!(names.contains(&"plc-io-list.csv"), "{names:?}");
         assert!(

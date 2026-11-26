@@ -105,16 +105,15 @@ fn cross_reference_lines(project: &Project, f: ecad_model::FunctionId, role: Rol
             .map(|(i, c)| (i, format!("{} {} {}", c.terminals, c.kind.short(), c.location)))
             .collect(),
         Role::Contact { .. } => match project.main_function(device) {
-            Some(main) => vec![(0, format!("/{}", project.function_location(main.id)?))],
+            Some(main) => vec![(0, project.reference(main.id)?)],
             None => Vec::new(),
         },
         // An interruption point shows where its partners are.
         Role::Interruption => project
             .functions_of(device)
             .filter(|g| g.id != f)
-            .filter_map(|g| project.function_location(g.id).ok())
+            .filter_map(|g| project.reference(g.id).ok())
             .enumerate()
-            .map(|(i, at)| (i, format!("/{at}")))
             .collect(),
         // A PLC channel shows its address and symbol: `I0.0 Door_Closed`.
         Role::PlcChannel { .. } => {
@@ -313,9 +312,10 @@ fn add_text(d: &mut Drawing, common: &Common, t: Text) -> Result<()> {
     d.add(&Space::Model, common.clone(), EntityKind::Text(t)).map(|_| ()).map_err(|e| ViewError::Drawing(e.to_string()))
 }
 
-/// The sheet: outer edge, frame, numbered column band and the title block.
+/// The sheet: outer edge, frame, numbered column band, lettered rows (if any) and the title
+/// block along the bottom.
 fn draw_sheet(d: &mut Drawing, project: &Project, page: PageId) -> Result<()> {
-    use ecad_model::sheet::{COLUMN_BAND, TITLE_BLOCK_HEIGHT};
+    use ecad_model::sheet::{COLUMN_BAND, ROW_BAND, Sheet, TITLE_BLOCK_HEIGHT};
     let sheet = &project.sheet;
     // Colour 8 (grey) reads on dark screens and prints light on paper; text stays colour 7.
     let lines = Common { color: Color::from_aci(8), ..on(LAYER_FRAME) };
@@ -333,32 +333,115 @@ fn draw_sheet(d: &mut Drawing, project: &Project, page: PageId) -> Result<()> {
             add_line(d, &lines, Point::new(left, band), Point::new(left, hi.y))?;
         }
         let at = Point::new((left + right) / 2.0, band + COLUMN_BAND / 2.0);
-        add_text(d, &words, justified(at, 2.5, &n.to_string(), HAlign::Center, VAlign::Middle))?;
+        let label = sheet.column_label(n).to_string();
+        add_text(d, &words, justified(at, 2.5, &label, HAlign::Center, VAlign::Middle))?;
+    }
+    // Rows are lettered in the left border, outside the frame, so they never cover the drawing.
+    if sheet.rows > 0 {
+        let x = lo.x - ROW_BAND;
+        add_line(d, &lines, Point::new(x, lo.y), Point::new(x, hi.y))?;
+        for n in 1..=sheet.rows {
+            let (bottom, top) = sheet.row_span(n);
+            if n > 1 {
+                add_line(d, &lines, Point::new(x, top), Point::new(lo.x, top))?;
+            }
+            let at = Point::new(x + ROW_BAND / 2.0, (bottom + top) / 2.0);
+            let label = Sheet::row_label(n).to_string();
+            add_text(d, &words, justified(at, 2.5, &label, HAlign::Center, VAlign::Middle))?;
+        }
+    }
+    title_block(d, project, page, &lines, &words, TITLE_BLOCK_HEIGHT)
+}
+
+/// The title block: revisions on the left, then diagram code, customer and designer, plant and
+/// date, the page title in two lines, and the page number with the next page.
+fn title_block(
+    d: &mut Drawing,
+    project: &Project,
+    page: PageId,
+    lines: &Common,
+    words: &Common,
+    height: f64,
+) -> Result<()> {
+    let this = project.page(page)?;
+    let info = &project.info;
+    let (t_lo, t_hi) = project.sheet.title_block();
+    add_rect(d, lines, t_lo, t_hi)?;
+    let caption = |x: f64, y: f64, s: &str| justified(Point::new(x, y), 1.6, s, HAlign::Left, VAlign::Top);
+    let value = |x: f64, y: f64, h: f64, s: &str| justified(Point::new(x, y), h, s, HAlign::Left, VAlign::Bottom);
+    // Column edges, left to right; the title takes what is left.
+    let width = t_hi.x - t_lo.x;
+    let rev_w = 90.0;
+    let page_w = 34.0;
+    let fixed = [rev_w, 46.0, 60.0, 56.0];
+    let title_w = (width - fixed.iter().sum::<f64>() - page_w).max(40.0);
+    let mut x = t_lo.x;
+    let mut edges = Vec::new();
+    for w in fixed.iter().chain([title_w, page_w].iter()) {
+        edges.push(x);
+        x += w;
+    }
+    for &e in &edges[1..] {
+        add_line(d, lines, Point::new(e, t_lo.y), Point::new(e, t_hi.y))?;
+    }
+    let mid = t_lo.y + height / 2.0;
+
+    // Revisions: the last three, newest at the top, under a header row.
+    let row_h = height / 4.0;
+    let rev_cols = [0.0, 10.0, 56.0, 76.0];
+    for i in 1..4 {
+        let y = t_lo.y + row_h * f64::from(i);
+        add_line(d, lines, Point::new(edges[0], y), Point::new(edges[1], y))?;
+    }
+    for &c in &rev_cols[1..] {
+        add_line(d, lines, Point::new(edges[0] + c, t_lo.y), Point::new(edges[0] + c, t_hi.y))?;
+    }
+    let header_y = t_hi.y - row_h / 2.0;
+    for (c, label) in rev_cols.iter().zip(["Rev.", "Change", "Date", "By"]) {
+        let at = Point::new(edges[0] + c + 1.0, header_y);
+        add_text(d, words, justified(at, 1.6, label, HAlign::Left, VAlign::Middle))?;
+    }
+    for (i, r) in info.revisions.iter().rev().take(3).enumerate() {
+        let y = t_hi.y - row_h * (i as f64 + 1.5);
+        for (c, v) in rev_cols.iter().zip([&r.index, &r.change, &r.date, &r.by]) {
+            add_text(d, words, justified(Point::new(edges[0] + c + 1.0, y), 2.0, v, HAlign::Left, VAlign::Middle))?;
+        }
     }
 
-    let this = project.page(page)?;
-    let (t_lo, t_hi) = sheet.title_block();
-    add_rect(d, &lines, t_lo, t_hi)?;
-    let split_x = t_hi.x - 40.0;
-    let mid_y = t_lo.y + TITLE_BLOCK_HEIGHT / 2.0;
-    add_line(d, &lines, Point::new(split_x, t_lo.y), Point::new(split_x, t_hi.y))?;
-    add_line(d, &lines, Point::new(t_lo.x, mid_y), Point::new(split_x, mid_y))?;
-    let caption = |x: f64, y: f64, s: &str| justified(Point::new(x, y), 1.8, s, HAlign::Left, VAlign::Top);
-    let value = |x: f64, y: f64, s: &str| text(Point::new(x, y), 3.5, s);
-    add_text(d, &words, caption(t_lo.x + 2.0, t_hi.y - 1.5, "Project"))?;
-    add_text(d, &words, value(t_lo.x + 2.0, mid_y + 3.0, &project.name))?;
-    add_text(d, &words, caption(t_lo.x + 2.0, mid_y - 1.5, "Page content"))?;
-    add_text(d, &words, value(t_lo.x + 2.0, t_lo.y + 3.0, &this.description))?;
-    add_text(d, &words, caption(split_x + 2.0, t_hi.y - 1.5, "Page"))?;
-    let page_at = Point::new((split_x + t_hi.x) / 2.0, mid_y + 1.0);
-    add_text(d, &words, justified(page_at, 7.0, &this.name, HAlign::Center, VAlign::Middle))?;
-    let index = project.pages_in_order().iter().position(|p| p.id == page).map_or(0, |i| i + 1);
-    let count = format!("{index} of {}", project.pages.len());
-    add_text(
-        d,
-        &words,
-        justified(Point::new((split_x + t_hi.x) / 2.0, t_lo.y + 2.0), 2.5, &count, HAlign::Center, VAlign::Bottom),
-    )?;
+    // Two stacked cells per column: (caption, value) above and below the middle line.
+    type Cell<'a> = (f64, f64, [(&'a str, &'a str); 2]);
+    let cells: [Cell; 3] = [
+        (edges[1], edges[2], [("Diagram code", &info.code), ("Project", &project.name)]),
+        (edges[2], edges[3], [("Customer", &info.customer), ("Designer", &info.designer)]),
+        (edges[3], edges[4], [("Plant", &info.plant), ("Date", &info.date)]),
+    ];
+    for (left, right, pair) in cells {
+        add_line(d, lines, Point::new(left, mid), Point::new(right, mid))?;
+        for (i, (label, text)) in pair.iter().enumerate() {
+            let top = if i == 0 { t_hi.y } else { mid };
+            add_text(d, words, caption(left + 1.5, top - 1.0, label))?;
+            add_text(d, words, value(left + 1.5, top - height / 2.0 + 1.5, 2.8, text))?;
+        }
+    }
+
+    // The page title: description over subtitle.
+    add_text(d, words, caption(edges[4] + 1.5, t_hi.y - 1.0, "Title"))?;
+    add_text(d, words, value(edges[4] + 3.0, mid + 0.5, 3.5, &this.description))?;
+    add_text(d, words, value(edges[4] + 3.0, t_lo.y + 3.0, 3.0, &this.subtitle))?;
+
+    // Page number and the next page.
+    let (left, right) = (edges[5], t_hi.x);
+    add_line(d, lines, Point::new(left, mid), Point::new(right, mid))?;
+    add_text(d, words, caption(left + 1.5, t_hi.y - 1.0, "Page"))?;
+    let page_at = Point::new((left + right) / 2.0 + 3.0, mid + height / 4.0 - 0.5);
+    add_text(d, words, justified(page_at, 5.0, &this.name, HAlign::Center, VAlign::Middle))?;
+    let order = project.pages_in_order();
+    let index = order.iter().position(|p| p.id == page);
+    let next = index.and_then(|i| order.get(i + 1)).map_or(String::new(), |p| p.name.clone());
+    add_text(d, words, caption(left + 1.5, mid - 1.0, "Next"))?;
+    add_text(d, words, value(left + 12.0, t_lo.y + 5.5, 2.8, &next))?;
+    let count = format!("{} of {}", index.map_or(0, |i| i + 1), project.pages.len());
+    add_text(d, words, justified(Point::new(right - 1.5, t_lo.y + 1.2), 1.8, &count, HAlign::Right, VAlign::Bottom))?;
     Ok(())
 }
 

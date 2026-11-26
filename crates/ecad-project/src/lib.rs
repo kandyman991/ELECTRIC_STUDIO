@@ -13,7 +13,9 @@
 //! Loading replays everything through the model's commands, so a hand-edited file that breaks
 //! a rule (duplicate tag, wire to a missing point) is rejected with the file named.
 
-use ecad_model::{Command, Connection, Device, Function, ModelError, Page, Part, Point, Project, Sheet, SymbolDef};
+use ecad_model::{
+    Command, Connection, Device, Function, ModelError, Page, Part, Point, Project, ProjectInfo, Sheet, SymbolDef,
+};
 
 pub mod csv;
 use serde::{Deserialize, Serialize};
@@ -44,7 +46,14 @@ struct ProjectFile {
     /// Missing in projects saved before M2a; such projects get a sheet around their drawing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sheet: Option<Sheet>,
+    /// Title-block fields; missing in projects saved before G1.
+    #[serde(default, skip_serializing_if = "is_default")]
+    info: ProjectInfo,
     pages: Vec<Page>,
+}
+
+fn is_default(info: &ProjectInfo) -> bool {
+    *info == ProjectInfo::default()
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -102,7 +111,13 @@ pub fn save(project: &Project, dir: &Path) -> Result<()> {
     }
 
     let pages: Vec<Page> = project.pages_in_order().into_iter().cloned().collect();
-    let head = ProjectFile { format: FORMAT, name: project.name.clone(), sheet: Some(project.sheet), pages };
+    let head = ProjectFile {
+        format: FORMAT,
+        name: project.name.clone(),
+        sheet: Some(project.sheet),
+        info: project.info.clone(),
+        pages,
+    };
     write_json(&dir.join("project.json"), &head)?;
 
     let parts: Vec<&Part> = project.parts.values().collect();
@@ -141,6 +156,7 @@ pub fn load(dir: &Path) -> Result<Project> {
         return Err(ProjectError::Format { path, found: head.format });
     }
     let mut project = Project::new(&head.name);
+    project.info = head.info;
     for page in head.pages {
         project.add_page(page);
     }
@@ -215,6 +231,12 @@ mod tests {
         let original = start_circuit().unwrap();
         save(&original, dir.path()).unwrap();
         assert_eq!(load(dir.path()).unwrap(), original);
+        // Everything the samples use survives too: parts, terminals, PLC properties, the
+        // sheet's rows, the title block and page subtitles.
+        let plc = ecad_model::sample::with_plc().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        save(&plc, other.path()).unwrap();
+        assert_eq!(load(other.path()).unwrap(), plc);
         // Saving again writes identical bytes (stable order, no timestamps).
         let first = std::fs::read(dir.path().join("devices.json")).unwrap();
         save(&load(dir.path()).unwrap(), dir.path()).unwrap();

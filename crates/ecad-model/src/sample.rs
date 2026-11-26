@@ -183,7 +183,13 @@ pub fn start_circuit() -> Result<Project> {
     for s in symbols() {
         p.add_symbol(s);
     }
-    p.add_page(Page { id: PAGE_1, name: "1".into(), description: "Start circuit".into(), order: 0 });
+    p.add_page(Page {
+        id: PAGE_1,
+        name: "1".into(),
+        description: "Start circuit".into(),
+        subtitle: String::new(),
+        order: 0,
+    });
 
     let devices = [
         (0x101, "L+", "24 V DC", "iec.supply", 0x201, (0.0, 64.0), Rotation::R0),
@@ -251,7 +257,13 @@ pub const K1_NC: FunctionId = FunctionId::from_u128(0x206);
 /// contact of -K1, so the coil on page 1 and the contacts on page 2 refer to each other.
 pub fn with_contacts() -> Result<Project> {
     let mut p = start_circuit()?;
-    p.apply(Command::AddPage(Page { id: PAGE_2, name: "2".into(), description: "Contacts".into(), order: 1 }))?;
+    p.apply(Command::AddPage(Page {
+        id: PAGE_2,
+        name: "2".into(),
+        description: "Contacts".into(),
+        subtitle: String::new(),
+        order: 1,
+    }))?;
     let k1 = DeviceId::from_u128(0x103);
     // Placed relative to the coil, so both pages share the sheet's columns sensibly.
     let coil = p.function(K1_COIL)?.position;
@@ -390,8 +402,28 @@ pub fn with_plc() -> Result<Project> {
         id: page3,
         name: "3".into(),
         description: "PLC inputs and outputs".into(),
+        subtitle: "Ingressi e uscite PLC".into(),
         order: 2,
     }))?;
+    // The style of the reference project: columns 0-7, rows A-F, a full title block.
+    p.apply(Command::SetSheet(crate::Sheet { columns: 8, first_column: 0, rows: 6, ..p.sheet }))?;
+    let info = ProjectInfo {
+        customer: "Example Foods".into(),
+        plant: "Cooling spiral".into(),
+        code: "EX-0001".into(),
+        designer: "A.B.".into(),
+        date: "2026-11-26".into(),
+        revisions: vec![
+            Revision { index: "0".into(), change: "First issue".into(), date: "2026-11-11".into(), by: "A.B.".into() },
+            Revision {
+                index: "1".into(),
+                change: "After testing".into(),
+                date: "2026-11-26".into(),
+                by: "A.B.".into(),
+            },
+        ],
+    };
+    p.apply(Command::SetProjectInfo { name: "Sample: PLC I/O".into(), info })?;
     p.add_device(Device::new(KF1, "-KF1", "PLC I/O card"))?;
     p.add_device(Device::new(DeviceId::from_u128(0x10c), "-B1", "Guard door closed"))?;
     p.add_device(Device::new(DeviceId::from_u128(0x10d), "-K3", "Pump contactor"))?;

@@ -10,7 +10,7 @@ use ecad_model::{
     Command, Connection, ConnectionId, ConnectionRef, Device, DeviceId, Direction, Function, FunctionId, History,
     ModelError, Page, PageId, Point, Potential, Project, Rotation, SymbolId, route_between,
 };
-pub use ecad_model::{Part, PartRef};
+pub use ecad_model::{Part, PartRef, ProjectInfo, Revision};
 pub use ecad_view::{Primitive, Shape};
 pub use session::{Button, Choice, DevicePart, Frame, KeyName, PageInfo, PaletteItem, SelectionInfo, Session, UiEvent};
 pub use view::Viewport;
@@ -374,6 +374,35 @@ impl Editor {
             &format!("Describe page {name}"),
             Command::DescribePage { id: self.page, description: description.to_owned() },
         )
+    }
+
+    /// Set the current page title's second line.
+    pub fn subtitle_page(&mut self, subtitle: &str) -> Result<(), ModelError> {
+        let name = self.project.page(self.page)?.name.clone();
+        self.execute(
+            &format!("Page {name} subtitle"),
+            Command::SetPageSubtitle { id: self.page, subtitle: subtitle.to_owned() },
+        )
+    }
+
+    /// Set the project name and title-block fields.
+    pub fn set_project_info(&mut self, name: &str, info: ecad_model::ProjectInfo) -> Result<(), ModelError> {
+        if name.trim() == self.project.name && info == self.project.info {
+            return Ok(());
+        }
+        self.execute("Project properties", Command::SetProjectInfo { name: name.to_owned(), info })
+    }
+
+    /// Change the sheet's columns and rows; the size and placement stay.
+    pub fn set_sheet_grid(&mut self, columns: u32, first_column: u32, rows: u32) -> Result<(), ModelError> {
+        let sheet = ecad_model::Sheet { columns, first_column, rows, ..self.project.sheet };
+        if sheet == self.project.sheet {
+            return Ok(());
+        }
+        let r = self.execute("Sheet columns and rows", Command::SetSheet(sheet));
+        // Every page's frame changes.
+        self.scene += 1;
+        r
     }
 
     /// Move the current page `delta` places (negative: earlier).

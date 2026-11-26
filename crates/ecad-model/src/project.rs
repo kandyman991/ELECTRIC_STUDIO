@@ -57,6 +57,9 @@ pub struct Page {
     /// What the page shows, e.g. "Motor starter". Printed in the title block.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
+    /// A second line for the title, e.g. the description in a second language.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub subtitle: String,
     /// Position in the project; pages are shown sorted by it.
     #[serde(default)]
     pub order: u32,
@@ -64,7 +67,7 @@ pub struct Page {
 
 impl Page {
     pub fn new(name: &str, order: u32) -> Self {
-        Page { id: PageId::new(), name: name.to_owned(), description: String::new(), order }
+        Page { id: PageId::new(), name: name.to_owned(), description: String::new(), subtitle: String::new(), order }
     }
 }
 
@@ -237,6 +240,18 @@ pub enum Command {
         id: PageId,
         description: String,
     },
+    /// The page title's second line.
+    SetPageSubtitle {
+        id: PageId,
+        subtitle: String,
+    },
+    /// The project's name and title-block fields.
+    SetProjectInfo {
+        name: String,
+        info: ProjectInfo,
+    },
+    /// Sheet size, columns and rows.
+    SetSheet(Sheet),
     /// Put the pages in this order (every page, once).
     ReorderPages(Vec<PageId>),
     /// Make a function part of another device, with the designations it gets there.
@@ -274,6 +289,10 @@ pub enum Command {
 pub enum ModelError {
     #[error("no page {0:?}")]
     NoPage(PageId),
+    #[error("the project name must not be empty")]
+    EmptyProjectName,
+    #[error("a sheet has 1 to 50 columns, numbered from 0 or 1, and up to 26 rows")]
+    InvalidSheet,
     #[error("no device {0:?}")]
     NoDevice(DeviceId),
     #[error("no function {0:?}")]
@@ -346,6 +365,36 @@ pub struct Project {
     /// The parts catalogue, by part number.
     #[serde(default)]
     pub parts: BTreeMap<String, Part>,
+    /// What the title block shows besides the project name.
+    #[serde(default)]
+    pub info: ProjectInfo,
+}
+
+/// Title-block fields of a project. All free text.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProjectInfo {
+    pub customer: String,
+    /// Plant or machine, e.g. "Cooling spiral".
+    pub plant: String,
+    /// The diagram's own code or number.
+    pub code: String,
+    pub designer: String,
+    pub date: String,
+    /// Newest last; the title block shows the last few.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub revisions: Vec<Revision>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Revision {
+    /// e.g. `0`, `1`, `A`.
+    pub index: String,
+    pub change: String,
+    pub date: String,
+    /// Who made it (initials).
+    pub by: String,
 }
 
 impl Project {
@@ -379,9 +428,19 @@ impl Project {
         v.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.name.cmp(&b.name)));
         v
     }
-    /// The address of a point on a page: `<page>.<column>`, e.g. `2.4`.
+    /// The address of a point on a page: `<page>.<column>` (`2.4`) on a sheet without rows,
+    /// `<page>/<column><row>` (`A3/2F`) on one with rows.
     pub fn location(&self, page: PageId, p: Point) -> Result<String> {
-        Ok(format!("{}.{}", self.page(page)?.name, self.sheet.column_of(p)))
+        let name = &self.page(page)?.name;
+        let sep = if self.sheet.rows > 0 { "/" } else { "." };
+        Ok(format!("{name}{sep}{}", self.sheet.address(p)))
+    }
+
+    /// How a drawing is referred to from elsewhere (a contact to its coil, an interruption
+    /// point to its partner): `/2.4`, or `A3/2F` when the location already has its slash.
+    pub fn reference(&self, f: FunctionId) -> Result<String> {
+        let at = self.function_location(f)?;
+        Ok(if self.sheet.rows > 0 { at } else { format!("/{at}") })
     }
     pub fn functions_on(&self, page: PageId) -> impl Iterator<Item = &Function> {
         self.functions.values().filter(move |f| f.page == page)
@@ -731,6 +790,26 @@ impl Project {
                 let page = self.pages.get_mut(&id).ok_or(ModelError::NoPage(id))?;
                 let old = std::mem::replace(&mut page.description, description.trim().to_owned());
                 Ok(Command::DescribePage { id, description: old })
+            }
+            Command::SetPageSubtitle { id, subtitle } => {
+                let page = self.pages.get_mut(&id).ok_or(ModelError::NoPage(id))?;
+                let old = std::mem::replace(&mut page.subtitle, subtitle.trim().to_owned());
+                Ok(Command::SetPageSubtitle { id, subtitle: old })
+            }
+            Command::SetProjectInfo { name, info } => {
+                let name = name.trim().to_owned();
+                if name.is_empty() {
+                    return Err(ModelError::EmptyProjectName);
+                }
+                let old_name = std::mem::replace(&mut self.name, name);
+                let old_info = std::mem::replace(&mut self.info, info);
+                Ok(Command::SetProjectInfo { name: old_name, info: old_info })
+            }
+            Command::SetSheet(sheet) => {
+                if !sheet.is_valid() {
+                    return Err(ModelError::InvalidSheet);
+                }
+                Ok(Command::SetSheet(std::mem::replace(&mut self.sheet, sheet)))
             }
             Command::ReorderPages(order) => {
                 let mut sorted = order.clone();

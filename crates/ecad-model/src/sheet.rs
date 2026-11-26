@@ -1,6 +1,6 @@
-//! The drawing sheet every page is drawn on: its size, border, column grid and title block.
-//! Columns give each point an address such as `2.4` (page 2, column 4), which
-//! cross-references use.
+//! The drawing sheet every page is drawn on: its size, border, column and row grid and title
+//! block. The grid gives each point an address that cross-references use: `2.4` (page 2,
+//! column 4) with columns only, or `A3/2F` (page A3, column 2, row F) with rows too.
 
 use crate::geometry::Point;
 use serde::{Deserialize, Serialize};
@@ -10,9 +10,14 @@ pub const BORDER_LEFT: f64 = 20.0;
 pub const BORDER: f64 = 10.0;
 /// Height of the numbered column band along the top of the drawing area.
 pub const COLUMN_BAND: f64 = 6.0;
-/// Size of the title block in the bottom-right corner.
-pub const TITLE_BLOCK_WIDTH: f64 = 180.0;
-pub const TITLE_BLOCK_HEIGHT: f64 = 32.0;
+/// Height of the title block, which runs along the whole bottom of the frame.
+pub const TITLE_BLOCK_HEIGHT: f64 = 24.0;
+/// Width of the lettered row band in the left border.
+pub const ROW_BAND: f64 = 6.0;
+/// The most rows a sheet can have (A to Z).
+pub const MAX_ROWS: u32 = 26;
+/// The most columns a sheet can have.
+pub const MAX_COLUMNS: u32 = 50;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Sheet {
@@ -22,12 +27,28 @@ pub struct Sheet {
     pub height: f64,
     /// Number of equal columns across the drawing area.
     pub columns: u32,
+    /// The number printed on the first column: 1 (default) or 0.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub first_column: u32,
+    /// Number of equal rows down the frame, lettered from A at the top; 0 for none.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rows: u32,
+}
+
+fn one() -> u32 {
+    1
+}
+fn is_one(n: &u32) -> bool {
+    *n == 1
+}
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 impl Default for Sheet {
     /// A3 landscape, ten columns.
     fn default() -> Self {
-        Sheet { origin: Point::ZERO, width: 420.0, height: 297.0, columns: 10 }
+        Sheet { origin: Point::ZERO, width: 420.0, height: 297.0, columns: 10, first_column: 1, rows: 0 }
     }
 }
 
@@ -43,10 +64,54 @@ impl Sheet {
         (Point::new(lo.x + BORDER_LEFT, lo.y + BORDER), Point::new(hi.x - BORDER, hi.y - BORDER))
     }
 
-    /// The title block (`min`, `max`), in the frame's bottom-right corner.
+    /// The title block (`min`, `max`), along the bottom of the frame.
     pub fn title_block(&self) -> (Point, Point) {
         let (lo, hi) = self.frame();
-        (Point::new(hi.x - TITLE_BLOCK_WIDTH, lo.y), Point::new(hi.x, lo.y + TITLE_BLOCK_HEIGHT))
+        (lo, Point::new(hi.x, lo.y + TITLE_BLOCK_HEIGHT))
+    }
+
+    /// The number printed on column `n` (1-based position).
+    pub fn column_label(&self, n: u32) -> u32 {
+        n.saturating_sub(1) + self.first_column
+    }
+
+    /// Bottom and top edge of row `n` (1-based, A = 1 at the top). Rows run from the title
+    /// block's top to the column band.
+    pub fn row_span(&self, n: u32) -> (f64, f64) {
+        let (lo, hi) = self.frame();
+        let h = (hi.y - lo.y) / f64::from(self.rows.max(1));
+        let top = hi.y - h * f64::from(n.saturating_sub(1));
+        (top - h, top)
+    }
+
+    /// The letter of row `n` (1-based).
+    pub fn row_label(n: u32) -> char {
+        char::from(b'A' + (n.clamp(1, MAX_ROWS) - 1) as u8)
+    }
+
+    /// The row (1-based) a point falls in, or `None` without rows.
+    pub fn row_of(&self, p: Point) -> Option<u32> {
+        if self.rows == 0 {
+            return None;
+        }
+        let (lo, hi) = self.frame();
+        let h = (hi.y - lo.y) / f64::from(self.rows);
+        let i = ((hi.y - p.y) / h).floor();
+        Some(if i < 0.0 { 1 } else { (i as u32 + 1).min(self.rows) })
+    }
+
+    /// A point's address on the page: `4` (column) or `2F` (column and row).
+    pub fn address(&self, p: Point) -> String {
+        let column = self.column_label(self.column_of(p));
+        match self.row_of(p) {
+            Some(row) => format!("{column}{}", Sheet::row_label(row)),
+            None => column.to_string(),
+        }
+    }
+
+    /// Whether the sheet's settings are usable.
+    pub fn is_valid(&self) -> bool {
+        (1..=MAX_COLUMNS).contains(&self.columns) && self.rows <= MAX_ROWS && self.first_column <= 1
     }
 
     /// Left and right edge of column `n` (1-based).
@@ -97,6 +162,22 @@ mod tests {
         assert_eq!(s.column_of(Point::new(409.0, 100.0)), 10);
         assert_eq!(s.column_of(Point::new(-50.0, 0.0)), 1, "left of the frame");
         assert_eq!(s.column_of(Point::new(900.0, 0.0)), 10, "right of the frame");
+    }
+
+    #[test]
+    fn rows_and_a_zero_based_grid_give_addresses_like_2f() {
+        let s = Sheet { columns: 8, first_column: 0, rows: 6, ..Sheet::default() };
+        let (lo, hi) = s.frame();
+        assert_eq!(s.address(Point::new(lo.x + 1.0, hi.y - 1.0)), "0A");
+        assert_eq!(s.address(Point::new(hi.x - 1.0, lo.y + 1.0)), "7F");
+        let (left, _) = s.column_span(3);
+        let (bottom, _) = s.row_span(6);
+        assert_eq!(s.address(Point::new(left + 1.0, bottom + 1.0)), "2F");
+        assert_eq!(Sheet::default().address(Point::new(21.0, 100.0)), "1", "no rows: just the column");
+        assert!(s.is_valid());
+        assert!(!Sheet { rows: 27, ..s }.is_valid());
+        assert!(!Sheet { columns: 0, ..s }.is_valid());
+        assert!(!Sheet { first_column: 2, ..s }.is_valid());
     }
 
     #[test]

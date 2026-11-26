@@ -39,6 +39,9 @@ struct App {
     show_parts: bool,
     /// Whether the checks panel is open.
     show_checks: bool,
+    /// Whether the project settings window is open, and its buffers.
+    show_project: bool,
+    project_fields: ProjectFields,
     /// Edit buffers for catalogue rows: number → (manufacturer, description).
     part_edits: std::collections::BTreeMap<String, (String, String)>,
     /// The "new part" row: number, manufacturer, description.
@@ -53,6 +56,15 @@ struct PageFields {
     key: Option<String>,
     name: String,
     description: String,
+    subtitle: String,
+}
+
+/// Edit buffers of the project settings window; refilled when the project changes underneath.
+#[derive(Default)]
+struct ProjectFields {
+    key: Option<String>,
+    name: String,
+    info: ecad_editor::ProjectInfo,
 }
 
 #[derive(Default)]
@@ -158,6 +170,11 @@ impl App {
                 if ui.add_enabled(frame.dirty, egui::Button::new("Save (Ctrl+S)")).clicked() {
                     ui.close();
                     self.send(UiEvent::Save);
+                }
+                ui.separator();
+                if ui.button("Project settings…").on_hover_text("Title block, revisions, sheet grid").clicked() {
+                    ui.close();
+                    self.show_project = true;
                 }
                 ui.separator();
                 let tip = "All pages in one PDF, plus DXF, DWG and PNG per page";
@@ -523,10 +540,14 @@ impl App {
         });
         ui.separator();
         if let Some(current) = frame.pages.iter().find(|p| p.id == frame.page) {
-            let key = Some(format!("{:?} {} {}", current.id, current.name, current.description));
+            let key = Some(format!("{:?} {} {} {}", current.id, current.name, current.description, current.subtitle));
             if key != self.page_fields.key {
-                self.page_fields =
-                    PageFields { key, name: current.name.clone(), description: current.description.clone() };
+                self.page_fields = PageFields {
+                    key,
+                    name: current.name.clone(),
+                    description: current.description.clone(),
+                    subtitle: current.subtitle.clone(),
+                };
             }
             ui.label("Page number");
             if ui.text_edit_singleline(&mut self.page_fields.name).lost_focus()
@@ -540,8 +561,114 @@ impl App {
             {
                 events.push(UiEvent::DescribePage { text: self.page_fields.description.clone() });
             }
+            ui.label("Second line").on_hover_text("Printed under the page content, e.g. in a second language");
+            if ui.text_edit_singleline(&mut self.page_fields.subtitle).lost_focus()
+                && self.page_fields.subtitle.trim() != current.subtitle
+            {
+                events.push(UiEvent::SubtitlePage { text: self.page_fields.subtitle.clone() });
+            }
             ui.small("PageUp / PageDown switch pages.");
         }
+        for ev in events {
+            self.send(ev);
+        }
+    }
+
+    fn project_window(&mut self, ctx: &egui::Context, frame: &Frame) {
+        let key = Some(format!("{} {:?}", frame.project_name, frame.info));
+        if key != self.project_fields.key {
+            self.project_fields = ProjectFields { key, name: frame.project_name.clone(), info: frame.info.clone() };
+        }
+        let mut open = self.show_project;
+        let mut events = Vec::new();
+        egui::Window::new("Project settings").open(&mut open).default_size([560.0, 420.0]).show(ctx, |ui| {
+            let f = &mut self.project_fields;
+            ui.strong("Title block");
+            egui::Grid::new("project-info").num_columns(2).show(ui, |ui| {
+                let fields: [(&str, &mut String); 6] = [
+                    ("Project", &mut f.name),
+                    ("Customer", &mut f.info.customer),
+                    ("Plant / machine", &mut f.info.plant),
+                    ("Diagram code", &mut f.info.code),
+                    ("Designer", &mut f.info.designer),
+                    ("Date", &mut f.info.date),
+                ];
+                for (label, value) in fields {
+                    ui.label(label);
+                    ui.add(egui::TextEdit::singleline(value).desired_width(320.0));
+                    ui.end_row();
+                }
+            });
+            ui.add_space(6.0);
+            ui.strong("Revisions");
+            ui.small("Newest last; the title block shows the last three.");
+            let mut remove = None;
+            egui::Grid::new("revisions").num_columns(5).show(ui, |ui| {
+                for label in ["Rev.", "Change", "Date", "By", ""] {
+                    ui.small(label);
+                }
+                ui.end_row();
+                for (i, r) in f.info.revisions.iter_mut().enumerate() {
+                    ui.add(egui::TextEdit::singleline(&mut r.index).desired_width(32.0));
+                    ui.add(egui::TextEdit::singleline(&mut r.change).desired_width(220.0));
+                    ui.add(egui::TextEdit::singleline(&mut r.date).desired_width(84.0));
+                    ui.add(egui::TextEdit::singleline(&mut r.by).desired_width(48.0));
+                    if ui.small_button("✕").on_hover_text("Remove this revision").clicked() {
+                        remove = Some(i);
+                    }
+                    ui.end_row();
+                }
+            });
+            if let Some(i) = remove {
+                f.info.revisions.remove(i);
+            }
+            if ui.button("Add revision").clicked() {
+                let index = f.info.revisions.last().and_then(|r| r.index.parse::<u32>().ok()).map_or(0, |n| n + 1);
+                f.info.revisions.push(ecad_editor::Revision { index: index.to_string(), ..Default::default() });
+            }
+            ui.add_space(4.0);
+            let changed = f.name.trim() != frame.project_name || f.info != frame.info;
+            ui.horizontal(|ui| {
+                if ui.add_enabled(changed, egui::Button::new("Apply")).clicked() {
+                    events.push(UiEvent::ProjectInfo { name: f.name.clone(), info: f.info.clone() });
+                }
+                if ui.add_enabled(changed, egui::Button::new("Revert")).clicked() {
+                    f.key = None;
+                }
+            });
+            ui.separator();
+            ui.strong("Sheet grid");
+            let mut grid = frame.sheet;
+            ui.horizontal(|ui| {
+                ui.label("Columns");
+                ui.add(egui::DragValue::new(&mut grid.columns).range(1..=50));
+                ui.label("numbered from");
+                egui::ComboBox::from_id_salt("first-column").selected_text(grid.first_column.to_string()).show_ui(
+                    ui,
+                    |ui| {
+                        ui.selectable_value(&mut grid.first_column, 0, "0");
+                        ui.selectable_value(&mut grid.first_column, 1, "1");
+                    },
+                );
+                ui.label("Rows");
+                ui.add(egui::DragValue::new(&mut grid.rows).range(0..=26))
+                    .on_hover_text("Lettered A, B, C…; 0 for none");
+            });
+            let example = if grid.rows > 0 {
+                "References look like 3/2F (page 3, column 2, row F)."
+            } else {
+                "References look like 3.2 (page 3, column 2)."
+            };
+            ui.small(example);
+            if grid != frame.sheet {
+                events.push(UiEvent::SheetGrid {
+                    columns: grid.columns,
+                    first_column: grid.first_column,
+                    rows: grid.rows,
+                });
+            }
+        });
+        self.show_project = open;
         for ev in events {
             self.send(ev);
         }
@@ -799,6 +926,9 @@ impl eframe::App for App {
             if self.show_parts {
                 self.parts_window(&ctx, &frame);
             }
+            if self.show_project {
+                self.project_window(&ctx, &frame);
+            }
             if let Some(question) = &frame.prompt {
                 self.prompt(&ctx, question);
             }
@@ -840,6 +970,8 @@ fn main() -> eframe::Result {
                 page_fields: PageFields::default(),
                 show_parts: false,
                 show_checks: false,
+                show_project: false,
+                project_fields: ProjectFields::default(),
                 part_edits: Default::default(),
                 new_part: Default::default(),
                 title: String::new(),
