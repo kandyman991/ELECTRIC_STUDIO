@@ -103,6 +103,14 @@ two connection points; the next free wire number). A shell feeds it pointer even
 millimetres and keys, and draws `Editor::base` (the page as plain polylines and triangles from
 `ecad-view`) plus `Editor::overlays` (markers, outlines, rubber band, ghost symbol).
 
+On a layout page the editor works in plate millimetres (the page's `PanelFrame` maps the
+pointer): Select picks a device before the rail under it and a rail before the duct behind it;
+dragging moves an item on a 5 mm grid, and a device whose middle comes within 30 mm of a rail's
+centre line sits on it; R turns an item upright, Delete takes it off (a device goes back to the
+"Not on a plate yet" list). The Rail and Duct tools draw along the drag, which becomes the
+item's centre line; a device picked from the list is placed with one click, snapped onto a rail.
+Every change is one undo step. Deleting a page takes its plate and items with it.
+
 CADCraft's own editing engine is not used: it treats the drawing as the source of truth, which
 is the opposite of this design. Only its drawing, rendering and file output are used.
 

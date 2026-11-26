@@ -56,7 +56,73 @@ fn is_zero(v: &f64) -> bool {
     *v == 0.0
 }
 
+/// Scales a plate is drawn at, largest drawing first (1:1, 1:2 …).
+const SCALES: [f64; 9] = [1.0, 2.0, 2.5, 5.0, 10.0, 15.0, 20.0, 25.0, 50.0];
+/// Space kept around the plate on paper, and under it for the note, in mm.
+const MARGIN: f64 = 8.0;
+pub const NOTE_SPACE: f64 = 8.0;
+
+/// How a layout page's plate sits on the sheet: plate millimetres to paper millimetres.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PanelFrame {
+    /// The plate's lower-left corner on paper.
+    pub origin: Point,
+    /// 10 for 1:10.
+    pub scale: f64,
+}
+
+impl PanelFrame {
+    pub fn to_paper(&self, p: Point) -> Point {
+        Point::new(self.origin.x + p.x / self.scale, self.origin.y + p.y / self.scale)
+    }
+    pub fn to_plate(&self, p: Point) -> Point {
+        Point::new((p.x - self.origin.x) * self.scale, (p.y - self.origin.y) * self.scale)
+    }
+}
+
+/// Snapping grid on a plate, in mm.
+pub const PANEL_GRID: f64 = 5.0;
+/// How close (plate mm) a device's middle must come to a rail's centre line to sit on it.
+pub const RAIL_SNAP: f64 = 30.0;
+
 impl Project {
+    /// Where a layout page's plate is drawn: at the largest standard scale that fits the sheet's
+    /// drawing area (inside the frame, above the title block, room under it for the note),
+    /// centred. `None` for an ordinary page.
+    pub fn panel_frame(&self, page: PageId) -> Option<PanelFrame> {
+        let panel = self.panels.get(&page)?;
+        let (flo, fhi) = self.sheet.frame();
+        let (_, tb) = self.sheet.title_block();
+        let top = fhi.y - crate::sheet::COLUMN_BAND - MARGIN;
+        let bottom = tb.y + MARGIN + NOTE_SPACE;
+        let (aw, ah) = (fhi.x - flo.x - 2.0 * MARGIN, top - bottom);
+        let scale = SCALES.into_iter().find(|s| panel.width / s <= aw && panel.height / s <= ah).unwrap_or(100.0);
+        let (w, h) = (panel.width / scale, panel.height / scale);
+        let origin = Point::new((flo.x + fhi.x) / 2.0 - w / 2.0, bottom + (ah - h) / 2.0);
+        Some(PanelFrame { origin, scale })
+    }
+
+    /// Where a device placed at `at` (lower-left, plate mm) ends up: on the grid, and with its
+    /// middle on the centre line of a rail across the plate that it is near and overlaps.
+    pub fn snap_on_panel(&self, page: PageId, device: DeviceId, at: Point, vertical: bool) -> Point {
+        let g = |v: f64| (v / PANEL_GRID).round() * PANEL_GRID;
+        let at = Point::new(g(at.x), g(at.y));
+        let (w, h) = self.device_size(device).0;
+        let (w, h) = if vertical { (h, w) } else { (w, h) };
+        let middle = at.y + h / 2.0;
+        let rail = self
+            .panel_items_on(page)
+            .into_iter()
+            .filter(|i| i.kind == PanelItemKind::Rail && !i.vertical)
+            .map(|i| (i, i.at.y + RAIL_WIDTH / 2.0))
+            .filter(|(i, centre)| (centre - middle).abs() <= RAIL_SNAP && at.x < i.at.x + i.length && i.at.x < at.x + w)
+            .min_by(|a, b| (a.1 - middle).abs().total_cmp(&(b.1 - middle).abs()));
+        match rail {
+            Some((_, centre)) => Point::new(at.x, centre - h / 2.0),
+            None => at,
+        }
+    }
+
     /// The items on a layout page: ducts first, then rails, then devices (the order they are
     /// drawn in, each kind by position).
     pub fn panel_items_on(&self, page: PageId) -> Vec<&PanelItem> {

@@ -41,6 +41,8 @@ struct App {
     show_checks: bool,
     /// Filter text of the symbol library.
     symbol_filter: String,
+    /// The layout page's plate size being edited: (for which size, width, height).
+    plate: (String, String, String),
     /// The cables window, its edit buffers by cable, and the new-cable row.
     show_cables: bool,
     cable_edits: std::collections::BTreeMap<String, CableEdit>,
@@ -107,6 +109,16 @@ fn ecad_model_size(part: &ecad_editor::Part) -> String {
     ecad_editor::format_size(part)
 }
 
+/// A length in mm for an edit field: `60`, `2,5`.
+fn fmt_mm(v: f64) -> String {
+    format!("{}", (v * 10.0).round() / 10.0).replace('.', ",")
+}
+
+/// A length typed in mm, decimal comma or point.
+fn parse_mm(text: &str) -> Option<f64> {
+    text.trim().replace(',', ".").parse::<f64>().ok().filter(|v| *v > 0.0 && v.is_finite())
+}
+
 fn names(list: &str) -> Vec<String> {
     list.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect()
 }
@@ -157,6 +169,7 @@ impl App {
             return; // typing in the tag field
         }
         let mut events = Vec::new();
+        let on_layout = self.session.editor().on_layout_page();
         ctx.input(|i| {
             let cmd = i.modifiers.command;
             if i.key_pressed(egui::Key::Escape) {
@@ -174,7 +187,7 @@ impl App {
             if i.key_pressed(egui::Key::F) && !cmd {
                 events.push(UiEvent::Fit);
             }
-            if i.key_pressed(egui::Key::W) && !cmd {
+            if i.key_pressed(egui::Key::W) && !cmd && !on_layout {
                 events.push(UiEvent::Tool { tool: "wire".into() });
             }
             if cmd && i.key_pressed(egui::Key::Z) {
@@ -282,17 +295,29 @@ impl App {
                 }
             };
             tool(ui, "Select", "select", "Click to select, drag to move (Esc)");
-            tool(ui, "Wire", "wire", "Click two connection points (W)");
-            tool(ui, "Box", "box", "Drag a dashed location box: +A101, EXT, a connector housing");
-            ui.separator();
-            if ui
-                .button("Tidy wires")
-                .on_hover_text("Move this page's wires off each other and out of symbols (undoable)")
-                .clicked()
-            {
-                self.session.handle(UiEvent::TidyWires);
+            if frame.layout.is_some() {
+                // A layout page: rails and ducts instead of wires.
+                tool(ui, "Rail", "rail", "Drag along the plate to draw a DIN rail");
+                tool(
+                    ui,
+                    "Duct",
+                    "duct",
+                    "Drag along the plate to draw a cable duct (60 x 80; change it in the side panel)",
+                );
+                ui.separator();
+            } else {
+                tool(ui, "Wire", "wire", "Click two connection points (W)");
+                tool(ui, "Box", "box", "Drag a dashed location box: +A101, EXT, a connector housing");
+                ui.separator();
+                if ui
+                    .button("Tidy wires")
+                    .on_hover_text("Move this page's wires off each other and out of symbols (undoable)")
+                    .clicked()
+                {
+                    self.session.handle(UiEvent::TidyWires);
+                }
+                ui.separator();
             }
-            ui.separator();
             let undo = frame.undo.as_deref().map(|l| format!("Undo {l}")).unwrap_or_else(|| "Nothing to undo".into());
             if ui.add_enabled(frame.undo.is_some(), egui::Button::new("Undo")).on_hover_text(undo).clicked() {
                 self.session.handle(UiEvent::Key { key: KeyName::Undo });
@@ -320,6 +345,9 @@ impl App {
                 format!("wire {from} {to} {number:?} {cross_section} {colour} {cable} {core}")
             }
             SelectionInfo::Box { label, devices } => format!("box {label} {devices:?}"),
+            SelectionInfo::PanelItem { kind, tag, length, width, depth, part, vertical, .. } => {
+                format!("panel {kind} {tag} {length} {width} {depth} {part} {vertical}")
+            }
         });
         if key != self.fields.key {
             self.fields = Fields { key, ..Fields::default() };
@@ -342,6 +370,12 @@ impl App {
                     self.fields.core = core.clone();
                 }
                 Some(SelectionInfo::Box { label, .. }) => self.fields.tag = label.clone(),
+                Some(SelectionInfo::PanelItem { length, width, depth, part, .. }) => {
+                    self.fields.number = fmt_mm(*length);
+                    self.fields.cross_section = fmt_mm(*width);
+                    self.fields.colour = fmt_mm(*depth);
+                    self.fields.cable = part.clone();
+                }
                 None => {}
             }
         }
@@ -682,6 +716,56 @@ impl App {
                 ui.add_space(8.0);
                 ui.label("Drag the edge to move, Delete removes.");
             }
+            Some(SelectionInfo::PanelItem { kind, tag, description, length, width, depth, part, size, .. }) => {
+                if kind == "device" {
+                    ui.strong(tag);
+                    if !description.is_empty() {
+                        ui.label(description);
+                    }
+                    ui.label(format!("Footprint: {size}"));
+                    ui.add_space(8.0);
+                    ui.label("Drag to move: it snaps onto a rail. R turns it, Delete takes it off the plate.");
+                } else {
+                    ui.strong(if kind == "rail" { "DIN rail (TS 35)" } else { "Cable duct" });
+                    let f = &mut self.fields;
+                    let mut changed = false;
+                    egui::Grid::new("panel-item").num_columns(2).show(ui, |ui| {
+                        ui.label("Length (mm)");
+                        changed |= ui.add(egui::TextEdit::singleline(&mut f.number).desired_width(70.0)).lost_focus();
+                        ui.end_row();
+                        if kind == "duct" {
+                            ui.label("Width x depth");
+                            ui.horizontal(|ui| {
+                                changed |= ui
+                                    .add(egui::TextEdit::singleline(&mut f.cross_section).desired_width(40.0))
+                                    .lost_focus();
+                                ui.label("x");
+                                changed |=
+                                    ui.add(egui::TextEdit::singleline(&mut f.colour).desired_width(40.0)).lost_focus();
+                            });
+                            ui.end_row();
+                        }
+                        ui.label("Part");
+                        changed |= ui
+                            .add(
+                                egui::TextEdit::singleline(&mut f.cable)
+                                    .hint_text("for the cut list")
+                                    .desired_width(120.0),
+                            )
+                            .lost_focus();
+                        ui.end_row();
+                    });
+                    if changed && let Some(l) = parse_mm(&f.number) {
+                        let w = parse_mm(&f.cross_section).unwrap_or(*width);
+                        let d = parse_mm(&f.colour).unwrap_or(*depth);
+                        if (l, w, d, f.cable.trim()) != (*length, *width, *depth, part.as_str()) {
+                            events.push(UiEvent::PanelItem { length: l, width: w, depth: d, part: f.cable.clone() });
+                        }
+                    }
+                    ui.add_space(8.0);
+                    ui.label("Drag to move, R turns it, Delete removes.");
+                }
+            }
             None => {
                 ui.label("Nothing selected.");
             }
@@ -722,7 +806,60 @@ impl App {
     }
 
     /// The symbol library, grouped by category; click a symbol, then click on the page.
+    /// On a layout page: the plate's size and the devices not on a plate yet, to place.
+    fn unplaced(&mut self, ui: &mut egui::Ui, frame: &Frame, layout: &ecad_editor::LayoutInfo) {
+        let mut events = Vec::new();
+        ui.heading("Mounting plate");
+        let key = format!("{} {}", layout.width, layout.height);
+        if self.plate.0 != key {
+            self.plate = (key, fmt_mm(layout.width), fmt_mm(layout.height));
+        }
+        ui.horizontal(|ui| {
+            let w = ui.add(egui::TextEdit::singleline(&mut self.plate.1).desired_width(50.0));
+            ui.label("x");
+            let h = ui.add(egui::TextEdit::singleline(&mut self.plate.2).desired_width(50.0));
+            ui.label(format!("mm, 1:{}", fmt_mm(layout.scale)));
+            if (w.lost_focus() || h.lost_focus())
+                && let (Some(width), Some(height)) = (parse_mm(&self.plate.1), parse_mm(&self.plate.2))
+            {
+                events.push(UiEvent::PanelSize { width, height });
+            }
+        });
+        ui.separator();
+        ui.heading("Not on a plate yet");
+        ui.add(egui::TextEdit::singleline(&mut self.symbol_filter).hint_text("Search…").desired_width(150.0));
+        ui.small("Click one, then click on the plate: it snaps onto the nearest rail.");
+        let filter = self.symbol_filter.trim().to_lowercase();
+        egui::ScrollArea::vertical().id_salt("unplaced").show(ui, |ui| {
+            for d in &layout.unplaced {
+                if !filter.is_empty()
+                    && !d.tag.to_lowercase().contains(&filter)
+                    && !d.description.to_lowercase().contains(&filter)
+                {
+                    continue;
+                }
+                let id = format!("place-on-panel:{}", d.id);
+                let size = if d.size.is_empty() { "size?".to_owned() } else { d.size.clone() };
+                let label = format!("{}  {}  ({size})", d.tag, d.description);
+                if ui.selectable_label(frame.tool == id, label).clicked() {
+                    events.push(UiEvent::Tool { tool: id });
+                }
+            }
+            if layout.unplaced.is_empty() {
+                ui.small("Every device with parts is on a plate.");
+            }
+        });
+        for ev in events {
+            self.send(ev);
+        }
+    }
+
     fn library(&mut self, ui: &mut egui::Ui, frame: &Frame) {
+        if let Some(layout) = &frame.layout {
+            let layout = layout.clone();
+            self.unplaced(ui, frame, &layout);
+            return;
+        }
         ui.heading("Symbols");
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut self.symbol_filter).hint_text("Search…").desired_width(110.0));
@@ -830,6 +967,15 @@ impl App {
         ui.horizontal(|ui| {
             if ui.button("Add").on_hover_text("New page after this one").clicked() {
                 events.push(UiEvent::AddPage);
+            }
+            if ui
+                .button("Add layout")
+                .on_hover_text(
+                    "New layout page with a mounting plate (600 x 800 mm; change it in the list on the left)",
+                )
+                .clicked()
+            {
+                events.push(UiEvent::AddLayoutPage { width: 600.0, height: 800.0 });
             }
             let deletable = frame.pages.len() > 1;
             if ui
@@ -1435,6 +1581,7 @@ fn main() -> eframe::Result {
                 show_parts: false,
                 show_checks: false,
                 symbol_filter: String::new(),
+                plate: Default::default(),
                 show_cables: false,
                 cable_edits: Default::default(),
                 new_cable: CableEdit::default(),

@@ -15,8 +15,8 @@ use ecad_model::{
 pub use ecad_model::{Naming, Part, PartRef, ProjectInfo, Revision, WireNumbering};
 pub use ecad_view::{Primitive, Shape};
 pub use session::{
-    Button, CableInfo, Choice, DevicePart, Frame, KeyName, PageInfo, PaletteItem, SelectionInfo, Session, SheetGrid,
-    UiEvent,
+    Button, CableInfo, Choice, DevicePart, Frame, KeyName, LayoutInfo, PageInfo, PaletteItem, SelectionInfo, Session,
+    SheetGrid, UiEvent, UnplacedDevice,
 };
 pub use view::Viewport;
 
@@ -41,6 +41,12 @@ pub enum Tool {
     Wire,
     /// Drag a rectangle to draw a location box.
     Box,
+    /// On a layout page: click to put this device's footprint on the plate.
+    PlaceOnPanel(ecad_model::DeviceId),
+    /// On a layout page: drag along the plate to draw a DIN rail.
+    Rail,
+    /// On a layout page: drag along the plate to draw a cable duct.
+    Duct,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +54,8 @@ pub enum Selected {
     Function(FunctionId),
     Connection(ConnectionId),
     Box(ecad_model::BoxId),
+    /// A rail, duct or device footprint on a layout page.
+    PanelItem(ecad_model::PanelItemId),
 }
 
 /// What is under the pointer, in priority order: connection points, then symbols, then wires.
@@ -58,6 +66,8 @@ pub enum Hit {
     Connection(ConnectionId),
     /// A location box, by its edge or label.
     Box(ecad_model::BoxId),
+    /// A rail, duct or device footprint on a layout page.
+    PanelItem(ecad_model::PanelItemId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -147,6 +157,10 @@ pub struct Editor {
     hover: Option<Hit>,
     drag: Option<Drag>,
     bend_drag: Option<BendDrag>,
+    /// A panel item being moved: as it was, and where it was grabbed (plate mm from its corner).
+    panel_drag: Option<(ecad_model::PanelItem, Point, bool)>,
+    /// The start of a rail or duct being drawn, plate mm.
+    panel_start: Option<Point>,
     /// A box being moved: the box as it was and where it was grabbed (from its corner).
     box_drag: Option<(ecad_model::LocationBox, Point, bool)>,
     /// The first corner of a box being drawn.
@@ -212,6 +226,8 @@ impl Editor {
             hover: None,
             drag: None,
             bend_drag: None,
+            panel_drag: None,
+            panel_start: None,
             box_drag: None,
             box_start: None,
             wire_start: None,
@@ -351,6 +367,13 @@ impl Editor {
             self.hover = None;
             self.drag = None;
             self.wire_start = None;
+            self.panel_drag = None;
+            self.panel_start = None;
+            if matches!(self.tool, Tool::Rail | Tool::Duct | Tool::PlaceOnPanel(_))
+                != self.project.panels.contains_key(&page)
+            {
+                self.tool = Tool::Select;
+            }
             self.scene += 1;
         }
         Ok(())
@@ -392,11 +415,13 @@ impl Editor {
         let mut devices: Vec<DeviceId> = on_page.iter().map(|f| f.device).collect();
         devices.sort();
         devices.dedup();
-        for d in devices {
-            if self.project.functions.values().all(|f| f.device != d || f.page == page) {
-                cmds.push(Command::RemoveDevice(d));
-            }
-        }
+        let going: Vec<DeviceId> = devices
+            .into_iter()
+            .filter(|d| self.project.functions.values().all(|f| f.device != *d || f.page == page))
+            .collect();
+        // The page's plate and items, and the footprints of the devices that go with it.
+        cmds.extend(self.clear_panel_commands(page, &going));
+        cmds.extend(going.into_iter().map(Command::RemoveDevice));
         cmds.push(Command::RemovePage(page));
         let index = order.iter().position(|p| *p == page).unwrap_or(0);
         let next = if index > 0 { order[index - 1] } else { order[1] };
@@ -623,6 +648,9 @@ impl Editor {
 
     pub fn pointer_move(&mut self, p: Point) {
         self.cursor = p;
+        if self.panel_pointer_move(p) {
+            return;
+        }
         if let Some((from, grab, _)) = self.box_drag.clone() {
             let min = snap(Point::new(p.x - grab.x, p.y - grab.y), self.grid);
             let (dx, dy) = (min.x - from.min.x, min.y - from.min.y);
@@ -670,6 +698,9 @@ impl Editor {
         self.cursor = p;
         self.status.clear();
         let hit = self.hit(p);
+        if self.panel_pointer_down(p, &hit) {
+            return;
+        }
         match self.tool.clone() {
             Tool::Select => match hit {
                 Some(Hit::Function(f)) | Some(Hit::Point(ConnectionRef { function: f, .. })) => {
@@ -701,17 +732,22 @@ impl Editor {
                         self.box_drag = Some((from.clone(), grab, false));
                     }
                 }
+                // Handled by the layout editor above.
+                Some(Hit::PanelItem(_)) => {}
                 None => self.selection = None,
             },
             Tool::Box => self.box_start = Some(snap(p, self.grid)),
             Tool::Place(symbol) => self.place(&symbol, snap(p, self.grid)),
             Tool::PlaceFor { symbol, device } => self.place_for(&symbol, device, snap(p, self.grid)),
             Tool::Wire => self.wire_click(hit),
+            // Only on layout pages, handled above.
+            Tool::PlaceOnPanel(_) | Tool::Rail | Tool::Duct => {}
         }
     }
 
     pub fn pointer_up(&mut self, p: Point) {
         self.cursor = p;
+        self.panel_pointer_up(p);
         if let Some((from, _, moved)) = self.box_drag.take()
             && moved
         {
@@ -753,7 +789,7 @@ impl Editor {
         self.status.clear();
         match key {
             Key::Escape => {
-                if self.wire_start.take().is_none() {
+                if self.wire_start.take().is_none() && self.panel_start.take().is_none() {
                     self.selection = None;
                     self.tool = Tool::Select;
                 }
@@ -763,10 +799,13 @@ impl Editor {
                     let label = format!("Delete {}", self.tag_of(f));
                     let device = self.project.function(f).map(|f| f.device).ok();
                     let mut cmds = vec![Command::Unplace(f)];
-                    // Drop the device too when this was its only drawing.
+                    // Drop the device too when this was its only drawing (and its footprint).
                     if let Some(d) = device
                         && self.project.functions.values().filter(|x| x.device == d).count() == 1
                     {
+                        if let Some(item) = self.project.panel_item_of(d) {
+                            cmds.push(Command::RemovePanelItem(item.id));
+                        }
                         cmds.push(Command::RemoveDevice(d));
                     }
                     let r = self.execute(&label, Command::Batch(cmds));
@@ -781,9 +820,13 @@ impl Editor {
                     let r = self.execute("Delete box", Command::RemoveBox(b));
                     self.report(r);
                 }
+                Some(Selected::PanelItem(id)) => self.delete_panel_item(id),
                 None => {}
             },
             Key::Rotate => {
+                if let Some(Selected::PanelItem(id)) = self.selection {
+                    self.turn_panel_item(id);
+                }
                 if let Some(Selected::Function(f)) = self.selection
                     && let Ok(func) = self.project.function(f)
                 {
@@ -897,6 +940,7 @@ impl Editor {
             let points = vec![a, Point::new(b.x, a.y), b, Point::new(a.x, b.y), a];
             out.push(Overlay::RubberBand { points });
         }
+        self.panel_overlays(&mut out);
         match self.selection {
             Some(Selected::Function(f)) => {
                 if let Some((min, max)) = self.function_box(f) {
@@ -925,7 +969,8 @@ impl Editor {
                     out.push(Overlay::Outline { min: b.min, max: b.max, selected: true });
                 }
             }
-            None => {}
+            // Drawn by panel_overlays.
+            Some(Selected::PanelItem(_)) | None => {}
         }
         if let Some(start) = &self.wire_start
             && let Ok((a, da)) = self.project.connection_point(start)
@@ -960,6 +1005,9 @@ impl Editor {
     // ---- internals ----
 
     fn hit(&self, p: Point) -> Option<Hit> {
+        if self.on_layout_page() {
+            return self.panel_hit(p);
+        }
         let tol = self.hit_tolerance;
         let near = |q: Point| ((p.x - q.x).powi(2) + (p.y - q.y).powi(2)).sqrt() <= tol;
         let functions: Vec<&Function> = self.project.functions_on(self.page).collect();
@@ -1250,6 +1298,7 @@ impl Editor {
             Selected::Function(f) => self.project.function(*f).is_ok(),
             Selected::Connection(c) => self.project.connection(*c).is_ok(),
             Selected::Box(b) => self.project.boxes.contains_key(b),
+            Selected::PanelItem(i) => self.project.panel_items.contains_key(i),
         };
         if self.selection.as_ref().is_some_and(|s| !exists(s)) {
             self.selection = None;
@@ -1257,6 +1306,9 @@ impl Editor {
         self.hover = None;
     }
 }
+
+mod panel;
+pub use panel::DUCT_WIDTH;
 
 #[cfg(test)]
 mod tests;
