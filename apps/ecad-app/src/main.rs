@@ -195,7 +195,9 @@ impl App {
     fn inspector(&mut self, ui: &mut egui::Ui, frame: &Frame) {
         ui.heading("Selection");
         let key = frame.selection.as_ref().map(|sel| match sel {
-            SelectionInfo::Device { tag, description, symbol, .. } => format!("device {tag} {description} {symbol}"),
+            SelectionInfo::Device { tag, description, symbol, terminal, .. } => {
+                format!("device {tag} {description} {symbol} {terminal:?}")
+            }
             SelectionInfo::Wire { number, from, to, .. } => format!("wire {from} {to} {number:?}"),
         });
         if key != self.fields.key {
@@ -212,7 +214,7 @@ impl App {
         // A field is applied when it loses focus (Tab, Enter or a click elsewhere) with a change.
         let mut events = Vec::new();
         match &frame.selection {
-            Some(SelectionInfo::Device { tag, description, symbol, role, references, parts }) => {
+            Some(SelectionInfo::Device { tag, description, symbol, role, references, parts, terminal }) => {
                 if self.fields.owner.is_empty() {
                     self.fields.owner = tag.clone();
                 }
@@ -229,7 +231,7 @@ impl App {
                 ui.small(format!("Symbol: {symbol}"));
                 if role != "potential" && role != "interruption" && !symbol.ends_with("junction") {
                     ui.add_space(8.0);
-                    ui.strong("Parts");
+                    ui.strong(if role == "terminal" { "Parts (per terminal)" } else { "Parts" });
                     if parts.is_empty() {
                         ui.small("None yet: this device is missing from the BOM.");
                     }
@@ -292,6 +294,30 @@ impl App {
                             events.push(UiEvent::AssignTo { tag: self.fields.owner.clone() });
                         }
                         ui.small("Type a coil's tag, e.g. -K1, to make this one of its contacts.");
+                    }
+                    "terminal" => {
+                        ui.add_space(8.0);
+                        ui.label("Terminal number");
+                        if self.fields.number.is_empty() {
+                            self.fields.number = terminal.clone().unwrap_or_default();
+                        }
+                        let edit = ui.text_edit_singleline(&mut self.fields.number);
+                        if edit.lost_focus() && Some(self.fields.number.trim()) != terminal.as_deref() {
+                            events.push(UiEvent::RenumberTerminal { number: self.fields.number.clone() });
+                        }
+                        ui.strong(format!("Strip {tag}"));
+                        for r in references {
+                            if ui.link(&r.label).on_hover_text("Show this page").clicked() {
+                                events.push(UiEvent::ShowPage { id: r.page });
+                            }
+                        }
+                        if ui
+                            .button("Add terminal")
+                            .on_hover_text("The strip's next number; then click where it goes, on any page")
+                            .clicked()
+                        {
+                            events.push(UiEvent::AddContact { symbol: symbol.clone() });
+                        }
                     }
                     "potential" | "interruption" => {
                         ui.add_space(8.0);

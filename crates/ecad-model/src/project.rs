@@ -136,6 +136,26 @@ pub struct Connection {
     pub wire_number: Option<String>,
 }
 
+/// Compare terminal numbers naturally: numbers as numbers, then text.
+fn natural(a: &str, b: &str) -> std::cmp::Ordering {
+    match (a.parse::<u64>(), b.parse::<u64>()) {
+        (Ok(x), Ok(y)) => x.cmp(&y),
+        (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+        (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
+        _ => a.cmp(b),
+    }
+}
+
+/// One terminal of a strip.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct TerminalRef {
+    pub function: FunctionId,
+    pub page: PageId,
+    pub number: String,
+    /// Where the terminal is drawn, e.g. `1.3`.
+    pub location: String,
+}
+
 /// One contact of a device, for cross-reference lists.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ContactRef {
@@ -210,6 +230,11 @@ pub enum Command {
         id: DeviceId,
         parts: Vec<PartRef>,
     },
+    /// Set a drawing's terminal designations (e.g. renumber a terminal).
+    SetDesignations {
+        id: FunctionId,
+        designations: BTreeMap<String, String>,
+    },
     /// Several commands applied together: all of them or none.
     Batch(Vec<Command>),
 }
@@ -262,6 +287,10 @@ pub enum ModelError {
     EmptyPartNumber,
     #[error("quantity must be at least 1")]
     ZeroQuantity,
+    #[error("terminal {0}:{1} already exists")]
+    DuplicateTerminal(String, String),
+    #[error("terminal number must not be empty")]
+    EmptyTerminalNumber,
     #[error("id {0} is already used")]
     DuplicateId(Uuid),
 }
@@ -381,11 +410,17 @@ impl Project {
         out
     }
 
-    /// Designations for a new contact of `device` drawn with `symbol`: IEC numbering, where
-    /// the first digit counts the device's contacts (1x, 2x, 3x…) and the second is the
-    /// symbol's own (3/4 for NO, 1/2 for NC). Empty for symbols that aren't contacts.
-    pub fn next_contact_designations(&self, device: DeviceId, symbol: &SymbolId) -> BTreeMap<String, String> {
+    /// Designations for a new drawing of `device` with `symbol`:
+    /// - a contact gets IEC numbering, where the first digit counts the device's contacts
+    ///   (1x, 2x, 3x…) and the second is the symbol's own (3/4 for NO, 1/2 for NC);
+    /// - a terminal gets the strip's next free number on both its sides;
+    /// - anything else keeps the symbol's own names (empty map).
+    pub fn next_designations(&self, device: DeviceId, symbol: &SymbolId) -> BTreeMap<String, String> {
         let Ok(sym) = self.symbol(symbol) else { return BTreeMap::new() };
+        if sym.role == Role::Terminal {
+            let n = self.next_terminal_number(device);
+            return sym.connection_points.iter().map(|cp| (cp.name.clone(), n.clone())).collect();
+        }
         if !matches!(sym.role, Role::Contact { .. }) {
             return BTreeMap::new();
         }
@@ -402,6 +437,37 @@ impl Project {
                 (cp.name.clone(), format!("{n}{last}"))
             })
             .collect()
+    }
+
+    /// A terminal's number: the designation of its first side.
+    pub fn terminal_number(&self, f: FunctionId) -> Option<String> {
+        let f = self.function(f).ok()?;
+        let sym = self.symbol(&f.symbol).ok()?;
+        (sym.role == Role::Terminal)
+            .then(|| sym.connection_points.first().map(|cp| f.designation(&cp.name).to_owned()))?
+    }
+
+    /// The terminals of a strip, in terminal order (numbers compare as numbers: 2 before 10).
+    pub fn terminals_of(&self, strip: DeviceId) -> Vec<TerminalRef> {
+        let mut out: Vec<TerminalRef> = self
+            .functions_of(strip)
+            .filter_map(|f| {
+                Some(TerminalRef {
+                    function: f.id,
+                    page: f.page,
+                    number: self.terminal_number(f.id)?,
+                    location: self.location(f.page, f.position).ok()?,
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| natural(&a.number, &b.number));
+        out
+    }
+
+    /// One more than the strip's highest numeric terminal, or 1.
+    pub fn next_terminal_number(&self, strip: DeviceId) -> String {
+        let highest = self.terminals_of(strip).iter().filter_map(|t| t.number.parse::<u32>().ok()).max().unwrap_or(0);
+        (highest + 1).to_string()
     }
 
     /// The lowest free tag `<prefix><n>`, n from 1.
@@ -464,6 +530,10 @@ impl Project {
                 self.symbol(&f.symbol)?;
                 let id = f.id;
                 self.functions.insert(id, f);
+                if let Err(e) = self.check_terminal(id) {
+                    self.functions.remove(&id);
+                    return Err(e);
+                }
                 Ok(Command::Unplace(id))
             }
             Command::Unplace(id) => {
@@ -606,6 +676,17 @@ impl Project {
                 let old = std::mem::replace(&mut d.parts, parts);
                 Ok(Command::SetDeviceParts { id, parts: old })
             }
+            Command::SetDesignations { id, designations } => {
+                let f = self.functions.get_mut(&id).ok_or(ModelError::NoFunction(id))?;
+                let old = std::mem::replace(&mut f.designations, designations);
+                if let Err(e) = self.check_terminal(id) {
+                    if let Some(f) = self.functions.get_mut(&id) {
+                        f.designations = old;
+                    }
+                    return Err(e);
+                }
+                Ok(Command::SetDesignations { id, designations: old })
+            }
             Command::Batch(cmds) => {
                 let mut undo = Vec::with_capacity(cmds.len());
                 for cmd in cmds {
@@ -634,6 +715,19 @@ impl Project {
             Some(d) if Some(d.id) != except => Err(ModelError::DuplicateTag(tag.to_owned())),
             _ => Ok(()),
         }
+    }
+
+    /// A terminal's number is non-empty and unique on its strip.
+    fn check_terminal(&self, f: FunctionId) -> Result<()> {
+        let Some(number) = self.terminal_number(f) else { return Ok(()) };
+        if number.trim().is_empty() {
+            return Err(ModelError::EmptyTerminalNumber);
+        }
+        let strip = self.function(f)?.device;
+        if self.terminals_of(strip).iter().any(|t| t.function != f && t.number == number) {
+            return Err(ModelError::DuplicateTerminal(self.device(strip)?.tag.clone(), number));
+        }
+        Ok(())
     }
 
     fn check_part_refs(&self, parts: &[PartRef]) -> Result<()> {

@@ -150,6 +150,10 @@ pub enum UiEvent {
     ExportReports {
         path: PathBuf,
     },
+    /// Give the selected terminal another number.
+    RenumberTerminal {
+        number: String,
+    },
 }
 
 /// Keys the UI maps from its own key events.
@@ -191,6 +195,8 @@ pub enum SelectionInfo {
         references: Vec<Reference>,
         /// Catalogue parts the device is built from.
         parts: Vec<DevicePart>,
+        /// For a terminal, its number on the strip.
+        terminal: Option<String>,
     },
     Wire {
         number: Option<String>,
@@ -477,6 +483,10 @@ impl Session {
                 }
             }),
             UiEvent::ExportReports { path } => self.export_reports(&path),
+            UiEvent::RenumberTerminal { number } => {
+                let r = self.editor.renumber_selected(&number);
+                self.report(r);
+            }
             UiEvent::Confirm { choice } => {
                 let Some(action) = self.pending.take() else { return };
                 match choice {
@@ -622,6 +632,13 @@ impl Session {
                             Some(Reference { label: format!("Also at {at}"), page: g.page })
                         })
                         .collect(),
+                    // A terminal: the strip's other terminals.
+                    Role::Terminal => project
+                        .terminals_of(d.id)
+                        .into_iter()
+                        .filter(|t| t.function != f.id)
+                        .map(|t| Reference { label: format!("Terminal {} at {}", t.number, t.location), page: t.page })
+                        .collect(),
                     Role::Single => Vec::new(),
                 };
                 Some(SelectionInfo::Device {
@@ -633,10 +650,12 @@ impl Session {
                         Role::Contact { .. } => "contact",
                         Role::Potential => "potential",
                         Role::Interruption => "interruption",
+                        Role::Terminal => "terminal",
                         Role::Single => "single",
                     }
                     .into(),
                     references,
+                    terminal: project.terminal_number(f.id),
                     parts: d
                         .parts
                         .iter()
@@ -842,7 +861,7 @@ mod tests {
         let f = s.frame(None, [0, 0, 0]);
         assert_eq!(f.title, "Panel A");
         assert_eq!(s.editor().project().functions.len(), 0);
-        assert_eq!(f.palette.len(), 6, "starter symbols are available");
+        assert_eq!(f.palette.len(), 7, "starter symbols are available");
         assert!(path.join("project.json").exists());
 
         // New into a folder that already has a project is refused.
@@ -1034,6 +1053,37 @@ mod tests {
         assert_eq!(s.frame(None, [0, 0, 0]).status, format!("Wrote 2 reports to {}", out.display()));
         let bom = std::fs::read_to_string(out.join("bom.csv")).unwrap();
         assert!(bom.contains("EX-AUX-1NO1NC,Example,Auxiliary contact block 1 NO + 1 NC,1,-K1"), "{bom}");
+    }
+
+    #[test]
+    fn terminals_are_numbered_per_strip_and_renumbered() {
+        let (_dir, mut s) = session();
+        let click = |s: &mut Session, p: Point| {
+            let (x, y) = s.view().to_screen(p);
+            s.handle(UiEvent::PointerDown { x, y, button: Button::Primary });
+            s.handle(UiEvent::PointerUp { x, y, button: Button::Primary });
+        };
+        // A new strip from the toolbar starts at terminal 1.
+        s.handle(UiEvent::Tool { tool: "iec.terminal".into() });
+        click(&mut s, Point::new(40.0, 40.0));
+        let device = |s: &Session| match s.frame(None, [0, 0, 0]).selection {
+            Some(SelectionInfo::Device { tag, terminal, references, role, .. }) => (tag, terminal, references, role),
+            other => panic!("{other:?}"),
+        };
+        let (tag, terminal, _, role) = device(&s);
+        assert_eq!((tag.as_str(), terminal.as_deref(), role.as_str()), ("-X1", Some("1"), "terminal"));
+        // "Add terminal" from the side panel gives the next number.
+        s.handle(UiEvent::AddContact { symbol: "iec.terminal".into() });
+        click(&mut s, Point::new(60.0, 40.0));
+        let (_, terminal, references, _) = device(&s);
+        assert_eq!(terminal.as_deref(), Some("2"));
+        assert!(references[0].label.starts_with("Terminal 1 at 1."), "{references:?}");
+        // Numbers are unique on the strip.
+        s.handle(UiEvent::RenumberTerminal { number: "1".into() });
+        assert_eq!(s.frame(None, [0, 0, 0]).status, "terminal -X1:1 already exists");
+        s.handle(UiEvent::RenumberTerminal { number: "10".into() });
+        assert_eq!(device(&s).1.as_deref(), Some("10"));
+        assert_eq!(s.editor().undo_label(), Some("Renumber -X1:2 to 10"));
     }
 
     #[test]

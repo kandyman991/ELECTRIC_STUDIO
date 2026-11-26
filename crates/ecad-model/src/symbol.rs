@@ -62,6 +62,9 @@ pub enum Role {
     /// An interruption point: all drawings of its device are connected, so a potential
     /// continues on another page. Each shows where its partners are.
     Interruption,
+    /// One terminal of a terminal strip: the strip is the device (`-X2`), each terminal is
+    /// one drawing with its own number (`-X2:3`). Its two sides are bridged.
+    Terminal,
 }
 
 impl Role {

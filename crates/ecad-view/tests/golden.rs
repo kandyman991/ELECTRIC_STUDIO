@@ -97,6 +97,11 @@ fn potentials_across_both_pages() {
 }
 
 #[test]
+fn terminal_strip() {
+    check(&ecad_model::sample::with_terminals().unwrap(), "with_terminals_page1");
+}
+
+#[test]
 fn dxf_output_is_deterministic() {
     let p = start_circuit().unwrap();
     assert_eq!(ecad_view::page_dxf(&p, PAGE_1).unwrap(), ecad_view::page_dxf(&p, PAGE_1).unwrap());

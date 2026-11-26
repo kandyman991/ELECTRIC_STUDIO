@@ -79,6 +79,23 @@ pub fn symbols() -> Vec<SymbolDef> {
             connection_points: vec![cp("1", 0.0, 0.0, Direction::Down)],
         },
         SymbolDef {
+            id: SymbolId::new("iec.terminal"),
+            description: "Terminal".into(),
+            tag_prefix: "-X".into(),
+            role: Role::Terminal,
+            // A feed-through terminal: both sides are the same potential.
+            bridged: true,
+            hide_tag: false,
+            hide_point_labels: true,
+            graphics: vec![
+                Graphic::Circle { center: Point::ZERO, radius: 1.2 },
+                line(0.0, 1.2, 0.0, 4.0),
+                line(0.0, -1.2, 0.0, -4.0),
+            ],
+            // Top is the inside of the cabinet, bottom the field side.
+            connection_points: vec![cp("1", 0.0, 4.0, Direction::Up), cp("2", 0.0, -4.0, Direction::Down)],
+        },
+        SymbolDef {
             id: SymbolId::new("iec.junction"),
             description: "Junction".into(),
             tag_prefix: "J".into(),
@@ -201,7 +218,7 @@ pub fn with_contacts() -> Result<Project> {
     let coil = p.function(K1_COIL)?.position;
     for (id, symbol, dx) in [(K1_NO, "iec.contact_no", 40.0), (K1_NC, "iec.contact_nc", 120.0)] {
         let symbol = SymbolId::new(symbol);
-        let designations = p.next_contact_designations(k1, &symbol);
+        let designations = p.next_designations(k1, &symbol);
         p.place(Function {
             id,
             device: k1,
@@ -262,6 +279,53 @@ pub fn with_potentials() -> Result<Project> {
             id: ConnectionId::from_u128(id),
             from: ConnectionRef::new(fid(fa), pa),
             to: ConnectionRef::new(fid(fb), pb),
+            wire_number: Some(number.into()),
+        })?;
+    }
+    Ok(p)
+}
+
+pub const X2_1: FunctionId = FunctionId::from_u128(0x20c);
+pub const X2_2: FunctionId = FunctionId::from_u128(0x20d);
+
+/// [`with_potentials`] with the field pushbutton -S1 wired through terminal strip -X2, as a
+/// cabinet would be: L+ → -X2:1 → -S1:13, -S1:14 → -X2:2 → -K1:A1. Each terminal uses one
+/// feed-through terminal from the catalogue.
+pub fn with_terminals() -> Result<Project> {
+    let mut p = with_potentials()?;
+    let strip = DeviceId::from_u128(0x10a);
+    p.apply(Command::AddPart(Part {
+        number: "EX-TB-4".into(),
+        manufacturer: "Example".into(),
+        description: "Feed-through terminal 4 mm²".into(),
+    }))?;
+    p.add_device(Device { parts: vec![PartRef::new("EX-TB-4", 1)], ..Device::new(strip, "-X2", "Field connections") })?;
+    let symbol = SymbolId::new("iec.terminal");
+    for (id, y) in [(X2_1, 56.0), (X2_2, 26.0)] {
+        let designations = p.next_designations(strip, &symbol);
+        p.place(Function {
+            id,
+            device: strip,
+            symbol: symbol.clone(),
+            page: PAGE_1,
+            position: Point::new(0.0, y),
+            rotation: Rotation::R0,
+            designations,
+        })?;
+    }
+    p.apply(Command::Disconnect(ConnectionId::from_u128(0x301)))?;
+    p.apply(Command::Disconnect(ConnectionId::from_u128(0x302)))?;
+    let wires = [
+        (0x301, "W1", (0x201, "1"), (0x20c, "1")),
+        (0x309, "W9", (0x20c, "2"), (0x202, "13")),
+        (0x302, "W2", (0x202, "14"), (0x20d, "1")),
+        (0x30a, "W10", (0x20d, "2"), (0x203, "A1")),
+    ];
+    for (id, number, (fa, pa), (fb, pb)) in wires {
+        p.connect(Connection {
+            id: ConnectionId::from_u128(id),
+            from: ConnectionRef::new(FunctionId::from_u128(fa), pa),
+            to: ConnectionRef::new(FunctionId::from_u128(fb), pb),
             wire_number: Some(number.into()),
         })?;
     }

@@ -719,7 +719,8 @@ impl Editor {
                 page: self.page,
                 position: at,
                 rotation: Rotation::R0,
-                designations: Default::default(),
+                // A new terminal strip starts at terminal 1; contacts keep their own numbers.
+                designations: self.project.next_designations(device, symbol),
             }),
         ]);
         let result = self.execute(&format!("Place {tag}"), cmd);
@@ -734,7 +735,7 @@ impl Editor {
             Ok(d) => d.tag.clone(),
             Err(e) => return self.status = e.to_string(),
         };
-        let designations = self.project.next_contact_designations(device, symbol);
+        let designations = self.project.next_designations(device, symbol);
         let mut terminals: Vec<&String> = designations.values().collect();
         terminals.sort();
         let what = if terminals.is_empty() {
@@ -760,6 +761,21 @@ impl Editor {
         self.report(result);
     }
 
+    /// Give the selected terminal another number (unique on its strip).
+    pub fn renumber_selected(&mut self, number: &str) -> Result<(), ModelError> {
+        let Some(Selected::Function(f)) = self.selection else { return Ok(()) };
+        let Some(old) = self.project.terminal_number(f) else { return Ok(()) };
+        let number = number.trim();
+        if number == old {
+            return Ok(());
+        }
+        let func = self.project.function(f)?;
+        let sym = self.project.symbol(&func.symbol)?;
+        let designations = sym.connection_points.iter().map(|cp| (cp.name.clone(), number.to_owned())).collect();
+        let label = format!("Renumber {}:{old} to {number}", self.tag_of(f));
+        self.execute(&label, Command::SetDesignations { id: f, designations })
+    }
+
     /// Make the selected drawing part of the device tagged `tag` (e.g. turn a stray contact
     /// into a contact of -K1). It takes that device's next contact numbers; its old device is
     /// removed when nothing else draws it.
@@ -773,7 +789,7 @@ impl Editor {
             return Ok(());
         }
         let old_tag = self.project.device(func.device)?.tag.clone();
-        let designations = self.project.next_contact_designations(target, &func.symbol);
+        let designations = self.project.next_designations(target, &func.symbol);
         let mut cmds = vec![Command::Reassign { id: f, device: target, designations }];
         if self.project.functions_of(func.device).count() == 1 {
             cmds.push(Command::RemoveDevice(func.device));
