@@ -66,7 +66,7 @@ machine wiring rules. ANSI/NFPA 79 later.
 | Separate product from HMI Studio; they share only a tag-exchange format | Decided |
 | CADCraft crates as libraries, not a fork | Decided |
 | Milestones M0 to M6 with an MVP gate after M4 | Decided |
-| UI technology: egui or Tauri, both as thin shells over `ecad-editor` | *Open*, decided in M1b after trying both |
+| UI technology: egui, a thin shell (`apps/ecad-app`) over `ecad-editor` | Decided in M1b (docs/UI-DECISION.md) |
 | Project files: a folder of JSON files | Implemented in M1a |
 | Licence and business model | *Open*, no licence until the owner decides |
 | IEC first; Windows and Linux first | *Open*, proposed |

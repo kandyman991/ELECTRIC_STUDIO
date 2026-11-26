@@ -15,9 +15,10 @@ Rules for every contributor, human or AI. Read docs/ARCHITECTURE.md first.
    golden file. See docs/CADCRAFT.md.
 5. **Every edit is a `Command`** applied through `Project::apply` (or `History::execute` to
    make it undoable). Don't mutate model collections from UI or I/O code.
-6. **Editing behaviour lives in `ecad-editor`, not in a UI shell.** A shell only converts
-   input to page millimetres, calls the editor, and draws `Editor::base` + `Editor::overlays`.
-   Anything a shell decides on its own can't be tested and won't exist in the other shell.
+6. **Editing behaviour lives in `ecad-editor`, not in the UI (`apps/ecad-app`, egui).** A shell only converts
+   input into `UiEvent`s for `ecad_editor::Session` and paints the `Frame` it returns.
+   Anything the UI decides on its own can't be tested and won't be available to the CLI or
+   the future MCP server.
 
 ## Code rules
 

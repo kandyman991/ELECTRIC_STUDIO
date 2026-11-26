@@ -1,0 +1,18 @@
+[package]
+name = "ecad-app"
+description = "Electric Studio: the editor application (egui)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "electric-studio"
+path = "src/main.rs"
+
+[dependencies]
+ecad-editor = { workspace = true }
+eframe = { workspace = true }
+
+[lints]
+workspace = true
