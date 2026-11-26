@@ -336,3 +336,106 @@ fn tidy_wires_moves_a_wire_off_another_and_undo_puts_it_back() {
     e.key(Key::Undo);
     assert_eq!(e.project().connection(id).unwrap().bend, Some(at));
 }
+
+/// The reference project on its layout page, with the plate's mapping to paper.
+fn layout_editor() -> (Editor, ecad_model::panel::PanelFrame) {
+    let p = ecad_model::reference::reference_project().unwrap();
+    let page = p.pages.values().find(|pg| pg.name == "L7").unwrap().id;
+    let frame = p.panel_frame(page).unwrap();
+    (Editor::new(p, page).unwrap(), frame)
+}
+
+fn item_of(e: &Editor, tag: &str) -> ecad_model::PanelItem {
+    let d = e.project().device_by_tag(tag).unwrap().id;
+    e.project().panel_item_of(d).unwrap().clone()
+}
+
+#[test]
+fn a_footprint_is_dragged_onto_another_rail_and_deleted_back_to_the_unplaced_list() {
+    let (mut e, frame) = layout_editor();
+    assert!(e.on_layout_page());
+    let qf1 = item_of(&e, "P2QF1");
+    let (lo, hi) = e.project().panel_item_rect(&qf1);
+    let middle = Point::new((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0);
+    // The second rail from the top: centre at 1870 - (290 + 430) / 2.
+    let rail_centre = 1870.0 - (290.0 + 430.0) / 2.0;
+    let target = Point::new(middle.x + 400.0, rail_centre + 12.0);
+    let (a, b) = (frame.to_paper(middle), frame.to_paper(target));
+    drag(&mut e, (a.x, a.y), (b.x, b.y));
+    let moved = item_of(&e, "P2QF1");
+    let (lo, hi) = e.project().panel_item_rect(&moved);
+    assert_eq!((lo.y + hi.y) / 2.0, rail_centre, "snapped onto the rail's centre line");
+    assert_eq!(moved.at.x % 5.0, 0.0, "on the 5 mm grid");
+    assert_eq!(e.undo_label(), Some("Move P2QF1"));
+    assert_eq!(e.selection(), Some(Selected::PanelItem(qf1.id)));
+
+    let d = e.project().device_by_tag("P2QF1").unwrap().id;
+    e.key(Key::Delete);
+    assert!(e.project().unplaced_devices().contains(&d));
+    e.key(Key::Undo);
+    e.key(Key::Undo);
+    assert_eq!(item_of(&e, "P2QF1"), qf1);
+}
+
+#[test]
+fn an_unplaced_device_is_placed_on_a_rail_and_rails_and_ducts_are_drawn() {
+    let (mut e, frame) = layout_editor();
+    // The cabinet fan has parts but no size and isn't on the plate.
+    let m3 = e.project().device_by_tag("P3MS1").unwrap().id;
+    assert!(e.project().unplaced_devices().contains(&m3));
+    e.set_tool(Tool::PlaceOnPanel(m3));
+    let rail_centre = 1870.0 - (290.0 + 430.0) / 2.0;
+    let at = frame.to_paper(Point::new(700.0, rail_centre - 10.0));
+    click(&mut e, at.x, at.y);
+    let item = item_of(&e, "P3MS1");
+    let (lo, hi) = e.project().panel_item_rect(&item);
+    assert_eq!((lo.y + hi.y) / 2.0, rail_centre);
+    assert_eq!(e.tool(), &Tool::Select);
+    assert_eq!(e.undo_label(), Some("Place P3MS1"));
+
+    // R turns it upright about its middle.
+    e.key(Key::Rotate);
+    assert!(item_of(&e, "P3MS1").vertical);
+
+    // A rail and a duct drawn by dragging along the plate's empty right part of the tall gap.
+    let rails =
+        |e: &Editor| e.project().panel_items.values().filter(|i| i.kind == ecad_model::PanelItemKind::Rail).count();
+    let before = rails(&e);
+    e.set_tool(Tool::Rail);
+    let (a, b) = (frame.to_paper(Point::new(500.0, 1000.0)), frame.to_paper(Point::new(780.0, 1003.0)));
+    drag(&mut e, (a.x, a.y), (b.x, b.y));
+    assert_eq!(rails(&e), before + 1);
+    let Some(Selected::PanelItem(id)) = e.selection() else { panic!("the new rail is selected") };
+    let rail = e.project().panel_items[&id].clone();
+    assert_eq!((rail.length, rail.vertical, rail.at.y), (280.0, false, 1000.0 - 17.5));
+    e.set_selected_panel_item(300.0, 0.0, 0.0, "TS35-2M").unwrap();
+    assert_eq!((e.project().panel_items[&id].length, e.project().panel_items[&id].part.as_str()), (300.0, "TS35-2M"));
+    e.set_tool(Tool::Duct);
+    let (a, b) = (frame.to_paper(Point::new(480.0, 900.0)), frame.to_paper(Point::new(482.0, 760.0)));
+    drag(&mut e, (a.x, a.y), (b.x, b.y));
+    let Some(Selected::PanelItem(id)) = e.selection() else { panic!("the new duct is selected") };
+    let duct = &e.project().panel_items[&id];
+    assert!(duct.vertical && duct.length == 140.0);
+    assert!(matches!(duct.kind, ecad_model::PanelItemKind::Duct { width, .. } if width == DUCT_WIDTH));
+}
+
+#[test]
+fn layout_pages_are_added_resized_and_deleted_with_their_items() {
+    let (mut e, _) = layout_editor();
+    let pages = e.project().pages.len();
+    e.add_layout_page(600.0, 800.0).unwrap();
+    assert!(e.on_layout_page());
+    assert_eq!(e.project().pages.len(), pages + 1);
+    assert_eq!(e.project().page(e.page()).unwrap().name, "L1");
+    e.set_panel_size(800.0, 1000.0).unwrap();
+    assert_eq!(e.project().panels[&e.page()].width, 800.0);
+    // Back to L7 and delete it: plate and items go, the devices stay (drawn elsewhere).
+    let l7 = e.project().pages.values().find(|p| p.name == "L7").unwrap().id;
+    e.set_page(l7).unwrap();
+    let items = e.project().panel_items.len();
+    assert!(items > 0);
+    e.delete_page().unwrap();
+    assert!(e.project().panel_items.is_empty() && e.project().device_by_tag("P2QF1").is_some());
+    e.key(Key::Undo);
+    assert_eq!(e.project().panel_items.len(), items);
+}

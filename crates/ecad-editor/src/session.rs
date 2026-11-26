@@ -160,6 +160,23 @@ pub enum UiEvent {
     },
     /// Number every wire again from the wire format.
     RenumberWires,
+    /// Add a layout page with a mounting plate of this size (mm) after the current page.
+    AddLayoutPage {
+        width: f64,
+        height: f64,
+    },
+    /// The current layout page's plate size, mm.
+    PanelSize {
+        width: f64,
+        height: f64,
+    },
+    /// The selected rail's or duct's length, a duct's width and depth, and the part number.
+    PanelItem {
+        length: f64,
+        width: f64,
+        depth: f64,
+        part: String,
+    },
     /// Move the page's wires off each other and out of symbols where a nearby route is clear.
     TidyWires,
     /// Put the selected wire's middle run back halfway.
@@ -334,6 +351,22 @@ pub enum SelectionInfo {
     },
     /// A location box: its label and the devices drawn inside it.
     Box { label: String, devices: Vec<String> },
+    /// A rail, duct or device footprint on a layout page.
+    PanelItem {
+        /// `rail`, `duct` or `device`.
+        kind: String,
+        /// The device's tag and description, for a footprint.
+        tag: String,
+        description: String,
+        /// Length of a rail or duct; a duct's width and depth (mm).
+        length: f64,
+        width: f64,
+        depth: f64,
+        part: String,
+        vertical: bool,
+        /// A footprint's size, `45 x 77 mm`, or why it is a guess.
+        size: String,
+    },
 }
 
 /// A cable, for the cables window and the wire panel.
@@ -377,6 +410,27 @@ pub struct Reference {
     pub page: PageId,
 }
 
+/// A device that isn't on any plate yet, for the layout page's list.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct UnplacedDevice {
+    /// For [`UiEvent::Tool`] `place-on-panel:<id>`.
+    pub id: String,
+    pub tag: String,
+    pub description: String,
+    /// `45 x 77`, or empty when its parts have no size.
+    pub size: String,
+}
+
+/// The current layout page: plate size, scale and the devices still to place.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct LayoutInfo {
+    pub width: f64,
+    pub height: f64,
+    /// 10 for 1:10.
+    pub scale: f64,
+    pub unplaced: Vec<UnplacedDevice>,
+}
+
 /// Everything the UI needs to paint one frame.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -389,6 +443,8 @@ pub struct Frame {
     pub status: String,
     /// `select`, `wire`, or the symbol id being placed.
     pub tool: String,
+    /// Set on a layout page.
+    pub layout: Option<LayoutInfo>,
     pub selection: Option<SelectionInfo>,
     pub undo: Option<String>,
     pub redo: Option<String>,
@@ -569,8 +625,29 @@ impl Session {
                 "select" => Tool::Select,
                 "wire" => Tool::Wire,
                 "box" => Tool::Box,
+                "rail" => Tool::Rail,
+                "duct" => Tool::Duct,
+                t if t.starts_with("place-on-panel:") => {
+                    let id = &t["place-on-panel:".len()..];
+                    match self.editor.project().devices.keys().find(|d| d.0.to_string() == id) {
+                        Some(d) => Tool::PlaceOnPanel(*d),
+                        None => Tool::Select,
+                    }
+                }
                 symbol => Tool::Place(SymbolId::new(symbol)),
             }),
+            UiEvent::AddLayoutPage { width, height } => {
+                let r = self.editor.add_layout_page(width, height);
+                self.report(r);
+            }
+            UiEvent::PanelSize { width, height } => {
+                let r = self.editor.set_panel_size(width, height);
+                self.report(r);
+            }
+            UiEvent::PanelItem { length, width, depth, part } => {
+                let r = self.editor.set_selected_panel_item(length, width, depth, &part);
+                self.report(r);
+            }
             UiEvent::Rename { tag } => {
                 let r = self.editor.rename_selected(tag.trim());
                 self.report(r);
@@ -894,13 +971,74 @@ impl Session {
     fn selected_device(&self) -> Option<ecad_model::DeviceId> {
         match self.editor.selection()? {
             Selected::Function(f) => self.editor.project().function(f).ok().map(|f| f.device),
+            Selected::PanelItem(i) => match self.editor.project().panel_items.get(&i)?.kind {
+                ecad_model::PanelItemKind::Device { device } => Some(device),
+                _ => None,
+            },
             Selected::Connection(_) | Selected::Box(_) => None,
         }
+    }
+
+    fn layout_info(&self) -> Option<LayoutInfo> {
+        let project = self.editor.project();
+        let page = self.editor.page();
+        let panel = project.panels.get(&page)?;
+        let fmt = |v: f64| format!("{}", (v * 10.0).round() / 10.0).replace('.', ",");
+        Some(LayoutInfo {
+            width: panel.width,
+            height: panel.height,
+            scale: project.panel_frame(page).map_or(1.0, |f| f.scale),
+            unplaced: project
+                .unplaced_devices()
+                .into_iter()
+                .filter_map(|id| {
+                    let d = project.device(id).ok()?;
+                    let ((w, h), known) = project.device_size(id);
+                    Some(UnplacedDevice {
+                        id: id.0.to_string(),
+                        tag: d.tag.clone(),
+                        description: d.description.clone(),
+                        size: if known { format!("{} x {}", fmt(w), fmt(h)) } else { String::new() },
+                    })
+                })
+                .collect(),
+        })
     }
 
     fn selection_info(&self) -> Option<SelectionInfo> {
         let project = self.editor.project();
         match self.editor.selection()? {
+            Selected::PanelItem(id) => {
+                let item = project.panel_items.get(&id)?;
+                let fmt = |v: f64| format!("{}", (v * 10.0).round() / 10.0).replace('.', ",");
+                let (kind, tag, description, width, depth, size) = match &item.kind {
+                    ecad_model::PanelItemKind::Rail => ("rail", String::new(), String::new(), 35.0, 0.0, String::new()),
+                    ecad_model::PanelItemKind::Duct { width, depth } => {
+                        ("duct", String::new(), String::new(), *width, *depth, String::new())
+                    }
+                    ecad_model::PanelItemKind::Device { device } => {
+                        let d = project.device(*device).ok()?;
+                        let ((w, h), known) = project.device_size(*device);
+                        let size = if known {
+                            format!("{} x {} mm", fmt(w), fmt(h))
+                        } else {
+                            "unknown: give its parts a size in the parts catalogue".into()
+                        };
+                        ("device", d.tag.clone(), d.description.clone(), w, h, size)
+                    }
+                };
+                Some(SelectionInfo::PanelItem {
+                    kind: kind.into(),
+                    tag,
+                    description,
+                    length: item.length,
+                    width,
+                    depth,
+                    part: item.part.clone(),
+                    vertical: item.vertical,
+                    size,
+                })
+            }
             Selected::Function(f) => {
                 let f = project.function(f).ok()?;
                 let d = project.device(f.device).ok()?;
@@ -1083,7 +1221,11 @@ impl Session {
                 Tool::Box => "box".into(),
                 Tool::Place(s) => s.0.clone(),
                 Tool::PlaceFor { symbol, .. } => format!("contact:{}", symbol.0),
+                Tool::PlaceOnPanel(d) => format!("place-on-panel:{}", d.0),
+                Tool::Rail => "rail".into(),
+                Tool::Duct => "duct".into(),
             },
+            layout: self.layout_info(),
             selection: self.selection_info(),
             undo: editor.undo_label().map(str::to_owned),
             redo: editor.redo_label().map(str::to_owned),
@@ -1406,6 +1548,45 @@ mod tests {
         s.handle(UiEvent::ShowPage { id: pages[0].id });
         s.handle(UiEvent::ShowPage { id: pages[1].id });
         assert!(!s.frame(None, [0, 0, 0]).dirty);
+    }
+
+    #[test]
+    fn a_layout_page_lists_unplaced_devices_and_places_one() {
+        let dir = tempfile::tempdir().unwrap();
+        ecad_project::save(&ecad_model::reference::reference_project().unwrap(), dir.path()).unwrap();
+        let mut s = Session::open(dir.path()).unwrap();
+        s.handle(UiEvent::Resize { width: 1200.0, height: 800.0 });
+        assert!(s.frame(None, [0, 0, 0]).layout.is_none(), "the first page is a schematic");
+        let l7 = s.editor().project().pages.values().find(|p| p.name == "L7").unwrap().id;
+        s.handle(UiEvent::ShowPage { id: l7 });
+        let f = s.frame(None, [0, 0, 0]);
+        let layout = f.layout.unwrap();
+        assert_eq!((layout.width, layout.height, layout.scale), (895.0, 1870.0, 10.0));
+        let fan = layout.unplaced.iter().find(|d| d.tag == "P3MS1").unwrap();
+        assert_eq!(fan.size, "", "its parts have no size");
+        assert!(!layout.unplaced.iter().any(|d| d.tag == "P2QF1"), "already placed");
+
+        // Pick it from the list and click on the plate.
+        s.handle(UiEvent::Tool { tool: format!("place-on-panel:{}", fan.id) });
+        assert_eq!(s.frame(None, [0, 0, 0]).tool, format!("place-on-panel:{}", fan.id));
+        let frame = s.editor().project().panel_frame(l7).unwrap();
+        let (x, y) = s.view().to_screen(frame.to_paper(Point::new(700.0, 1510.0)));
+        s.handle(UiEvent::PointerMove { x, y });
+        s.handle(UiEvent::PointerDown { x, y, button: Button::Primary });
+        s.handle(UiEvent::PointerUp { x, y, button: Button::Primary });
+        let f = s.frame(None, [0, 0, 0]);
+        assert!(!f.layout.unwrap().unplaced.iter().any(|d| d.tag == "P3MS1"));
+        let Some(SelectionInfo::PanelItem { kind, tag, size, .. }) = f.selection else {
+            panic!("the footprint is selected")
+        };
+        assert_eq!((kind.as_str(), tag.as_str()), ("device", "P3MS1"));
+        assert!(size.starts_with("unknown"), "{size}");
+
+        // A new layout page, then its plate made bigger.
+        s.handle(UiEvent::AddLayoutPage { width: 600.0, height: 800.0 });
+        s.handle(UiEvent::PanelSize { width: 800.0, height: 1200.0 });
+        let layout = s.frame(None, [0, 0, 0]).layout.unwrap();
+        assert_eq!((layout.width, layout.height), (800.0, 1200.0));
     }
 
     #[test]

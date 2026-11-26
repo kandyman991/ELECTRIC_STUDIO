@@ -3,44 +3,20 @@
 
 use crate::{LAYER_PANEL, LAYER_TAGS, Result, add_line, add_rect, add_text, dash_pattern, justified, on};
 use cadcraft_doc::{Drawing, HAlign, VAlign};
-use ecad_model::sheet::COLUMN_BAND;
 use ecad_model::{PageId, Panel, PanelItemKind, Point, Project};
 use std::f64::consts::FRAC_PI_2;
 
-/// Scales tried, largest drawing first (1:1, 1:2 …).
-const SCALES: [f64; 9] = [1.0, 2.0, 2.5, 5.0, 10.0, 15.0, 20.0, 25.0, 50.0];
-/// Space kept around the plate, and under it for the note, in mm on paper.
-const MARGIN: f64 = 8.0;
-const NOTE: f64 = 8.0;
 /// Character width of the stroke font as a fraction of the text height, with its spacing.
 const CHAR_WIDTH: f64 = 0.9;
 /// Footprints narrower than this on paper (mm) get their tag above, with their neighbours'.
 const NARROW: f64 = 1.6;
 
-/// The scale a plate is drawn at on a page: the largest standard one that fits.
-pub fn scale_for(project: &Project, panel: Panel) -> f64 {
-    let (w, h) = area(project);
-    SCALES.into_iter().find(|s| panel.width / s <= w && panel.height / s <= h - NOTE).unwrap_or(100.0)
-}
-
-/// Width and height of the drawing area inside the frame, above the title block.
-fn area(project: &Project) -> (f64, f64) {
-    let (lo, hi) = project.sheet.frame();
-    let (_, tb) = project.sheet.title_block();
-    (hi.x - lo.x - 2.0 * MARGIN, hi.y - COLUMN_BAND - tb.y - 2.0 * MARGIN)
-}
-
 pub(crate) fn draw(d: &mut Drawing, project: &Project, page: PageId, panel: Panel) -> Result<()> {
-    let s = scale_for(project, panel);
-    let (flo, fhi) = project.sheet.frame();
-    let (_, tb) = project.sheet.title_block();
+    let Some(frame) = project.panel_frame(page) else { return Ok(()) };
+    let s = frame.scale;
+    let origin = frame.origin;
     let (w, h) = (panel.width / s, panel.height / s);
-    // Centred in the area, the note under the plate.
-    let cx = (flo.x + fhi.x) / 2.0;
-    let top = fhi.y - COLUMN_BAND - MARGIN;
-    let bottom = tb.y + MARGIN + NOTE;
-    let origin = Point::new(cx - w / 2.0, bottom + ((top - bottom) - h) / 2.0);
-    let map = |p: Point| Point::new(origin.x + p.x / s, origin.y + p.y / s);
+    let map = |p: Point| frame.to_paper(p);
     let layer = on(LAYER_PANEL);
     let tags = on(LAYER_TAGS);
     add_rect(d, &layer, origin, Point::new(origin.x + w, origin.y + h))?;
