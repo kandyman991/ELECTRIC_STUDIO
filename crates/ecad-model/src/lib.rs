@@ -5,6 +5,7 @@
 
 pub mod geometry;
 pub mod history;
+pub mod layout;
 pub mod library;
 pub mod naming;
 pub mod parts;
@@ -92,6 +93,7 @@ mod tests {
         let mut p = start_circuit().unwrap();
         let err = p
             .connect(Connection {
+                bend: None,
                 id: ConnectionId::new(),
                 from: ConnectionRef::new(K1_COIL, "A1"),
                 to: ConnectionRef::new(K1_COIL, "A2"),
@@ -107,6 +109,7 @@ mod tests {
         let mut p = start_circuit().unwrap();
         let err = p
             .connect(Connection {
+                bend: None,
                 id: ConnectionId::new(),
                 from: ConnectionRef::new(K1_COIL, "A3"),
                 to: ConnectionRef::new(K1_COIL, "A1"),

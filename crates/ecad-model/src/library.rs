@@ -716,8 +716,11 @@ pub fn black_box(id: &str, spec: &BlackBox) -> SymbolDef {
         points.push(cp(name, x1 + stub, y, Direction::Right));
     }
     if !spec.description.is_empty() {
-        let size = 2.5;
-        let width = spec.description.chars().count() as f64 * size * 0.8;
+        // Shrunk to fit inside the box (stroke-font characters with spacing are about 0.9 of
+        // their height wide).
+        let n = spec.description.chars().count() as f64;
+        let size = f64::min(2.5, (w - 2.0) / (n * 0.9));
+        let width = n * size * 0.8;
         g.push(text((x0 + x1 - width) / 2.0, (y0 + y1) / 2.0 - size / 2.0, size, &spec.description));
     }
     SymbolDef {

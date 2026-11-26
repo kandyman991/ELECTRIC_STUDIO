@@ -7827,87 +7827,9 @@ AcDbText
  73
 1
   0
-INSERT
-  5
-1D2
-330
-11F1
-100
-AcDbEntity
-  8
-SYMBOLS
-100
-AcDbBlockReference
- 66
-1
-  2
-iec.motor_protection_3
- 10
-40.0
- 20
-257.0
- 30
-0.0
- 41
-1.0
- 42
-1.0
- 43
-1.0
- 50
-0.0
-  0
-ATTRIB
-  5
-125F
-330
-1D2
-100
-AcDbEntity
-  8
-SYMBOLS
-100
-AcDbText
- 10
-60.5
- 20
-255.75
- 30
-0.0
- 40
-2.5
-  1
--QF4
-  7
-Standard
- 11
-60.5
- 21
-257.0
- 31
-0.0
-100
-AcDbAttribute
-  2
-TAG
- 70
-0
- 74
-2
-  0
-SEQEND
-  5
-1260
-330
-1D2
-100
-AcDbEntity
-  8
-SYMBOLS
-  0
 TEXT
   5
-1D3
+1D2
 330
 11F1
 100
@@ -7941,7 +7863,7 @@ AcDbText
   0
 TEXT
   5
-1D4
+1D3
 330
 11F1
 100
@@ -7973,87 +7895,9 @@ AcDbText
  73
 1
   0
-INSERT
-  5
-1D5
-330
-11F1
-100
-AcDbEntity
-  8
-SYMBOLS
-100
-AcDbBlockReference
- 66
-1
-  2
-iec.level_switch_no
- 10
-40.0
- 20
-217.0
- 30
-0.0
- 41
-1.0
- 42
-1.0
- 43
-1.0
- 50
-0.0
-  0
-ATTRIB
-  5
-1261
-330
-1D5
-100
-AcDbEntity
-  8
-SYMBOLS
-100
-AcDbText
- 10
-42.5
- 20
-215.75
- 30
-0.0
- 40
-2.5
-  1
--SL1
-  7
-Standard
- 11
-42.5
- 21
-217.0
- 31
-0.0
-100
-AcDbAttribute
-  2
-TAG
- 70
-0
- 74
-2
-  0
-SEQEND
-  5
-1262
-330
-1D5
-100
-AcDbEntity
-  8
-SYMBOLS
-  0
 TEXT
   5
-1D6
+1D4
 330
 11F1
 100
@@ -8076,6 +7920,74 @@ AcDbText
 Standard
  11
 89.0
+ 21
+224.0
+ 31
+0.0
+100
+AcDbText
+ 73
+3
+  0
+TEXT
+  5
+1D5
+330
+11F1
+100
+AcDbEntity
+  8
+TAGS
+100
+AcDbText
+ 10
+89.0
+ 20
+210.6
+ 30
+0.0
+ 40
+1.8
+  1
+12
+  7
+Standard
+ 11
+89.0
+ 21
+210.0
+ 31
+0.0
+100
+AcDbText
+ 73
+1
+  0
+TEXT
+  5
+1D6
+330
+11F1
+100
+AcDbEntity
+  8
+TAGS
+100
+AcDbText
+ 10
+137.0
+ 20
+222.2
+ 30
+0.0
+ 40
+1.8
+  1
+13
+  7
+Standard
+ 11
+137.0
  21
 224.0
  31
@@ -8097,7 +8009,7 @@ TAGS
 100
 AcDbText
  10
-89.0
+137.0
  20
 210.6
  30
@@ -8105,11 +8017,11 @@ AcDbText
  40
 1.8
   1
-12
+14
   7
 Standard
  11
-89.0
+137.0
  21
 210.0
  31
@@ -8119,7 +8031,7 @@ AcDbText
  73
 1
   0
-INSERT
+TEXT
   5
 1D8
 330
@@ -8127,75 +8039,31 @@ INSERT
 100
 AcDbEntity
   8
-SYMBOLS
-100
-AcDbBlockReference
- 66
-1
-  2
-iec.limit_switch_nc
- 10
-88.0
- 20
-217.0
- 30
-0.0
- 41
-1.0
- 42
-1.0
- 43
-1.0
- 50
-0.0
-  0
-ATTRIB
-  5
-1263
-330
-1D8
-100
-AcDbEntity
-  8
-SYMBOLS
+TAGS
 100
 AcDbText
  10
-94.0
+185.0
  20
-215.75
+222.2
  30
 0.0
  40
-2.5
+1.8
   1
--SQ1
+13
   7
 Standard
  11
-94.0
+185.0
  21
-217.0
+224.0
  31
 0.0
 100
-AcDbAttribute
-  2
-TAG
- 70
-0
- 74
-2
-  0
-SEQEND
-  5
-1264
-330
-1D8
-100
-AcDbEntity
-  8
-SYMBOLS
+AcDbText
+ 73
+3
   0
 TEXT
   5
@@ -8209,289 +8077,31 @@ TAGS
 100
 AcDbText
  10
-137.0
+185.0
  20
-222.2
+210.6
  30
 0.0
  40
 1.8
   1
-13
+14
   7
 Standard
  11
-137.0
+185.0
  21
-224.0
+210.0
  31
 0.0
 100
 AcDbText
  73
-3
+1
   0
 TEXT
   5
 1DA
-330
-11F1
-100
-AcDbEntity
-  8
-TAGS
-100
-AcDbText
- 10
-137.0
- 20
-210.6
- 30
-0.0
- 40
-1.8
-  1
-14
-  7
-Standard
- 11
-137.0
- 21
-210.0
- 31
-0.0
-100
-AcDbText
- 73
-1
-  0
-INSERT
-  5
-1DB
-330
-11F1
-100
-AcDbEntity
-  8
-SYMBOLS
-100
-AcDbBlockReference
- 66
-1
-  2
-iec.limit_switch_no
- 10
-136.0
- 20
-217.0
- 30
-0.0
- 41
-1.0
- 42
-1.0
- 43
-1.0
- 50
-0.0
-  0
-ATTRIB
-  5
-1265
-330
-1DB
-100
-AcDbEntity
-  8
-SYMBOLS
-100
-AcDbText
- 10
-138.5
- 20
-215.75
- 30
-0.0
- 40
-2.5
-  1
--SQ2
-  7
-Standard
- 11
-138.5
- 21
-217.0
- 31
-0.0
-100
-AcDbAttribute
-  2
-TAG
- 70
-0
- 74
-2
-  0
-SEQEND
-  5
-1266
-330
-1DB
-100
-AcDbEntity
-  8
-SYMBOLS
-  0
-TEXT
-  5
-1DC
-330
-11F1
-100
-AcDbEntity
-  8
-TAGS
-100
-AcDbText
- 10
-185.0
- 20
-222.2
- 30
-0.0
- 40
-1.8
-  1
-13
-  7
-Standard
- 11
-185.0
- 21
-224.0
- 31
-0.0
-100
-AcDbText
- 73
-3
-  0
-TEXT
-  5
-1DD
-330
-11F1
-100
-AcDbEntity
-  8
-TAGS
-100
-AcDbText
- 10
-185.0
- 20
-210.6
- 30
-0.0
- 40
-1.8
-  1
-14
-  7
-Standard
- 11
-185.0
- 21
-210.0
- 31
-0.0
-100
-AcDbText
- 73
-1
-  0
-INSERT
-  5
-1DE
-330
-11F1
-100
-AcDbEntity
-  8
-SYMBOLS
-100
-AcDbBlockReference
- 66
-1
-  2
-iec.pressure_switch_no
- 10
-184.0
- 20
-217.0
- 30
-0.0
- 41
-1.0
- 42
-1.0
- 43
-1.0
- 50
-0.0
-  0
-ATTRIB
-  5
-1267
-330
-1DE
-100
-AcDbEntity
-  8
-SYMBOLS
-100
-AcDbText
- 10
-186.5
- 20
-215.75
- 30
-0.0
- 40
-2.5
-  1
--SP1
-  7
-Standard
- 11
-186.5
- 21
-217.0
- 31
-0.0
-100
-AcDbAttribute
-  2
-TAG
- 70
-0
- 74
-2
-  0
-SEQEND
-  5
-1268
-330
-1DE
-100
-AcDbEntity
-  8
-SYMBOLS
-  0
-TEXT
-  5
-1DF
 330
 11F1
 100
@@ -8525,7 +8135,7 @@ AcDbText
   0
 TEXT
   5
-1E0
+1DB
 330
 11F1
 100
@@ -8557,87 +8167,9 @@ AcDbText
  73
 1
   0
-INSERT
-  5
-1E1
-330
-11F1
-100
-AcDbEntity
-  8
-SYMBOLS
-100
-AcDbBlockReference
- 66
-1
-  2
-iec.proximity_magnetic_nc
- 10
-232.0
- 20
-217.0
- 30
-0.0
- 41
-1.0
- 42
-1.0
- 43
-1.0
- 50
-0.0
-  0
-ATTRIB
-  5
-1269
-330
-1E1
-100
-AcDbEntity
-  8
-SYMBOLS
-100
-AcDbText
- 10
-238.0
- 20
-215.75
- 30
-0.0
- 40
-2.5
-  1
--BG1
-  7
-Standard
- 11
-238.0
- 21
-217.0
- 31
-0.0
-100
-AcDbAttribute
-  2
-TAG
- 70
-0
- 74
-2
-  0
-SEQEND
-  5
-126A
-330
-1E1
-100
-AcDbEntity
-  8
-SYMBOLS
-  0
 TEXT
   5
-1E2
+1DC
 330
 11F1
 100
@@ -8671,7 +8203,7 @@ AcDbText
   0
 TEXT
   5
-1E3
+1DD
 330
 11F1
 100
@@ -8703,87 +8235,9 @@ AcDbText
  73
 1
   0
-INSERT
-  5
-1E4
-330
-11F1
-100
-AcDbEntity
-  8
-SYMBOLS
-100
-AcDbBlockReference
- 66
-1
-  2
-iec.temperature_switch_no
- 10
-280.0
- 20
-217.0
- 30
-0.0
- 41
-1.0
- 42
-1.0
- 43
-1.0
- 50
-0.0
-  0
-ATTRIB
-  5
-126B
-330
-1E4
-100
-AcDbEntity
-  8
-SYMBOLS
-100
-AcDbText
- 10
-282.5
- 20
-215.75
- 30
-0.0
- 40
-2.5
-  1
--ST1
-  7
-Standard
- 11
-282.5
- 21
-217.0
- 31
-0.0
-100
-AcDbAttribute
-  2
-TAG
- 70
-0
- 74
-2
-  0
-SEQEND
-  5
-126C
-330
-1E4
-100
-AcDbEntity
-  8
-SYMBOLS
-  0
 TEXT
   5
-1E5
+1DE
 330
 11F1
 100
@@ -8817,7 +8271,7 @@ AcDbText
   0
 TEXT
   5
-1E6
+1DF
 330
 11F1
 100
@@ -8849,87 +8303,9 @@ AcDbText
  73
 1
   0
-INSERT
-  5
-1E7
-330
-11F1
-100
-AcDbEntity
-  8
-SYMBOLS
-100
-AcDbBlockReference
- 66
-1
-  2
-iec.lamp
- 10
-40.0
- 20
-177.0
- 30
-0.0
- 41
-1.0
- 42
-1.0
- 43
-1.0
- 50
-0.0
-  0
-ATTRIB
-  5
-126D
-330
-1E7
-100
-AcDbEntity
-  8
-SYMBOLS
-100
-AcDbText
- 10
-45.0
- 20
-175.75
- 30
-0.0
- 40
-2.5
-  1
--HL1
-  7
-Standard
- 11
-45.0
- 21
-177.0
- 31
-0.0
-100
-AcDbAttribute
-  2
-TAG
- 70
-0
- 74
-2
-  0
-SEQEND
-  5
-126E
-330
-1E7
-100
-AcDbEntity
-  8
-SYMBOLS
-  0
 TEXT
   5
-1E8
+1E0
 330
 11F1
 100
@@ -8963,7 +8339,7 @@ AcDbText
   0
 TEXT
   5
-1E9
+1E1
 330
 11F1
 100
@@ -8994,6 +8370,630 @@ Standard
 AcDbText
  73
 1
+  0
+INSERT
+  5
+1E2
+330
+11F1
+100
+AcDbEntity
+  8
+SYMBOLS
+100
+AcDbBlockReference
+ 66
+1
+  2
+iec.motor_protection_3
+ 10
+40.0
+ 20
+257.0
+ 30
+0.0
+ 41
+1.0
+ 42
+1.0
+ 43
+1.0
+ 50
+0.0
+  0
+ATTRIB
+  5
+125F
+330
+1E2
+100
+AcDbEntity
+  8
+SYMBOLS
+100
+AcDbText
+ 10
+61.12
+ 20
+255.75
+ 30
+0.0
+ 40
+2.5
+  1
+-QF4
+  7
+Standard
+ 11
+61.12
+ 21
+257.0
+ 31
+0.0
+100
+AcDbAttribute
+  2
+TAG
+ 70
+0
+ 74
+2
+  0
+SEQEND
+  5
+1260
+330
+1E2
+100
+AcDbEntity
+  8
+SYMBOLS
+  0
+INSERT
+  5
+1E3
+330
+11F1
+100
+AcDbEntity
+  8
+SYMBOLS
+100
+AcDbBlockReference
+ 66
+1
+  2
+iec.level_switch_no
+ 10
+40.0
+ 20
+217.0
+ 30
+0.0
+ 41
+1.0
+ 42
+1.0
+ 43
+1.0
+ 50
+0.0
+  0
+ATTRIB
+  5
+1261
+330
+1E3
+100
+AcDbEntity
+  8
+SYMBOLS
+100
+AcDbText
+ 10
+46.74
+ 20
+215.75
+ 30
+0.0
+ 40
+2.5
+  1
+-SL1
+  7
+Standard
+ 11
+46.74
+ 21
+217.0
+ 31
+0.0
+100
+AcDbAttribute
+  2
+TAG
+ 70
+0
+ 74
+2
+  0
+SEQEND
+  5
+1262
+330
+1E3
+100
+AcDbEntity
+  8
+SYMBOLS
+  0
+INSERT
+  5
+1E4
+330
+11F1
+100
+AcDbEntity
+  8
+SYMBOLS
+100
+AcDbBlockReference
+ 66
+1
+  2
+iec.limit_switch_nc
+ 10
+88.0
+ 20
+217.0
+ 30
+0.0
+ 41
+1.0
+ 42
+1.0
+ 43
+1.0
+ 50
+0.0
+  0
+ATTRIB
+  5
+1263
+330
+1E4
+100
+AcDbEntity
+  8
+SYMBOLS
+100
+AcDbText
+ 10
+94.74
+ 20
+215.75
+ 30
+0.0
+ 40
+2.5
+  1
+-SQ1
+  7
+Standard
+ 11
+94.74
+ 21
+217.0
+ 31
+0.0
+100
+AcDbAttribute
+  2
+TAG
+ 70
+0
+ 74
+2
+  0
+SEQEND
+  5
+1264
+330
+1E4
+100
+AcDbEntity
+  8
+SYMBOLS
+  0
+INSERT
+  5
+1E5
+330
+11F1
+100
+AcDbEntity
+  8
+SYMBOLS
+100
+AcDbBlockReference
+ 66
+1
+  2
+iec.limit_switch_no
+ 10
+136.0
+ 20
+217.0
+ 30
+0.0
+ 41
+1.0
+ 42
+1.0
+ 43
+1.0
+ 50
+0.0
+  0
+ATTRIB
+  5
+1265
+330
+1E5
+100
+AcDbEntity
+  8
+SYMBOLS
+100
+AcDbText
+ 10
+142.74
+ 20
+215.75
+ 30
+0.0
+ 40
+2.5
+  1
+-SQ2
+  7
+Standard
+ 11
+142.74
+ 21
+217.0
+ 31
+0.0
+100
+AcDbAttribute
+  2
+TAG
+ 70
+0
+ 74
+2
+  0
+SEQEND
+  5
+1266
+330
+1E5
+100
+AcDbEntity
+  8
+SYMBOLS
+  0
+INSERT
+  5
+1E6
+330
+11F1
+100
+AcDbEntity
+  8
+SYMBOLS
+100
+AcDbBlockReference
+ 66
+1
+  2
+iec.pressure_switch_no
+ 10
+184.0
+ 20
+217.0
+ 30
+0.0
+ 41
+1.0
+ 42
+1.0
+ 43
+1.0
+ 50
+0.0
+  0
+ATTRIB
+  5
+1267
+330
+1E6
+100
+AcDbEntity
+  8
+SYMBOLS
+100
+AcDbText
+ 10
+190.74
+ 20
+215.75
+ 30
+0.0
+ 40
+2.5
+  1
+-SP1
+  7
+Standard
+ 11
+190.74
+ 21
+217.0
+ 31
+0.0
+100
+AcDbAttribute
+  2
+TAG
+ 70
+0
+ 74
+2
+  0
+SEQEND
+  5
+1268
+330
+1E6
+100
+AcDbEntity
+  8
+SYMBOLS
+  0
+INSERT
+  5
+1E7
+330
+11F1
+100
+AcDbEntity
+  8
+SYMBOLS
+100
+AcDbBlockReference
+ 66
+1
+  2
+iec.proximity_magnetic_nc
+ 10
+232.0
+ 20
+217.0
+ 30
+0.0
+ 41
+1.0
+ 42
+1.0
+ 43
+1.0
+ 50
+0.0
+  0
+ATTRIB
+  5
+1269
+330
+1E7
+100
+AcDbEntity
+  8
+SYMBOLS
+100
+AcDbText
+ 10
+238.74
+ 20
+215.75
+ 30
+0.0
+ 40
+2.5
+  1
+-BG1
+  7
+Standard
+ 11
+238.74
+ 21
+217.0
+ 31
+0.0
+100
+AcDbAttribute
+  2
+TAG
+ 70
+0
+ 74
+2
+  0
+SEQEND
+  5
+126A
+330
+1E7
+100
+AcDbEntity
+  8
+SYMBOLS
+  0
+INSERT
+  5
+1E8
+330
+11F1
+100
+AcDbEntity
+  8
+SYMBOLS
+100
+AcDbBlockReference
+ 66
+1
+  2
+iec.temperature_switch_no
+ 10
+280.0
+ 20
+217.0
+ 30
+0.0
+ 41
+1.0
+ 42
+1.0
+ 43
+1.0
+ 50
+0.0
+  0
+ATTRIB
+  5
+126B
+330
+1E8
+100
+AcDbEntity
+  8
+SYMBOLS
+100
+AcDbText
+ 10
+286.74
+ 20
+215.75
+ 30
+0.0
+ 40
+2.5
+  1
+-ST1
+  7
+Standard
+ 11
+286.74
+ 21
+217.0
+ 31
+0.0
+100
+AcDbAttribute
+  2
+TAG
+ 70
+0
+ 74
+2
+  0
+SEQEND
+  5
+126C
+330
+1E8
+100
+AcDbEntity
+  8
+SYMBOLS
+  0
+INSERT
+  5
+1E9
+330
+11F1
+100
+AcDbEntity
+  8
+SYMBOLS
+100
+AcDbBlockReference
+ 66
+1
+  2
+iec.lamp
+ 10
+40.0
+ 20
+177.0
+ 30
+0.0
+ 41
+1.0
+ 42
+1.0
+ 43
+1.0
+ 50
+0.0
+  0
+ATTRIB
+  5
+126D
+330
+1E9
+100
+AcDbEntity
+  8
+SYMBOLS
+100
+AcDbText
+ 10
+46.74
+ 20
+175.75
+ 30
+0.0
+ 40
+2.5
+  1
+-HL1
+  7
+Standard
+ 11
+46.74
+ 21
+177.0
+ 31
+0.0
+100
+AcDbAttribute
+  2
+TAG
+ 70
+0
+ 74
+2
+  0
+SEQEND
+  5
+126E
+330
+1E9
+100
+AcDbEntity
+  8
+SYMBOLS
   0
 INSERT
   5

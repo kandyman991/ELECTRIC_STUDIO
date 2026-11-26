@@ -262,6 +262,7 @@ mod tests {
             p.apply(Command::SetWireNumber { id, number: Some(number.clone()) }).unwrap();
         }
         p.connect(Connection {
+            bend: None,
             id: ConnectionId::new(),
             from,
             to,
@@ -296,6 +297,7 @@ mod tests {
         assert_eq!(w, "102");
         let j2 = place(&mut p, "iec.junction", None, (180.0, 0.0));
         p.connect(Connection {
+            bend: None,
             id: ConnectionId::new(),
             from: ConnectionRef::new(k4, "A1"),
             to: ConnectionRef::new(j2, "1"),

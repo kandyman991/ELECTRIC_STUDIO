@@ -205,6 +205,7 @@ mod tests {
         };
         let (a, b) = (extra(l_plus, 40.0), extra(m, 60.0));
         p.connect(Connection {
+            bend: None,
             id: ConnectionId::new(),
             from: ConnectionRef::new(a, "1"),
             to: ConnectionRef::new(b, "1"),

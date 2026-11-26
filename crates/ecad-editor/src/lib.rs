@@ -1087,6 +1087,7 @@ impl Editor {
                     .map(|id| Command::SetWireNumber { id, number: Some(number.clone()) })
                     .collect();
                 cmds.push(Command::Connect(Connection {
+                    bend: None,
                     id: ConnectionId::new(),
                     from: start,
                     to: point,

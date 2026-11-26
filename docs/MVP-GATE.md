@@ -37,6 +37,11 @@ and the original PDF are deliberately not in the repository.
 - Terminal strips: end brackets and end plates now count once per strip (`PartRef::per_strip`,
   the "per strip" checkbox in the app), terminals once per terminal. Totals match the original
   for the strips drawn; the feed-through terminal count follows the terminals actually drawn.
+- Layout: no clashes on any page (a test keeps it so). Labels keep 0.5 mm clear of other
+  texts, wires, symbols and location-box edges; wires may not share a stretch, run closer than
+  3 mm side by side, or line up end to end with another potential closer than 16.5 mm.
+  Tags, cross-references and wire numbers are placed where they meet these rules; a short wire
+  whose number another wire of the page already shows goes unlabelled when there's no room.
 - Wire numbers follow the original's per-potential scheme (`{page}{n:02}`), tags follow
   `{page}{letters}{n}`; both are project settings.
 

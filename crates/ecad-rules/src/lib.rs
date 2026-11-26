@@ -336,6 +336,7 @@ mod tests {
         let m = ConnectionRef::new(ecad_model::FunctionId::from_u128(0x204), "1");
         p.apply(Command::Disconnect(p.connection_at(&m).unwrap().id)).unwrap();
         p.apply(Command::Connect(Connection {
+            bend: None,
             id: ConnectionId::new(),
             from: w1.from.clone(),
             to: m,

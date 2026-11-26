@@ -163,8 +163,13 @@ impl Builder {
     fn wire_spec(&mut self, a: (F, &str), b: (F, &str), number: Option<&str>, spec: WireSpec) -> Result<ConnectionId> {
         let id = ConnectionId::from_u128(self.id());
         let (from, to) = (self.pin(a.0, a.1)?, self.pin(b.0, b.1)?);
-        self.p.connect(Connection { id, from, to, wire_number: number.map(str::to_owned), spec })?;
+        self.p.connect(Connection { bend: None, id, from, to, wire_number: number.map(str::to_owned), spec })?;
         Ok(id)
+    }
+
+    /// Puts a wire's middle run at `at` (its y when horizontal, its x when vertical).
+    fn bend(&mut self, id: ConnectionId, at: f64) -> Result<()> {
+        self.p.apply(Command::SetWireBend { id, bend: Some(at) }).map(drop)
     }
 
     fn w(&mut self, a: (F, &str), b: (F, &str)) -> Result<ConnectionId> {
@@ -297,6 +302,13 @@ pub fn reference_project() -> Result<Project> {
     outputs_cpu(&mut b)?;
     outputs_card(&mut b)?;
     terminal_strips(&mut b)?;
+    // As the editor does for each new wire: move middle runs off other wires and symbols.
+    let pages: Vec<PageId> = b.p.pages.keys().copied().collect();
+    for page in pages {
+        for cmd in b.p.tidy_wires(page) {
+            b.p.apply(cmd)?;
+        }
+    }
     number_wires(&mut b.p)?;
     Ok(b.p)
 }
@@ -411,12 +423,12 @@ fn power_distribution(b: &mut Builder) -> Result<()> {
         let tap = taps[&(i, (qf1_x + 8.0 * i as f64) as i64)];
         b.w((tap, "2"), (qf1, pin))?;
     }
-    let km4 = b.put("A3KM4", "iec.contact_main_3", qf1_x, 60.0)?;
+    let km4 = b.put("A3KM4", "iec.contact_main_3", qf1_x, 68.0)?;
     for (i, (from, to)) in [("2", "1"), ("4", "3"), ("6", "5")].iter().enumerate() {
         b.ws((qf1, from), (km4, to), &format!("P23{}", 6 + i), "16", "BK")?;
     }
     for (i, pin) in ["2", "4", "6"].iter().enumerate() {
-        let out = b.arrow(&format!("P21{}", i + 1), qf1_x + 8.0 * i as f64, 32.0, Up)?;
+        let out = b.arrow(&format!("P21{}", i + 1), qf1_x + 8.0 * i as f64, 42.0, Up)?;
         b.ws((km4, pin), (out, "1"), &format!("P21{}", i + 1), "10", "BK")?;
     }
     let qf3 = b.put("P2QF3", "iec.breaker_1pn_rcd", qf3_x, 104.0)?;
@@ -424,12 +436,12 @@ fn power_distribution(b: &mut Builder) -> Result<()> {
     b.parts("P2QF3", &[("5SU1356-1KK25", 1, SIEMENS, "RCBO 1P+N C25 300 mA")])?;
     b.w((taps[&(0, qf3_x as i64)], "2"), (qf3, "1"))?;
     b.w((taps[&(3, (qf3_x + 8.0) as i64)], "2"), (qf3, "N"))?;
-    let km5 = b.put("A3KM5", "iec.contact_main_3", qf3_x, 60.0)?;
+    let km5 = b.put("A3KM5", "iec.contact_main_3", qf3_x, 68.0)?;
     b.ws((qf3, "2"), (km5, "1"), "P242", "4", "BK")?;
     b.ws((qf3, "N'"), (km5, "3"), "P243", "4", "BK")?;
     for (pin, n) in [("2", "P220"), ("4", "P221")] {
         let x = if pin == "2" { qf3_x } else { qf3_x + 8.0 };
-        let out = b.arrow(n, x, 32.0, Up)?;
+        let out = b.arrow(n, x, 42.0, Up)?;
         b.ws((km5, pin), (out, "1"), n, "4", "BK")?;
     }
     Ok(())
@@ -467,38 +479,53 @@ fn power_branches(b: &mut Builder) -> Result<()> {
     b.parts("P3Q1", &[("5SU1356-1KK06", 1, SIEMENS, "RCBO 1P+N C6 30 mA type AC")])?;
     b.ws((tap(0, 88.0), "2"), (q1, "1"), "P201", "1,5", "BK")?;
     b.ws((tap(3, 96.0), "2"), (q1, "N"), "P204", "1,5", "BU")?;
-    let (j1, j2, j3) = (b.junction(88.0, 172.0)?, b.junction(88.0, 164.0)?, b.junction(124.0, 164.0)?);
-    let (j4, j5, j6) = (b.junction(96.0, 156.0)?, b.junction(96.0, 148.0)?, b.junction(140.0, 148.0)?);
-    let xs2 = b.put("P3XS2", "iec.socket_2pe", 40.0, 128.0)?;
-    let xs1 = b.put("P3XS1", "iec.socket_2pe", 40.0, 88.0)?;
+    // Below the breaker, N (P302) and under it L (P301) run right as two lines; each load hangs
+    // from them in its own column: two sockets, the thermostat with the fan, the light.
+    let xs2 = b.put("P3XS2", "iec.socket_2pe", 128.0, 128.0)?;
+    let xs1 = b.put("P3XS1", "iec.socket_2pe", 160.0, 128.0)?;
     b.describe("P3XS1", "Service socket, max 800 W")?;
     b.parts("P3XS2", &[("09967", 1, "Vimar", "Socket 2P+E 16 A, DIN rail")])?;
-    let s1 = b.put("P3S1", "iec.temperature_switch_no", 124.0, 132.0)?;
+    let s1 = b.put("P3S1", "iec.temperature_switch_no", 184.0, 136.0)?;
     b.describe("P3S1", "Cabinet thermostat")?;
     b.parts("P3S1", &[("TMF", 1, "Cosmotec", "Cabinet thermostat")])?;
-    let ms1 = b.put("P3MS1", "iec.motor_1", 136.0, 92.0)?;
+    let ms1 = b.put("P3MS1", "iec.motor_1", 188.0, 100.0)?;
     b.describe("P3MS1", "Cabinet fan with filter 250 x 250")?;
     b.parts(
         "P3MS1",
         &[("GHV2500220", 1, "Cosmotec", "Fan 250 x 250 mm 230 V"), ("GHF25", 1, "Cosmotec", "Filter 250 x 250 mm")],
     )?;
-    let hl1 = b.put("P3HL1", "iec.lamp", 172.0, 124.0)?;
+    let hl1 = b.put("P3HL1", "iec.lamp", 216.0, 132.0)?;
     b.describe("P3HL1", "Cabinet light 5 W")?;
     b.parts("P3HL1", &[("FLL-230565U-S", 1, "Fandis", "LED lamp FLL 230 V 5 W")])?;
-    b.wn((q1, "2"), (j1, "1"), "P301")?;
-    b.w((j1, "3"), (xs2, "L"))?;
-    b.w((j1, "2"), (j2, "1"))?;
-    b.w((j2, "3"), (xs1, "L"))?;
-    b.w((j2, "4"), (j3, "3"))?;
-    b.w((j3, "2"), (s1, "13"))?;
-    b.w((j3, "4"), (hl1, "X1"))?;
-    b.wn((q1, "N'"), (j4, "1"), "P302")?;
-    b.w((j4, "3"), (xs2, "N"))?;
-    b.w((j4, "2"), (j5, "1"))?;
-    b.w((j5, "3"), (xs1, "N"))?;
-    b.w((j5, "4"), (j6, "3"))?;
-    b.w((j6, "2"), (ms1, "2"))?;
-    b.w((j6, "4"), (hl1, "X2"))?;
+    let mut last = (q1, "2");
+    for (k, (x, load, pin)) in [(120.0, xs2, "L"), (152.0, xs1, "L"), (184.0, s1, "13")].into_iter().enumerate() {
+        let j = b.junction(x, 164.0)?;
+        let feed = b.wn(last, (j, "3"), "P301")?;
+        if k == 0 {
+            b.bend(feed, 164.0)?;
+        }
+        b.wn((j, "2"), (load, pin), "P301")?;
+        last = (j, "4");
+    }
+    b.wn(last, (hl1, "X1"), "P301")?;
+    let mut last = (q1, "N'");
+    for (k, (x, load, pin)) in [(128.0, xs2, "N"), (160.0, xs1, "N"), (200.0, ms1, "2")].into_iter().enumerate() {
+        let j = b.junction(x, 172.0)?;
+        let feed = b.wn(last, (j, "3"), "P302")?;
+        if k == 0 {
+            b.bend(feed, 172.0)?;
+        }
+        let drop = b.wn((j, "2"), (load, pin), "P302")?;
+        if load == ms1 {
+            // The fan's return turns right just above the fan, leaving room for the
+            // thermostat's tag.
+            b.bend(drop, 112.0)?;
+        }
+        last = (j, "4");
+    }
+    // The light's return goes up on its right to the end of N.
+    let back = b.wn((hl1, "X2"), last, "P302")?;
+    b.bend(back, 228.0)?;
     b.wn((s1, "14"), (ms1, "1"), "P303")?;
     // Light feed fuse, cell light breaker (to P5), 24 V supply.
     let fu4 = b.put("P3FU4", "iec.fuse_1pn", 232.0, 200.0)?;
@@ -514,7 +541,9 @@ fn power_branches(b: &mut Builder) -> Result<()> {
     b.ws((tap(3, 292.0), "2"), (q2, "N"), "P204", "1,5", "BU")?;
     for (pin, n, y) in [("2", "P309", 140.0), ("N'", "P310", 152.0)] {
         let out = b.arrow(n, 368.0, y, Left)?;
-        b.ws((q2, pin), (out, "1"), n, "1,5", if pin == "2" { "BK" } else { "BU" })?;
+        let wire = b.ws((q2, pin), (out, "1"), n, "1,5", if pin == "2" { "BK" } else { "BU" })?;
+        // Straight across at the arrow's height.
+        b.bend(wire, y)?;
     }
     let fu3 = b.put("P3FU3", "iec.fuse_1pn", 336.0, 200.0)?;
     b.parts(
@@ -687,7 +716,7 @@ fn emergency_chain(b: &mut Builder) -> Result<()> {
     let mut ends: [Option<(F, &str)>; 2] = [None, None];
     for (ch, start) in [("A331", 0usize), ("A332", 1)].iter().map(|(n, c)| (*n, *c)) {
         let x = slots[0].0 + 16.0 * start as f64;
-        let a = b.arrow(ch, x, 268.0, Down)?;
+        let a = b.arrow(ch, x, 262.0, Down)?;
         ends[start] = Some((a, "1"));
     }
     for (k, (tag, via, description)) in stops.iter().enumerate() {
@@ -696,6 +725,19 @@ fn emergency_chain(b: &mut Builder) -> Result<()> {
             b.parts(tag, &estop_parts)?;
         }
         let (x0, y0) = slots[k];
+        // Moving up to the top of the next column: break both channels with arrows, as the
+        // original does, rather than looping wires across the page.
+        if k > 0 && y0 > slots[k - 1].1 {
+            for (ch, end) in ends.iter_mut().enumerate() {
+                let Some(prev) = *end else { continue };
+                let name = format!("ES{k}{}", ch + 1);
+                let at = b.p.function(prev.0)?.position;
+                let out = b.arrow(&name, at.x, at.y - 12.0, Down)?;
+                b.w(prev, (out, "1"))?;
+                let back = b.arrow(&name, x0 + 16.0 * ch as f64, 262.0, Down)?;
+                *end = Some((back, "1"));
+            }
+        }
         #[allow(clippy::needless_range_loop)] // `ch` is the channel: it picks numbers and symbols.
         for ch in 0..2 {
             let x = x0 + 16.0 * ch as f64;
@@ -796,16 +838,17 @@ fn safety_module(b: &mut Builder) -> Result<()> {
     // Safety outputs to the safety contactors and the safety relay.
     let mut bottom = (zero, "1");
     let mut zeros = BTreeMap::new();
-    for x in [32.0, 64.0, 136.0, 168.0, 208.0, 248.0, 288.0] {
+    for x in [32.0, 64.0, 128.0, 136.0, 160.0, 208.0, 248.0, 288.0] {
         let j = b.junction(x, 40.0)?;
         b.wn(bottom, (j, "3"), "-A100")?;
         zeros.insert(x as i64, j);
         bottom = (j, "4");
     }
-    b.w((s1, "A2"), (zeros[&136], "1"))?;
-    b.w((lamp, "X2"), (zeros[&136], "2"))?;
+    // The module's 0 V and the lamp's each straight down to their own junction.
+    b.w((s1, "A2"), (zeros[&128], "1"))?;
+    b.w((lamp, "X2"), (zeros[&136], "1"))?;
     let coils = [
-        ("A3KM1", "iec.coil_contactor", "OS1", 168.0, "A311"),
+        ("A3KM1", "iec.coil_contactor", "OS1", 160.0, "A311"),
         ("A3KM2", "iec.coil_contactor", "OS2", 208.0, "A312"),
         ("A3KA2", "iec.coil_relay", "OS3", 248.0, "A340"),
     ];
@@ -921,7 +964,7 @@ fn inputs_cpu(b: &mut Builder) -> Result<()> {
     b.w((pin, "2"), (t, "1"))?;
     let i5 = input(b, 5, x, "Door3_Open")?;
     b.wn((t, "2"), (i5, "1"), "I005")?;
-    b.boxed("JCPR3", (x - 16.0, 168.0), (x + 12.0, 222.0))?;
+    b.boxed("XCPR3", (x - 16.0, 168.0), (x + 12.0, 222.0))?;
     // I0.6 cabinet emergency stop pressed: a spare NO of -A2SB1.
     let x = columns[6];
     let sb1 = b.contact("A2SB1", "iec.contact_no", x, 184.0, 3)?;
@@ -967,7 +1010,7 @@ fn outputs_cpu(b: &mut Builder) -> Result<()> {
     let j132 = b.terminal("J132", "iec.plug_pin", "22", columns[4], 150.0)?;
     let hl1 = b.put("O0HL1", "iec.lamp", columns[4], 120.0)?;
     b.describe("O0HL1", "Spiral door 2 open")?;
-    b.boxed("JCPR2", (columns[4] - 12.0, 104.0), (columns[4] + 16.0, 158.0))?;
+    b.boxed("XCPR2", (columns[4] - 12.0, 104.0), (columns[4] + 16.0, 158.0))?;
     let hl5 = b.put("O0HL5", "iec.lamp", columns[5], 120.0)?;
     let hl6 = b.put("O0HL6", "iec.lamp", columns[6], 120.0)?;
     let ha7 = b.put("O0HA7", "iec.siren", columns[7], 120.0)?;
@@ -1016,7 +1059,7 @@ fn outputs_card(b: &mut Builder) -> Result<()> {
         outs.push(b.channel("C1A3", "iec.plc_do", *x, 228.0, &format!("Q3.{k}"), names[k])?);
     }
     // -A100 along the bottom, +A103 for the interlocked defrost contactors along the top right.
-    let start = b.arrow("-A100", 28.0, 72.0, Right)?;
+    let start = b.arrow("-A100", 14.0, 72.0, Right)?;
     let coil_x = [24.0, 68.0, 112.0, 156.0, 200.0, 244.0, 288.0, 310.0, 332.0, 356.0];
     let mut last = (start, "1");
     let mut rail = BTreeMap::new();

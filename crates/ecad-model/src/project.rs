@@ -155,6 +155,10 @@ pub struct Connection {
     /// Cross-section, colour and cable core, as far as they are known.
     #[serde(default, flatten)]
     pub spec: WireSpec,
+    /// Where the wire's middle run lies, when it isn't halfway: the y of a horizontal middle run
+    /// or the x of a vertical one. Set to keep wires off each other and off symbols.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bend: Option<f64>,
 }
 
 /// What a wire is made of.
@@ -338,6 +342,11 @@ pub enum Command {
     UpdateCable(Cable),
     /// Remove a cable no wire runs in.
     RemoveCable(CableId),
+    /// Move a wire's middle run (`None`: halfway again).
+    SetWireBend {
+        id: ConnectionId,
+        bend: Option<f64>,
+    },
     /// Set a wire's cross-section, colour and cable core.
     SetWireSpec {
         id: ConnectionId,
@@ -382,6 +391,8 @@ pub enum ModelError {
     EmptyProjectName,
     #[error("a sheet has 1 to 50 columns, numbered from 0 or 1, and up to 26 rows")]
     InvalidSheet,
+    #[error("a wire's bend must be a finite number")]
+    InvalidBend,
     #[error("no device {0:?}")]
     NoDevice(DeviceId),
     #[error("no function {0:?}")]
@@ -1010,6 +1021,13 @@ impl Project {
                 let cable = self.cables.remove(&id).ok_or(ModelError::NoCable(id))?;
                 Ok(Command::AddCable(cable))
             }
+            Command::SetWireBend { id, bend } => {
+                if bend.is_some_and(|b| !b.is_finite()) {
+                    return Err(ModelError::InvalidBend);
+                }
+                let c = self.connections.get_mut(&id).ok_or(ModelError::NoConnection(id))?;
+                Ok(Command::SetWireBend { id, bend: std::mem::replace(&mut c.bend, bend) })
+            }
             Command::SetWireSpec { id, spec } => {
                 let spec = WireSpec {
                     cross_section: spec.cross_section.trim().to_owned(),
@@ -1346,7 +1364,7 @@ impl Project {
     pub fn route(&self, c: &Connection) -> Result<Vec<Point>> {
         let (a, da) = self.connection_point(&c.from)?;
         let (b, db) = self.connection_point(&c.to)?;
-        Ok(route_between(a, da, b, db))
+        Ok(route_bent(a, da, b, db, c.bend))
     }
 }
 
@@ -1371,25 +1389,53 @@ fn heads(d: Direction, from: Point, to: Point) -> bool {
 /// Orthogonal route between two points leaving in the given directions (also used for the
 /// rubber-band wire while drawing).
 pub fn route_between(a: Point, da: Direction, b: Point, db: Direction) -> Vec<Point> {
+    route_bent(a, da, b, db, None)
+}
+
+/// Like [`route_between`], with the middle run at `bend` (its y when it runs horizontally, its x
+/// when vertically) instead of halfway. A bend doesn't straighten a wire whose ends face each
+/// other.
+pub fn route_bent(a: Point, da: Direction, b: Point, db: Direction, bend: Option<f64>) -> Vec<Point> {
+    let Some(mid) = middle_run(a, da, b, db) else { return vec![a, b] };
+    let (sa, sb) = (step(da), step(db));
+    let a1 = Point::new(a.x + sa.x * ROUTE_STUB, a.y + sa.y * ROUTE_STUB);
+    let b1 = Point::new(b.x + sb.x * ROUTE_STUB, b.y + sb.y * ROUTE_STUB);
+    let at = bend.unwrap_or(mid.at);
+    let mid = if mid.horizontal {
+        [Point::new(a1.x, at), Point::new(b1.x, at)]
+    } else {
+        [Point::new(at, a1.y), Point::new(at, b1.y)]
+    };
+    simplify(vec![a, a1, mid[0], mid[1], b1, b])
+}
+
+/// A route's middle run, the part a bend moves.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MiddleRun {
+    /// Whether it runs horizontally (a bend is then its y) or vertically (its x).
+    pub horizontal: bool,
+    /// Where it lies without a bend: halfway between the ends' stubs.
+    pub at: f64,
+    /// The range between the stubs: a bend outside it makes the wire double back.
+    pub between: (f64, f64),
+}
+
+/// The middle run of the route between two points, or `None` when the ends face each other and
+/// the wire is one straight line.
+pub fn middle_run(a: Point, da: Direction, b: Point, db: Direction) -> Option<MiddleRun> {
     let facing =
         (a.x == b.x && da.is_vertical() && db.is_vertical()) || (a.y == b.y && !da.is_vertical() && !db.is_vertical());
     if facing && heads(da, a, b) && heads(db, b, a) {
-        return vec![a, b];
+        return None;
     }
     let (sa, sb) = (step(da), step(db));
     let a1 = Point::new(a.x + sa.x * ROUTE_STUB, a.y + sa.y * ROUTE_STUB);
     let b1 = Point::new(b.x + sb.x * ROUTE_STUB, b.y + sb.y * ROUTE_STUB);
     // Keep going along the start direction if that brings us closer (split the other axis at
     // its midpoint); if it would lead away, turn first.
-    let vertical_mid = if heads(da, a1, b1) { da.is_vertical() } else { !da.is_vertical() };
-    let mid = if vertical_mid {
-        let my = (a1.y + b1.y) / 2.0;
-        [Point::new(a1.x, my), Point::new(b1.x, my)]
-    } else {
-        let mx = (a1.x + b1.x) / 2.0;
-        [Point::new(mx, a1.y), Point::new(mx, b1.y)]
-    };
-    simplify(vec![a, a1, mid[0], mid[1], b1, b])
+    let horizontal = if heads(da, a1, b1) { da.is_vertical() } else { !da.is_vertical() };
+    let (p, q) = if horizontal { (a1.y, b1.y) } else { (a1.x, b1.x) };
+    Some(MiddleRun { horizontal, at: (p + q) / 2.0, between: (p.min(q), p.max(q)) })
 }
 
 /// Drop repeated points and points in the middle of a straight run.

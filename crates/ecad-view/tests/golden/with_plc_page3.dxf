@@ -791,7 +791,7 @@ AcDbSymbolTableRecord
 100
 AcDbLayerTableRecord
   2
-XREF
+TAGS
  70
 0
  62
@@ -813,7 +813,7 @@ AcDbSymbolTableRecord
 100
 AcDbLayerTableRecord
   2
-SYMBOLS
+WIRES
  70
 0
  62
@@ -835,7 +835,7 @@ AcDbSymbolTableRecord
 100
 AcDbLayerTableRecord
   2
-TAGS
+XREF
  70
 0
  62
@@ -857,7 +857,7 @@ AcDbSymbolTableRecord
 100
 AcDbLayerTableRecord
   2
-WIRES
+SYMBOLS
  70
 0
  62
@@ -5385,6 +5385,366 @@ TEXT
 100
 AcDbEntity
   8
+TAGS
+100
+AcDbText
+ 10
+-71.0
+ 20
+41.2
+ 30
+0.0
+ 40
+1.8
+  1
+13
+  7
+Standard
+ 11
+-71.0
+ 21
+43.0
+ 31
+0.0
+100
+AcDbText
+ 73
+3
+  0
+TEXT
+  5
+17A
+330
+119A
+100
+AcDbEntity
+  8
+TAGS
+100
+AcDbText
+ 10
+-71.0
+ 20
+29.6
+ 30
+0.0
+ 40
+1.8
+  1
+14
+  7
+Standard
+ 11
+-71.0
+ 21
+29.0
+ 31
+0.0
+100
+AcDbText
+ 73
+1
+  0
+TEXT
+  5
+17B
+330
+119A
+100
+AcDbEntity
+  8
+TAGS
+100
+AcDbText
+ 10
+-23.0
+ 20
+41.2
+ 30
+0.0
+ 40
+1.8
+  1
+21
+  7
+Standard
+ 11
+-23.0
+ 21
+43.0
+ 31
+0.0
+100
+AcDbText
+ 73
+3
+  0
+TEXT
+  5
+17C
+330
+119A
+100
+AcDbEntity
+  8
+TAGS
+100
+AcDbText
+ 10
+-23.0
+ 20
+29.6
+ 30
+0.0
+ 40
+1.8
+  1
+22
+  7
+Standard
+ 11
+-23.0
+ 21
+29.0
+ 31
+0.0
+100
+AcDbText
+ 73
+1
+  0
+TEXT
+  5
+17D
+330
+119A
+100
+AcDbEntity
+  8
+TAGS
+100
+AcDbText
+ 10
+25.0
+ 20
+-10.8
+ 30
+0.0
+ 40
+1.8
+  1
+A1
+  7
+Standard
+ 11
+25.0
+ 21
+-9.0
+ 31
+0.0
+100
+AcDbText
+ 73
+3
+  0
+TEXT
+  5
+17E
+330
+119A
+100
+AcDbEntity
+  8
+TAGS
+100
+AcDbText
+ 10
+25.0
+ 20
+-22.4
+ 30
+0.0
+ 40
+1.8
+  1
+A2
+  7
+Standard
+ 11
+25.0
+ 21
+-23.0
+ 31
+0.0
+100
+AcDbText
+ 73
+1
+  0
+LINE
+  5
+17F
+330
+119A
+100
+AcDbEntity
+  8
+WIRES
+ 62
+150
+100
+AcDbLine
+ 10
+-72.0
+ 20
+56.0
+ 30
+0.0
+ 11
+-72.0
+ 21
+44.0
+ 31
+0.0
+  0
+LINE
+  5
+180
+330
+119A
+100
+AcDbEntity
+  8
+WIRES
+ 62
+150
+100
+AcDbLine
+ 10
+-72.0
+ 20
+28.0
+ 30
+0.0
+ 11
+-72.0
+ 21
+20.0
+ 31
+0.0
+  0
+LINE
+  5
+181
+330
+119A
+100
+AcDbEntity
+  8
+WIRES
+ 62
+150
+100
+AcDbLine
+ 10
+-24.0
+ 20
+56.0
+ 30
+0.0
+ 11
+-24.0
+ 21
+44.0
+ 31
+0.0
+  0
+LINE
+  5
+182
+330
+119A
+100
+AcDbEntity
+  8
+WIRES
+ 62
+150
+100
+AcDbLine
+ 10
+-24.0
+ 20
+28.0
+ 30
+0.0
+ 11
+-24.0
+ 21
+20.0
+ 31
+0.0
+  0
+LINE
+  5
+183
+330
+119A
+100
+AcDbEntity
+  8
+WIRES
+ 62
+150
+100
+AcDbLine
+ 10
+24.0
+ 20
+8.0
+ 30
+0.0
+ 11
+24.0
+ 21
+-8.0
+ 31
+0.0
+  0
+LINE
+  5
+184
+330
+119A
+100
+AcDbEntity
+  8
+WIRES
+ 62
+150
+100
+AcDbLine
+ 10
+24.0
+ 20
+-24.0
+ 30
+0.0
+ 11
+24.0
+ 21
+-40.0
+ 31
+0.0
+  0
+TEXT
+  5
+185
+330
+119A
+100
+AcDbEntity
+  8
 XREF
 100
 AcDbText
@@ -5413,7 +5773,7 @@ AcDbText
   0
 INSERT
   5
-17A
+186
 330
 119A
 100
@@ -5445,7 +5805,7 @@ ATTRIB
   5
 11F5
 330
-17A
+186
 100
 AcDbEntity
   8
@@ -5483,7 +5843,7 @@ SEQEND
   5
 11F6
 330
-17A
+186
 100
 AcDbEntity
   8
@@ -5491,7 +5851,7 @@ SYMBOLS
   0
 TEXT
   5
-17B
+187
 330
 119A
 100
@@ -5525,7 +5885,7 @@ AcDbText
   0
 INSERT
   5
-17C
+188
 330
 119A
 100
@@ -5557,7 +5917,7 @@ ATTRIB
   5
 11F7
 330
-17C
+188
 100
 AcDbEntity
   8
@@ -5595,7 +5955,7 @@ SEQEND
   5
 11F8
 330
-17C
+188
 100
 AcDbEntity
   8
@@ -5603,7 +5963,7 @@ SYMBOLS
   0
 TEXT
   5
-17D
+189
 330
 119A
 100
@@ -5637,7 +5997,7 @@ AcDbText
   0
 INSERT
   5
-17E
+18A
 330
 119A
 100
@@ -5669,7 +6029,7 @@ ATTRIB
   5
 11F9
 330
-17E
+18A
 100
 AcDbEntity
   8
@@ -5707,7 +6067,7 @@ SEQEND
   5
 11FA
 330
-17E
+18A
 100
 AcDbEntity
   8
@@ -5715,7 +6075,7 @@ SYMBOLS
   0
 INSERT
   5
-17F
+18B
 330
 119A
 100
@@ -5747,7 +6107,7 @@ ATTRIB
   5
 11FB
 330
-17F
+18B
 100
 AcDbEntity
   8
@@ -5785,83 +6145,15 @@ SEQEND
   5
 11FC
 330
-17F
+18B
 100
 AcDbEntity
   8
 SYMBOLS
   0
-TEXT
-  5
-180
-330
-119A
-100
-AcDbEntity
-  8
-TAGS
-100
-AcDbText
- 10
--71.0
- 20
-41.2
- 30
-0.0
- 40
-1.8
-  1
-13
-  7
-Standard
- 11
--71.0
- 21
-43.0
- 31
-0.0
-100
-AcDbText
- 73
-3
-  0
-TEXT
-  5
-181
-330
-119A
-100
-AcDbEntity
-  8
-TAGS
-100
-AcDbText
- 10
--71.0
- 20
-29.6
- 30
-0.0
- 40
-1.8
-  1
-14
-  7
-Standard
- 11
--71.0
- 21
-29.0
- 31
-0.0
-100
-AcDbText
- 73
-1
-  0
 INSERT
   5
-182
+18C
 330
 119A
 100
@@ -5893,7 +6185,7 @@ ATTRIB
   5
 11FD
 330
-182
+18C
 100
 AcDbEntity
   8
@@ -5901,7 +6193,7 @@ SYMBOLS
 100
 AcDbText
  10
--69.5
+-65.26
  20
 34.75
  30
@@ -5913,7 +6205,7 @@ AcDbText
   7
 Standard
  11
--69.5
+-65.26
  21
 36.0
  31
@@ -5931,83 +6223,15 @@ SEQEND
   5
 11FE
 330
-182
+18C
 100
 AcDbEntity
   8
 SYMBOLS
   0
-TEXT
-  5
-183
-330
-119A
-100
-AcDbEntity
-  8
-TAGS
-100
-AcDbText
- 10
--23.0
- 20
-41.2
- 30
-0.0
- 40
-1.8
-  1
-21
-  7
-Standard
- 11
--23.0
- 21
-43.0
- 31
-0.0
-100
-AcDbText
- 73
-3
-  0
-TEXT
-  5
-184
-330
-119A
-100
-AcDbEntity
-  8
-TAGS
-100
-AcDbText
- 10
--23.0
- 20
-29.6
- 30
-0.0
- 40
-1.8
-  1
-22
-  7
-Standard
- 11
--23.0
- 21
-29.0
- 31
-0.0
-100
-AcDbText
- 73
-1
-  0
 INSERT
   5
-185
+18D
 330
 119A
 100
@@ -6039,7 +6263,7 @@ ATTRIB
   5
 11FF
 330
-185
+18D
 100
 AcDbEntity
   8
@@ -6047,7 +6271,7 @@ SYMBOLS
 100
 AcDbText
  10
--18.0
+-17.259999999999998
  20
 34.75
  30
@@ -6059,7 +6283,7 @@ AcDbText
   7
 Standard
  11
--18.0
+-17.259999999999998
  21
 36.0
  31
@@ -6077,83 +6301,15 @@ SEQEND
   5
 1200
 330
-185
+18D
 100
 AcDbEntity
   8
 SYMBOLS
   0
-TEXT
-  5
-186
-330
-119A
-100
-AcDbEntity
-  8
-TAGS
-100
-AcDbText
- 10
-25.0
- 20
--10.8
- 30
-0.0
- 40
-1.8
-  1
-A1
-  7
-Standard
- 11
-25.0
- 21
--9.0
- 31
-0.0
-100
-AcDbText
- 73
-3
-  0
-TEXT
-  5
-187
-330
-119A
-100
-AcDbEntity
-  8
-TAGS
-100
-AcDbText
- 10
-25.0
- 20
--22.4
- 30
-0.0
- 40
-1.8
-  1
-A2
-  7
-Standard
- 11
-25.0
- 21
--23.0
- 31
-0.0
-100
-AcDbText
- 73
-1
-  0
 INSERT
   5
-188
+18E
 330
 119A
 100
@@ -6185,7 +6341,7 @@ ATTRIB
   5
 1201
 330
-188
+18E
 100
 AcDbEntity
   8
@@ -6223,7 +6379,7 @@ SEQEND
   5
 1202
 330
-188
+18E
 100
 AcDbEntity
   8
@@ -6231,7 +6387,7 @@ SYMBOLS
   0
 INSERT
   5
-189
+18F
 330
 119A
 100
@@ -6263,7 +6419,7 @@ ATTRIB
   5
 1203
 330
-189
+18F
 100
 AcDbEntity
   8
@@ -6301,7 +6457,7 @@ SEQEND
   5
 1204
 330
-189
+18F
 100
 AcDbEntity
   8
@@ -6309,7 +6465,7 @@ SYMBOLS
   0
 TEXT
   5
-18A
+190
 330
 119A
 100
@@ -6343,7 +6499,7 @@ AcDbText
   0
 INSERT
   5
-18B
+191
 330
 119A
 100
@@ -6375,7 +6531,7 @@ ATTRIB
   5
 1205
 330
-18B
+191
 100
 AcDbEntity
   8
@@ -6413,7 +6569,7 @@ SEQEND
   5
 1206
 330
-18B
+191
 100
 AcDbEntity
   8
@@ -6421,7 +6577,7 @@ SYMBOLS
   0
 INSERT
   5
-18C
+192
 330
 119A
 100
@@ -6453,7 +6609,7 @@ ATTRIB
   5
 1207
 330
-18C
+192
 100
 AcDbEntity
   8
@@ -6491,41 +6647,15 @@ SEQEND
   5
 1208
 330
-18C
+192
 100
 AcDbEntity
   8
 SYMBOLS
   0
-LINE
-  5
-18D
-330
-119A
-100
-AcDbEntity
-  8
-WIRES
- 62
-150
-100
-AcDbLine
- 10
--72.0
- 20
-56.0
- 30
-0.0
- 11
--72.0
- 21
-44.0
- 31
-0.0
-  0
 TEXT
   5
-18E
+193
 330
 119A
 100
@@ -6557,35 +6687,9 @@ AcDbText
  73
 2
   0
-LINE
-  5
-18F
-330
-119A
-100
-AcDbEntity
-  8
-WIRES
- 62
-150
-100
-AcDbLine
- 10
--72.0
- 20
-28.0
- 30
-0.0
- 11
--72.0
- 21
-20.0
- 31
-0.0
-  0
 TEXT
   5
-190
+194
 330
 119A
 100
@@ -6617,35 +6721,9 @@ AcDbText
  73
 2
   0
-LINE
-  5
-191
-330
-119A
-100
-AcDbEntity
-  8
-WIRES
- 62
-150
-100
-AcDbLine
- 10
--24.0
- 20
-56.0
- 30
-0.0
- 11
--24.0
- 21
-44.0
- 31
-0.0
-  0
 TEXT
   5
-192
+195
 330
 119A
 100
@@ -6677,35 +6755,9 @@ AcDbText
  73
 2
   0
-LINE
-  5
-193
-330
-119A
-100
-AcDbEntity
-  8
-WIRES
- 62
-150
-100
-AcDbLine
- 10
--24.0
- 20
-28.0
- 30
-0.0
- 11
--24.0
- 21
-20.0
- 31
-0.0
-  0
 TEXT
   5
-194
+196
 330
 119A
 100
@@ -6737,35 +6789,9 @@ AcDbText
  73
 2
   0
-LINE
-  5
-195
-330
-119A
-100
-AcDbEntity
-  8
-WIRES
- 62
-150
-100
-AcDbLine
- 10
-24.0
- 20
-8.0
- 30
-0.0
- 11
-24.0
- 21
--8.0
- 31
-0.0
-  0
 TEXT
   5
-196
+197
 330
 119A
 100
@@ -6796,32 +6822,6 @@ Standard
 AcDbText
  73
 2
-  0
-LINE
-  5
-197
-330
-119A
-100
-AcDbEntity
-  8
-WIRES
- 62
-150
-100
-AcDbLine
- 10
-24.0
- 20
--24.0
- 30
-0.0
- 11
-24.0
- 21
--40.0
- 31
-0.0
   0
 TEXT
   5
