@@ -1,0 +1,19 @@
+[package]
+name = "ecad-view"
+description = "Turns model pages into CADCraft drawings and exports them. The only crate that depends on CADCraft."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+ecad-model = { workspace = true }
+cadcraft-doc = { workspace = true }
+cadcraft-io = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+png = { workspace = true }
+
+[lints]
+workspace = true

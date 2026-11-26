@@ -1,0 +1,19 @@
+[package]
+name = "ecad-cli"
+description = "Headless entry point: exports and reports without a UI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "ecad"
+path = "src/main.rs"
+
+[dependencies]
+ecad-model = { workspace = true }
+ecad-view = { workspace = true }
+ecad-reports = { workspace = true }
+
+[lints]
+workspace = true
