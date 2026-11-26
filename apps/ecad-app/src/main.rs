@@ -275,6 +275,14 @@ impl App {
             tool(ui, "Wire", "wire", "Click two connection points (W)");
             tool(ui, "Box", "box", "Drag a dashed location box: +A101, EXT, a connector housing");
             ui.separator();
+            if ui
+                .button("Tidy wires")
+                .on_hover_text("Move this page's wires off each other and out of symbols (undoable)")
+                .clicked()
+            {
+                self.session.handle(UiEvent::TidyWires);
+            }
+            ui.separator();
             let undo = frame.undo.as_deref().map(|l| format!("Undo {l}")).unwrap_or_else(|| "Nothing to undo".into());
             if ui.add_enabled(frame.undo.is_some(), egui::Button::new("Undo")).on_hover_text(undo).clicked() {
                 self.session.handle(UiEvent::Key { key: KeyName::Undo });
@@ -539,7 +547,18 @@ impl App {
                 ui.add_space(8.0);
                 ui.label("R rotates, Delete removes.");
             }
-            Some(SelectionInfo::Wire { number, from, to, potential, warning, cross_section, colour, cable, core }) => {
+            Some(SelectionInfo::Wire {
+                number,
+                from,
+                to,
+                potential,
+                warning,
+                cross_section,
+                colour,
+                cable,
+                core,
+                bent,
+            }) => {
                 ui.label("Wire number");
                 let edit = ui.text_edit_singleline(&mut self.fields.number);
                 if edit.lost_focus() && self.fields.number.trim() != number.as_deref().unwrap_or("") {
@@ -548,6 +567,13 @@ impl App {
                 ui.add_space(4.0);
                 ui.label(format!("From {from}"));
                 ui.label(format!("To {to}"));
+                ui.horizontal(|ui| {
+                    ui.small("Drag the wire to move its middle run.");
+                    if *bent && ui.small_button("Straighten").on_hover_text("Put the middle run back halfway").clicked()
+                    {
+                        events.push(UiEvent::StraightenWire);
+                    }
+                });
                 ui.add_space(4.0);
                 ui.label(format!("Potential: {}", potential.as_deref().unwrap_or("unnamed")))
                     .on_hover_text("Wires on the same potential are highlighted");
