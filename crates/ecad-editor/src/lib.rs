@@ -12,7 +12,9 @@ use ecad_model::{
 };
 pub use ecad_model::{Naming, Part, PartRef, ProjectInfo, Revision, WireNumbering};
 pub use ecad_view::{Primitive, Shape};
-pub use session::{Button, Choice, DevicePart, Frame, KeyName, PageInfo, PaletteItem, SelectionInfo, Session, UiEvent};
+pub use session::{
+    Button, Choice, DevicePart, Frame, KeyName, PageInfo, PaletteItem, SelectionInfo, Session, SheetGrid, UiEvent,
+};
 pub use view::Viewport;
 
 pub mod session;
