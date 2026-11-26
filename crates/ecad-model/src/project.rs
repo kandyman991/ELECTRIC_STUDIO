@@ -191,8 +191,11 @@ pub struct ContactRef {
     pub function: FunctionId,
     pub page: PageId,
     pub kind: ContactKind,
-    /// Terminal designations joined with `-`, e.g. `13-14`.
+    /// Terminal designations, a pair per pole joined with `-`, poles with a space: `13-14`,
+    /// `1-2 3-4 5-6`.
     pub terminals: String,
+    /// The poles as (first, second) designations: `[("13", "14")]`.
+    pub poles: Vec<(String, String)>,
     /// Where the contact is drawn, e.g. `2.4`.
     pub location: String,
 }
@@ -497,12 +500,22 @@ impl Project {
             .filter_map(|f| {
                 let sym = self.symbol(&f.symbol).ok()?;
                 let Role::Contact { kind } = sym.role else { return None };
-                let terminals: Vec<&str> = sym.connection_points.iter().map(|cp| f.designation(&cp.name)).collect();
+                let names: Vec<&str> = sym.connection_points.iter().map(|cp| f.designation(&cp.name)).collect();
+                let poles: Vec<(String, String)> = names
+                    .chunks(2)
+                    .map(|p| (p[0].to_owned(), p.get(1).map_or_else(String::new, |s| (*s).to_owned())))
+                    .collect();
+                let terminals = poles
+                    .iter()
+                    .map(|(a, b)| if b.is_empty() { a.clone() } else { format!("{a}-{b}") })
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 Some(ContactRef {
                     function: f.id,
                     page: f.page,
                     kind,
-                    terminals: terminals.join("-"),
+                    terminals,
+                    poles,
                     location: self.location(f.page, f.position).ok()?,
                 })
             })
@@ -528,7 +541,8 @@ impl Project {
             let n = (0..).find(|n| !used.contains(n)).unwrap_or(0).to_string();
             return sym.connection_points.iter().map(|cp| (cp.name.clone(), n.clone())).collect();
         }
-        if !matches!(sym.role, Role::Contact { .. }) {
+        // Main contacts and everything else keep the symbol's own numbers.
+        if !matches!(sym.role, Role::Contact { kind } if kind != ContactKind::Power) {
             return BTreeMap::new();
         }
         let used: Vec<u32> = self

@@ -98,12 +98,8 @@ fn tag_text(min: Point, max: Point, sideways: bool, tag: &str) -> Text {
 fn cross_reference_lines(project: &Project, f: ecad_model::FunctionId, role: Role) -> Result<Vec<(usize, String)>> {
     let device = project.function(f)?.device;
     Ok(match role {
-        Role::Main => project
-            .contacts_of(device)
-            .iter()
-            .enumerate()
-            .map(|(i, c)| (i, format!("{} {} {}", c.terminals, c.kind.short(), c.location)))
-            .collect(),
+        // Drawn as a contact table instead.
+        Role::Main => Vec::new(),
         Role::Contact { .. } => match project.main_function(device) {
             Some(main) => vec![(0, project.reference(main.id)?)],
             None => Vec::new(),
@@ -127,6 +123,45 @@ fn cross_reference_lines(project: &Project, f: ecad_model::FunctionId, role: Rol
         }
         Role::Single | Role::Potential | Role::Terminal => Vec::new(),
     })
+}
+
+/// The contact table under a coil or breaker: one row per pole of each of its contacts, as in
+/// `14 _/_ 13  2/4C`: the designations around a small NO or NC contact, then where it is drawn.
+/// `top` is the top-left corner of the first row.
+fn contact_table(d: &mut Drawing, project: &Project, main: ecad_model::FunctionId, top: Vec3) -> Result<()> {
+    let device = project.function(main)?.device;
+    let step = XREF_HEIGHT * 1.5;
+    let layer = on(LAYER_XREF);
+    let mut row = 0.0;
+    for c in project.contacts_of(device) {
+        for (first, second) in &c.poles {
+            let y = top.y - step * row - XREF_HEIGHT / 2.0;
+            let x = top.x;
+            let mid = |at: f64, s: &str, h: HAlign| justified(Point::new(at, y), XREF_HEIGHT, s, h, VAlign::Middle);
+            add_text(d, &layer, mid(x + 3.5, second, HAlign::Right))?;
+            let glyph = x + 4.2;
+            let base = y - 0.6;
+            let mut segments = vec![
+                (Point::new(glyph, base), Point::new(glyph + 1.0, base)),
+                (Point::new(glyph + 2.0, base), Point::new(glyph + 3.0, base)),
+            ];
+            match c.kind {
+                // The blade crosses under the fixed contact and a hook closes it.
+                ecad_model::ContactKind::NormallyClosed => segments.extend([
+                    (Point::new(glyph + 1.0, base), Point::new(glyph + 2.4, base - 0.7)),
+                    (Point::new(glyph + 2.0, base), Point::new(glyph + 2.0, base - 0.9)),
+                ]),
+                _ => segments.push((Point::new(glyph + 1.0, base), Point::new(glyph + 2.3, base + 1.1))),
+            }
+            for (a, b) in segments {
+                add_line(d, &layer, a, b)?;
+            }
+            add_text(d, &layer, mid(x + 7.8, first, HAlign::Left))?;
+            add_text(d, &layer, mid(x + 13.0, &c.location, HAlign::Left))?;
+            row += 1.0;
+        }
+    }
+    Ok(())
 }
 
 /// Where cross-reference lines go: under the tag, which sits right of an upright symbol and
@@ -155,6 +190,26 @@ fn wire_label(route: &[Point], number: &str) -> Text {
     }
 }
 
+/// A dashed line as separate dashes (1.5 mm on, 1 mm off), so it looks the same in every
+/// output without depending on linetype support.
+fn dashes(a: Point, b: Point) -> Vec<(Point, Point)> {
+    const ON: f64 = 1.5;
+    const PERIOD: f64 = 2.5;
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let len = dx.hypot(dy);
+    if len <= f64::EPSILON {
+        return Vec::new();
+    }
+    let at = |t: f64| Point::new(a.x + dx * t / len, a.y + dy * t / len);
+    let mut out = Vec::new();
+    let mut t = 0.0;
+    while t < len {
+        out.push((at(t), at((t + ON).min(len))));
+        t += PERIOD;
+    }
+    out
+}
+
 fn on(layer: &str) -> Common {
     Common { layer: layer.to_owned(), ..Common::default() }
 }
@@ -176,15 +231,20 @@ pub fn page_drawing(project: &Project, page: PageId) -> Result<Drawing> {
         let mut b = Block::new(&id.0);
         b.description = sym.description.clone();
         for g in &sym.graphics {
-            let kind = match g {
-                Graphic::Line { a, b } => EntityKind::Line(Line { a: v(*a), b: v(*b) }),
-                Graphic::Circle { center, radius } => {
-                    EntityKind::Circle(Circle { center: v(*center), radius: *radius })
+            let kinds = match g {
+                Graphic::Line { a, b } => vec![EntityKind::Line(Line { a: v(*a), b: v(*b) })],
+                Graphic::Dashed { a, b } => {
+                    dashes(*a, *b).into_iter().map(|(a, b)| EntityKind::Line(Line { a: v(a), b: v(b) })).collect()
                 }
-                Graphic::Text { at, height, value } => EntityKind::Text(text(*at, *height, value)),
+                Graphic::Circle { center, radius } => {
+                    vec![EntityKind::Circle(Circle { center: v(*center), radius: *radius })]
+                }
+                Graphic::Text { at, height, value } => vec![EntityKind::Text(text(*at, *height, value))],
             };
-            let h = d.new_handle();
-            b.entities.push(Entity::new(h, kind));
+            for kind in kinds {
+                let h = d.new_handle();
+                b.entities.push(Entity::new(h, kind));
+            }
         }
         d.blocks.insert(id.0.clone(), Arc::new(b));
     }
@@ -204,9 +264,13 @@ pub fn page_drawing(project: &Project, page: PageId) -> Result<Drawing> {
             }
         }
         let (min, max) = project.function_bounds(f.id)?.unwrap_or((f.position, f.position));
-        for line in cross_reference_lines(project, f.id, sym.role)? {
-            d.add(&Space::Model, on(LAYER_XREF), EntityKind::Text(line_text(min, max, sideways, &line)))
-                .map_err(err)?;
+        if sym.role == Role::Main {
+            contact_table(&mut d, project, f.id, line_text(min, max, sideways, &(0, String::new())).insert)?;
+        } else {
+            for line in cross_reference_lines(project, f.id, sym.role)? {
+                d.add(&Space::Model, on(LAYER_XREF), EntityKind::Text(line_text(min, max, sideways, &line)))
+                    .map_err(err)?;
+            }
         }
         let tag = Attrib {
             tag: "TAG".into(),
@@ -645,10 +709,17 @@ mod tests {
         use ecad_model::sample::{K1_COIL, K1_NC, K1_NO, PAGE_2, with_contacts};
         let p = with_contacts().unwrap();
         let col = |f| p.sheet.column_of(p.function(f).unwrap().position);
-        assert_eq!(
-            texts_on(&p, PAGE_1, LAYER_XREF),
-            [format!("13-14 NO 2.{}", col(K1_NO)), format!("21-22 NC 2.{}", col(K1_NC))]
-        );
+        // The coil's contact table: each contact's numbers and where it is.
+        let mut expected = vec![
+            "13".to_owned(),
+            "14".into(),
+            "21".into(),
+            "22".into(),
+            format!("2.{}", col(K1_NO)),
+            format!("2.{}", col(K1_NC)),
+        ];
+        expected.sort();
+        assert_eq!(texts_on(&p, PAGE_1, LAYER_XREF), expected);
         let back = format!("/1.{}", col(K1_COIL));
         assert_eq!(texts_on(&p, PAGE_2, LAYER_XREF), [back.clone(), back]);
         // The contacts show their own terminal numbers.

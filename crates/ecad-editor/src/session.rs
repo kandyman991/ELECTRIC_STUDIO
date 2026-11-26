@@ -1046,7 +1046,7 @@ mod tests {
         let f = s.frame(None, [0, 0, 0]);
         assert_eq!(f.title, "Panel A");
         assert_eq!(s.editor().project().functions.len(), 0);
-        assert_eq!(f.palette.len(), 11, "starter symbols are available");
+        assert_eq!(f.palette.len(), 16, "starter symbols are available");
         assert!(path.join("project.json").exists());
 
         // New into a folder that already has a project is refused.
@@ -1169,7 +1169,7 @@ mod tests {
         let labels: Vec<&str> = references.iter().map(|r| r.label.as_str()).collect();
         assert_eq!(labels.len(), 2);
         assert!(labels[0].starts_with("13-14 NO 2.") && labels[1].starts_with("21-22 NC 2."), "{labels:?}");
-        assert_eq!(f.contact_palette.len(), 2);
+        assert_eq!(f.contact_palette.len(), 3, "NO, NC and 3-pole main contacts");
 
         // Add a third contact on page 2 from the side panel.
         s.handle(UiEvent::AddContact { symbol: "iec.contact_no".into() });

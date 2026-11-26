@@ -690,7 +690,9 @@ impl Editor {
                 .graphics
                 .iter()
                 .filter_map(|g| match g {
-                    ecad_model::Graphic::Line { a, b } => Some((a.offset(at), b.offset(at))),
+                    ecad_model::Graphic::Line { a, b } | ecad_model::Graphic::Dashed { a, b } => {
+                        Some((a.offset(at), b.offset(at)))
+                    }
                     _ => None,
                 })
                 .collect();
