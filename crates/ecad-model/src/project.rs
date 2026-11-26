@@ -260,7 +260,8 @@ pub struct ContactRef {
     /// Terminal designations, a pair per pole joined with `-`, poles with a space: `13-14`,
     /// `1-2 3-4 5-6`.
     pub terminals: String,
-    /// The poles as (first, second) designations: `[("13", "14")]`.
+    /// The poles as (first, second) designations: `[("13", "14")]`; a changeover is one pole
+    /// `("12/14", "11")`.
     pub poles: Vec<(String, String)>,
     /// Where the contact is drawn, e.g. `2.4`.
     pub location: String,
@@ -620,15 +621,21 @@ impl Project {
                 let sym = self.symbol(&f.symbol).ok()?;
                 let Role::Contact { kind } = sym.role else { return None };
                 let names: Vec<&str> = sym.connection_points.iter().map(|cp| f.designation(&cp.name)).collect();
-                let poles: Vec<(String, String)> = names
-                    .chunks(2)
-                    .map(|p| (p[0].to_owned(), p.get(1).map_or_else(String::new, |s| (*s).to_owned())))
-                    .collect();
-                let terminals = poles
-                    .iter()
-                    .map(|(a, b)| if b.is_empty() { a.clone() } else { format!("{a}-{b}") })
-                    .collect::<Vec<_>>()
-                    .join(" ");
+                let (poles, terminals) = if let (ContactKind::Changeover, [common, nc, no]) = (kind, names.as_slice()) {
+                    // One row, read `11 12/14`: the common, then the closed and open sides.
+                    (vec![(format!("{nc}/{no}"), (*common).to_owned())], format!("{common}-{nc}-{no}"))
+                } else {
+                    let poles: Vec<(String, String)> = names
+                        .chunks(2)
+                        .map(|p| (p[0].to_owned(), p.get(1).map_or_else(String::new, |s| (*s).to_owned())))
+                        .collect();
+                    let terminals = poles
+                        .iter()
+                        .map(|(a, b)| if b.is_empty() { a.clone() } else { format!("{a}-{b}") })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    (poles, terminals)
+                };
                 Some(ContactRef {
                     function: f.id,
                     page: f.page,
@@ -643,9 +650,75 @@ impl Project {
         out
     }
 
+    /// The contact blocks a device's parts bring, in parts order. A part used more than once
+    /// brings its blocks again one position on, as printed on stacked blocks: `13-14` twice is
+    /// `13-14` and `23-24`.
+    pub fn contact_blocks_of(&self, device: DeviceId) -> Vec<Vec<String>> {
+        let Ok(d) = self.device(device) else { return Vec::new() };
+        let mut out = Vec::new();
+        for r in &d.parts {
+            let Some(part) = self.parts.get(&r.number) else { continue };
+            for copy in 0..r.quantity.max(1) {
+                for block in &part.contacts {
+                    let points = crate::parts::block_points(block);
+                    let shifted: Option<Vec<String>> = points
+                        .iter()
+                        .map(|p| p.parse::<u32>().ok().filter(|n| *n >= 10).map(|n| (n + 10 * copy).to_string()))
+                        .collect();
+                    // Numbers that can't move a position on (not two digits) only count once.
+                    match shifted {
+                        Some(s) => out.push(s),
+                        None if copy == 0 => out.push(points),
+                        None => {}
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Numbers for a new contact of `kind` from the device's contact blocks: the first block
+    /// with that contact free. A changeover block also gives a normally open (`11-14`) or
+    /// closed (`11-12`) contact; its common may then be shared. `None` when no block fits.
+    fn designations_from_blocks(&self, device: DeviceId, kind: ContactKind) -> Option<Vec<String>> {
+        // The numbers of each contact already drawn for the device.
+        let drawn: Vec<Vec<String>> = self
+            .functions_of(device)
+            .filter(|f| matches!(self.role(f.id), Ok(Role::Contact { .. })))
+            .filter_map(|f| {
+                let sym = self.symbol(&f.symbol).ok()?;
+                Some(sym.connection_points.iter().map(|cp| f.designation(&cp.name).to_owned()).collect())
+            })
+            .collect();
+        let taken = |numbers: &[&String]| drawn.iter().any(|d| d.iter().eq(numbers.iter().copied()));
+        for block in self.contact_blocks_of(device) {
+            let Some(block_kind) = crate::parts::block_kind(&block.join("-")) else { continue };
+            let all: Vec<&String> = block.iter().collect();
+            // The block's points the contact takes, and the drawings that would already use them.
+            let (take, uses): (Vec<&String>, Vec<Vec<&String>>) = match (kind, block_kind, block.as_slice()) {
+                (ContactKind::Changeover, ContactKind::Changeover, [c, nc, no]) => {
+                    (all.clone(), vec![all.clone(), vec![c, nc], vec![c, no]])
+                }
+                (k, b, _) if k == b => (all.clone(), vec![all.clone()]),
+                (ContactKind::NormallyOpen, ContactKind::Changeover, [c, _, no]) => {
+                    (vec![c, no], vec![all.clone(), vec![c, no]])
+                }
+                (ContactKind::NormallyClosed, ContactKind::Changeover, [c, nc, _]) => {
+                    (vec![c, nc], vec![all.clone(), vec![c, nc]])
+                }
+                _ => continue,
+            };
+            if !uses.iter().any(|u| taken(u)) {
+                return Some(take.into_iter().cloned().collect());
+            }
+        }
+        None
+    }
+
     /// Designations for a new drawing of `device` with `symbol`:
-    /// - a contact gets IEC numbering, where the first digit counts the device's contacts
-    ///   (1x, 2x, 3x…) and the second is the symbol's own (3/4 for NO, 1/2 for NC);
+    /// - a contact takes the numbers of the first free contact on its device's parts' contact
+    ///   blocks; without one it gets IEC numbering, where the first digit counts the device's
+    ///   contacts (1x, 2x, 3x…) and the second is the symbol's own (3/4 for NO, 1/2 for NC);
     /// - a terminal gets the strip's next free number on both its sides;
     /// - anything else keeps the symbol's own names (empty map).
     pub fn next_designations(&self, device: DeviceId, symbol: &SymbolId) -> BTreeMap<String, String> {
@@ -663,6 +736,12 @@ impl Project {
         // Main contacts and everything else keep the symbol's own numbers.
         if !matches!(sym.role, Role::Contact { kind } if kind != ContactKind::Power) {
             return BTreeMap::new();
+        }
+        if let Role::Contact { kind } = sym.role
+            && let Some(numbers) = self.designations_from_blocks(device, kind)
+            && numbers.len() == sym.connection_points.len()
+        {
+            return sym.connection_points.iter().map(|cp| cp.name.clone()).zip(numbers).collect();
         }
         let used: Vec<u32> = self
             .contacts_of(device)

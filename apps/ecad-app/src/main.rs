@@ -50,7 +50,7 @@ struct App {
     show_project: bool,
     project_fields: ProjectFields,
     /// Edit buffers for catalogue rows: number → (manufacturer, description).
-    part_edits: std::collections::BTreeMap<String, (String, String, String)>,
+    part_edits: std::collections::BTreeMap<String, (String, String, String, String)>,
     /// The "new part" row: number, manufacturer, description.
     new_part: (String, String, String, String),
     title: String,
@@ -1066,21 +1066,32 @@ impl App {
             // Keep edit buffers in step with the catalogue.
             self.part_edits.retain(|n, _| frame.parts.iter().any(|p| &p.number == n));
             egui::ScrollArea::vertical().max_height(ui.available_height() - 40.0).show(ui, |ui| {
-                egui::Grid::new("parts-grid").striped(true).num_columns(5).show(ui, |ui| {
+                egui::Grid::new("parts-grid").striped(true).num_columns(6).show(ui, |ui| {
                     ui.strong("Part number");
                     ui.strong("Manufacturer");
                     ui.strong("Description");
                     ui.strong("Internal code");
+                    ui.strong("Contacts").on_hover_text(
+                        "Auxiliary contacts as printed on the part: 13-14 (NO), 21-22 (NC), 11-12-14 (changeover). \
+                         Contacts drawn for a device take their numbers from these.",
+                    );
                     ui.label("");
                     ui.end_row();
                     for part in &frame.parts {
                         let buf = self.part_edits.entry(part.number.clone()).or_insert_with(|| {
-                            (part.manufacturer.clone(), part.description.clone(), part.code.clone())
+                            (
+                                part.manufacturer.clone(),
+                                part.description.clone(),
+                                part.code.clone(),
+                                part.contacts.join(" "),
+                            )
                         });
                         ui.label(&part.number);
                         let m = ui.add_sized([130.0, 20.0], egui::TextEdit::singleline(&mut buf.0));
-                        let d = ui.add_sized([300.0, 20.0], egui::TextEdit::singleline(&mut buf.1));
-                        let c = ui.add_sized([100.0, 20.0], egui::TextEdit::singleline(&mut buf.2));
+                        let d = ui.add_sized([260.0, 20.0], egui::TextEdit::singleline(&mut buf.1));
+                        let c = ui.add_sized([90.0, 20.0], egui::TextEdit::singleline(&mut buf.2));
+                        let k = ui
+                            .add_sized([110.0, 20.0], egui::TextEdit::singleline(&mut buf.3).hint_text("13-14 21-22"));
                         if (m.lost_focus() || d.lost_focus() || c.lost_focus())
                             && (buf.0 != part.manufacturer || buf.1 != part.description || buf.2 != part.code)
                         {
@@ -1090,8 +1101,14 @@ impl App {
                                     manufacturer: buf.0.trim().to_owned(),
                                     description: buf.1.trim().to_owned(),
                                     code: buf.2.trim().to_owned(),
+                                    contacts: part.contacts.clone(),
                                 },
                             });
+                        }
+                        if k.lost_focus() && buf.3.trim() != part.contacts.join(" ") {
+                            events.push(UiEvent::PartContacts { number: part.number.clone(), contacts: buf.3.clone() });
+                            // Show the catalogue's version again (normalised, or unchanged if refused).
+                            self.part_edits.remove(&part.number);
                         }
                         if ui.small_button("✕").on_hover_text("Remove from the catalogue").clicked() {
                             events.push(UiEvent::RemovePart { number: part.number.clone() });
@@ -1114,6 +1131,7 @@ impl App {
                             manufacturer: m.trim().to_owned(),
                             description: d.trim().to_owned(),
                             code: c.trim().to_owned(),
+                            contacts: Vec::new(),
                         },
                     });
                     self.new_part = Default::default();

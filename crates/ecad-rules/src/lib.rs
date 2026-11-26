@@ -62,6 +62,11 @@ pub const RULES: &[(&str, Severity, &str)] = &[
     ("wire-unnumbered", Severity::Warning, "A wire has no number"),
     ("missing-part", Severity::Warning, "A device has no catalogue part, so it is missing from the BOM"),
     ("plc-no-address", Severity::Warning, "A PLC channel has no address"),
+    (
+        "contact-not-on-part",
+        Severity::Warning,
+        "A contact's numbers aren't on any contact block of its device's parts (too many contacts drawn?)",
+    ),
     ("cable-cores", Severity::Warning, "A cable carries more wires than it has cores"),
     ("overlap", Severity::Warning, "Two symbols overlap on a page"),
     (
@@ -155,6 +160,7 @@ pub fn check(project: &Project) -> Vec<Check> {
     }
     overlaps(&mut out);
     wire_layout(&mut out);
+    contacts_on_parts(&mut out);
     for cable in project.cables.values() {
         let wires: Vec<&ecad_model::Connection> = project
             .connections
@@ -283,6 +289,35 @@ fn lonely_interruptions(out: &mut Out) {
     }
 }
 
+/// Contacts drawn for a device whose parts list contact blocks must be one of those blocks (or
+/// one side of a changeover block).
+fn contacts_on_parts(out: &mut Out) {
+    let project = out.project;
+    for d in project.devices.values() {
+        let blocks = project.contact_blocks_of(d.id);
+        if blocks.is_empty() {
+            continue;
+        }
+        for f in project.functions_of(d.id) {
+            let Ok(Role::Contact { kind }) = project.role(f.id) else { continue };
+            if kind == ecad_model::ContactKind::Power {
+                continue;
+            }
+            let Ok(sym) = project.symbol(&f.symbol) else { continue };
+            let numbers: Vec<&str> = sym.connection_points.iter().map(|cp| f.designation(&cp.name)).collect();
+            let fits = blocks.iter().any(|b| {
+                let b: Vec<&str> = b.iter().map(String::as_str).collect();
+                numbers == b || matches!(b.as_slice(), [c, nc, no] if numbers == [*c, *no] || numbers == [*c, *nc])
+            });
+            if !fits {
+                let list = blocks.iter().map(|b| b.join("-")).collect::<Vec<_>>().join(" ");
+                let message = format!("{} contact {} isn't on its parts ({list})", d.tag, numbers.join("-"));
+                out.at_function("contact-not-on-part", f.id, message);
+            }
+        }
+    }
+}
+
 /// Wires that a reader could take for one another or for part of a symbol ("Tidy wires" in the
 /// editor fixes most).
 fn wire_layout(out: &mut Out) {
@@ -388,8 +423,14 @@ mod tests {
         let found: BTreeSet<&str> = checks.iter().map(|c| c.rule).collect();
         for (rule, ..) in RULES {
             // Covered by their own tests.
-            let elsewhere =
-                ["lonely-interruption", "overlap", "wire-number-shared", "wire-numbers-differ", "cable-cores"];
+            let elsewhere = [
+                "lonely-interruption",
+                "overlap",
+                "wire-number-shared",
+                "wire-numbers-differ",
+                "cable-cores",
+                "contact-not-on-part",
+            ];
             if !elsewhere.contains(rule) {
                 assert!(found.contains(rule), "{rule} missing from {:#?}", rules(&checks));
             }
@@ -434,6 +475,25 @@ mod tests {
         p.apply(Command::SetWireBend { id: w2, bend: Some(y) }).unwrap();
         let r = rules(&check(&p));
         assert!(r.iter().any(|r| r.starts_with("wire-overlap") && r.contains("W2") && r.contains("W3")), "{r:#?}");
+    }
+
+    #[test]
+    fn a_contact_the_parts_dont_have_is_reported() {
+        let mut p = sample::with_contacts().unwrap();
+        let k1 = p.function(sample::K1_COIL).unwrap().device;
+        assert!(!rules(&check(&p)).iter().any(|r| r.starts_with("contact-not-on-part")), "no blocks, no check");
+        p.apply(Command::AddPart(ecad_model::Part {
+            number: "CT-1NO".into(),
+            manufacturer: String::new(),
+            description: String::new(),
+            code: String::new(),
+            contacts: vec!["13-14".into()],
+        }))
+        .unwrap();
+        p.apply(Command::SetDeviceParts { id: k1, parts: vec![ecad_model::PartRef::new("CT-1NO", 1)] }).unwrap();
+        let r: Vec<String> = rules(&check(&p)).into_iter().filter(|r| r.starts_with("contact-not-on-part")).collect();
+        assert_eq!(r.len(), 1, "{r:#?}");
+        assert!(r[0].ends_with("-K1 contact 21-22 isn't on its parts (13-14)"), "{r:#?}");
     }
 
     #[test]

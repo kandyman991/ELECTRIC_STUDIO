@@ -90,6 +90,32 @@ fn basics() -> Vec<SymbolDef> {
             connection_points: vec![cp("13", 0.0, 8.0, Direction::Up), cp("14", 0.0, -8.0, Direction::Down)],
         },
         SymbolDef {
+            id: SymbolId::new("iec.contact_co"),
+            description: "Changeover contact".into(),
+            tag_prefix: "-K".into(),
+            role: Role::Contact { kind: ContactKind::Changeover },
+            bridged: false,
+            hide_tag: false,
+            hide_point_labels: false,
+            category: String::new(),
+            // The common 11 below; above it the open side 14 in line and the closed side 12
+            // to the left, where the blade rests.
+            graphics: vec![
+                line(0.0, -8.0, 0.0, -3.0),
+                line(0.0, -3.0, -7.4, 3.6),
+                line(-8.0, 8.0, -8.0, 3.0),
+                line(-8.0, 3.0, -6.2, 3.0),
+                line(0.0, 8.0, 0.0, 3.0),
+                line(-11.0, 0.0, -3.4, 0.0),
+            ],
+            // The sides a grid step apart, wide enough for the closed side's number between them.
+            connection_points: vec![
+                cp("11", 0.0, -8.0, Direction::Down),
+                cp("12", -8.0, 8.0, Direction::Up),
+                cp("14", 0.0, 8.0, Direction::Up),
+            ],
+        },
+        SymbolDef {
             id: SymbolId::new("iec.contact_nc"),
             description: "Normally closed contact".into(),
             tag_prefix: "-S".into(),

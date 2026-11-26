@@ -79,8 +79,8 @@ fn column(header: &[String], names: &[&str]) -> Option<usize> {
 }
 
 /// Parts from a CSV catalogue. The header must have a part-number column (`part number`,
-/// `number`, `order number`, `article`…); `manufacturer` and `description` are optional.
-/// Other columns are ignored.
+/// `number`, `order number`, `article`…); `manufacturer`, `description`, `code` and
+/// `contacts` (blocks like `13-14 21-22`) are optional. Other columns are ignored.
 pub fn read_parts(text: &str) -> Result<Vec<Part>, CsvError> {
     let rows = records(text, detect_separator(text))?;
     let Some((header_line, header)) = rows.first() else { return Err(err(1, "the file is empty")) };
@@ -89,6 +89,7 @@ pub fn read_parts(text: &str) -> Result<Vec<Part>, CsvError> {
     let manufacturer = column(header, &["manufacturer", "maker", "brand", "vendor"]);
     let description = column(header, &["description", "desc", "text", "name"]);
     let code = column(header, &["code", "internal code", "article code", "item code", "codice", "codice interno"]);
+    let contacts = column(header, &["contacts", "contact blocks", "auxiliary contacts", "contatti"]);
     let get =
         |r: &[String], i: Option<usize>| i.and_then(|i| r.get(i)).map(|s| s.trim().to_owned()).unwrap_or_default();
 
@@ -101,11 +102,14 @@ pub fn read_parts(text: &str) -> Result<Vec<Part>, CsvError> {
         if parts.iter().any(|p| p.number == n) {
             return Err(err(*line, format!("part `{n}` appears twice in the file")));
         }
+        let contacts = ecad_model::parts::parse_blocks(&get(r, contacts))
+            .map_err(|bad| err(*line, format!("`{bad}` isn't a contact block (write 13-14, 21-22 or 11-12-14)")))?;
         parts.push(Part {
             number: n,
             manufacturer: get(r, manufacturer),
             description: get(r, description),
             code: get(r, code),
+            contacts,
         });
     }
     Ok(parts)
@@ -134,10 +138,15 @@ mod tests {
                 number: "EX-1".into(),
                 manufacturer: "Example".into(),
                 description: "Contactor; 24 V".into(),
-                code: String::new()
+                code: String::new(),
+                contacts: Vec::new(),
             }
         );
         assert_eq!(parts[1].manufacturer, "");
+        let with = read_parts("number,contacts\nK,\"13-14 21-22\"\nR,11-12-14\n").unwrap();
+        assert_eq!(with[0].contacts, ["13-14", "21-22"]);
+        assert_eq!(with[1].contacts, ["11-12-14"]);
+        assert_eq!(read_parts("number,contacts\nK,13-15\n").unwrap_err().line, 2);
     }
 
     #[test]

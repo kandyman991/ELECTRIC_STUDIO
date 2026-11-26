@@ -51,10 +51,9 @@ In rough order of how much they matter for drawing real machines:
 
 1. **Parts per terminal type.** A strip has one part list for all its terminals, so the PE
    terminals (ZPE) on -X0 can't be listed apart from the feed-through ones.
-2. **Changeover contact symbol** (11-12-14) is missing; relays with a CO contact were drawn with a single NO or NC contact.
-3. **Contact numbering by block position.** An emergency stop with a second NO block shows
-   23-24 where the original has 13-14 on a separate block; numbers should come from the part's
-   contact blocks.
+2. ~~**Changeover contact symbol** (11-12-14) is missing~~ — done in G5b (`iec.contact_co`).
+3. ~~**Contact numbering by block position.**~~ — done in G5b: parts list their contact blocks
+   (`13-14`, `21-22`, `11-12-14`) and contacts take their numbers from them.
 4. **Black boxes with internal bridges.** The distribution block was modelled as four bridged
    terminals; a black box should be able to say which of its points are joined inside.
 5. **Contact tables in dense columns** overlap when coils sit 40 mm apart; the original puts them

@@ -255,6 +255,94 @@ mod tests {
     }
 
     #[test]
+    fn contacts_take_their_numbers_from_the_parts_contact_blocks() {
+        use crate::parts::{block_kind, parse_blocks};
+        assert_eq!(parse_blocks("13-14, 21-22  11-12-14").unwrap(), ["13-14", "21-22", "11-12-14"]);
+        assert_eq!(parse_blocks("13-15").unwrap_err(), "13-15");
+        assert_eq!(block_kind("57-58"), Some(ContactKind::NormallyOpen));
+
+        let mut p = sample::with_contacts().unwrap();
+        let k1 = p.function(K1_COIL).unwrap().device;
+        let place = |p: &mut Project, symbol: &str, x: f64| {
+            let symbol = SymbolId::new(symbol);
+            let designations = p.next_designations(k1, &symbol);
+            let id = FunctionId::new();
+            let page = p.function(K1_COIL).unwrap().page;
+            p.place(Function {
+                id,
+                device: k1,
+                symbol,
+                page,
+                position: Point::new(x, 200.0),
+                rotation: Default::default(),
+                designations,
+                properties: Default::default(),
+            })
+            .unwrap();
+            id
+        };
+        // A relay with one changeover, used twice: whole, then (the open side) as an NO.
+        p.apply(Command::AddPart(Part {
+            number: "R-1CO".into(),
+            manufacturer: String::new(),
+            description: String::new(),
+            code: String::new(),
+            contacts: vec!["11-12-14".into()],
+        }))
+        .unwrap();
+        p.apply(Command::AddPart(Part {
+            number: "BLK-NO".into(),
+            manufacturer: String::new(),
+            description: String::new(),
+            code: String::new(),
+            contacts: vec!["13-14".into()],
+        }))
+        .unwrap();
+        // Drop the sample's two contacts so the parts decide.
+        for f in [sample::K1_NO, sample::K1_NC] {
+            for c in p
+                .connections
+                .values()
+                .filter(|c| c.from.function == f || c.to.function == f)
+                .map(|c| c.id)
+                .collect::<Vec<_>>()
+            {
+                p.apply(Command::Disconnect(c)).unwrap();
+            }
+            p.apply(Command::Unplace(f)).unwrap();
+        }
+        p.apply(Command::SetDeviceParts { id: k1, parts: vec![PartRef::new("R-1CO", 1), PartRef::new("BLK-NO", 2)] })
+            .unwrap();
+        assert_eq!(p.contact_blocks_of(k1), [vec!["11", "12", "14"], vec!["13", "14"], vec!["23", "24"]]);
+        let co = place(&mut p, "iec.contact_co", 100.0);
+        let co_ref = p.contacts_of(k1).into_iter().find(|c| c.function == co).unwrap();
+        assert_eq!((co_ref.terminals.as_str(), co_ref.kind.short()), ("11-12-14", "CO"));
+        assert_eq!(co_ref.poles, [("12/14".to_owned(), "11".to_owned())]);
+        // The changeover is taken, so NO contacts come from the stacked blocks: 13-14, then 23-24.
+        let numbers = |p: &Project, f| {
+            let f = p.function(f).unwrap();
+            let sym = p.symbol(&f.symbol).unwrap();
+            sym.connection_points.iter().map(|cp| f.designation(&cp.name).to_owned()).collect::<Vec<_>>()
+        };
+        let no1 = place(&mut p, "iec.contact_no", 110.0);
+        let no2 = place(&mut p, "iec.contact_no", 120.0);
+        assert_eq!(numbers(&p, no1), ["13", "14"]);
+        assert_eq!(numbers(&p, no2), ["23", "24"]);
+        // With the changeover drawn only as its closed side, an NO uses its open side (11-14).
+        p.apply(Command::Unplace(co)).unwrap();
+        let nc = place(&mut p, "iec.contact_nc", 130.0);
+        assert_eq!(numbers(&p, nc), ["11", "12"]);
+        p.apply(Command::Unplace(no1)).unwrap();
+        p.apply(Command::Unplace(no2)).unwrap();
+        let no = place(&mut p, "iec.contact_no", 140.0);
+        assert_eq!(numbers(&p, no), ["11", "14"], "the common is shared");
+        // Once every block is used, numbering falls back to counting.
+        place(&mut p, "iec.contact_no", 150.0);
+        let extra = place(&mut p, "iec.contact_no", 160.0);
+        assert!(!numbers(&p, extra).is_empty());
+    }
+
+    #[test]
     fn reassign_moves_a_contact_to_another_device_and_undoes() {
         let original = sample::with_contacts().unwrap();
         let mut p = original.clone();
@@ -278,6 +366,7 @@ mod tests {
             manufacturer: "M".into(),
             description: String::new(),
             code: String::new(),
+            contacts: Vec::new(),
         };
         assert_eq!(
             p.apply(Command::AddPart(part("EX-CT-24DC"))).unwrap_err(),

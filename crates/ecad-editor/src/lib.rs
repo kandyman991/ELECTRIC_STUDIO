@@ -301,7 +301,13 @@ impl Editor {
     pub fn import_parts(&mut self, parts: Vec<Part>) -> Result<(usize, usize), ModelError> {
         let (mut added, mut updated) = (0, 0);
         let mut cmds = Vec::new();
-        for part in parts {
+        for mut part in parts {
+            // A catalogue without contact blocks doesn't wipe the ones already entered.
+            if let Some(existing) = self.project.parts.get(&part.number)
+                && part.contacts.is_empty()
+            {
+                part.contacts = existing.contacts.clone();
+            }
             match self.project.parts.get(&part.number) {
                 None => {
                     added += 1;
