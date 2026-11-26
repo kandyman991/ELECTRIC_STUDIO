@@ -242,8 +242,11 @@ fn table_corner(min: Point, max: Point, side: Side) -> Vec3 {
 /// A dashed line as separate dashes (1.5 mm on, 1 mm off), so it looks the same in every
 /// output without depending on linetype support.
 fn dashes(a: Point, b: Point) -> Vec<(Point, Point)> {
-    const ON: f64 = 1.5;
-    const PERIOD: f64 = 2.5;
+    dash_pattern(a, b, 1.5, 2.5)
+}
+
+/// Dashes of length `on` every `period` mm from `a` to `b`.
+fn dash_pattern(a: Point, b: Point, on: f64, period: f64) -> Vec<(Point, Point)> {
     let (dx, dy) = (b.x - a.x, b.y - a.y);
     let len = dx.hypot(dy);
     if len <= f64::EPSILON {
@@ -253,8 +256,8 @@ fn dashes(a: Point, b: Point) -> Vec<(Point, Point)> {
     let mut out = Vec::new();
     let mut t = 0.0;
     while t < len {
-        out.push((at(t), at((t + ON).min(len))));
-        t += PERIOD;
+        out.push((at(t), at((t + on).min(len))));
+        t += period;
     }
     out
 }
@@ -271,31 +274,42 @@ pub fn page_drawing(project: &Project, page: PageId) -> Result<Drawing> {
     let err = |e: cadcraft_doc::DocError| ViewError::Drawing(e.to_string());
     draw_sheet(&mut d, project, page)?;
 
-    // Only the symbols this page uses, in a stable order.
-    let mut used: Vec<_> = project.functions_on(page).map(|f| f.symbol.clone()).collect();
+    // Only the symbols this page uses, in a stable order; a mirrored drawing uses a mirrored
+    // copy of its symbol's block.
+    let mut used: Vec<_> = project.functions_on(page).map(|f| (f.symbol.clone(), f.mirrored)).collect();
     used.sort();
     used.dedup();
-    for id in &used {
+    for (id, mirrored) in &used {
         let sym = project.symbol(id)?;
-        let mut b = Block::new(&id.0);
+        let mut b = Block::new(&block_name(id, *mirrored));
         b.description = sym.description.clone();
+        let m = |p: Point| if *mirrored { Point::new(-p.x, p.y) } else { p };
         for g in &sym.graphics {
             let kinds = match g {
-                Graphic::Line { a, b } => vec![EntityKind::Line(Line { a: v(*a), b: v(*b) })],
+                Graphic::Line { a, b } => vec![EntityKind::Line(Line { a: v(m(*a)), b: v(m(*b)) })],
                 Graphic::Dashed { a, b } => {
-                    dashes(*a, *b).into_iter().map(|(a, b)| EntityKind::Line(Line { a: v(a), b: v(b) })).collect()
+                    dashes(m(*a), m(*b)).into_iter().map(|(a, b)| EntityKind::Line(Line { a: v(a), b: v(b) })).collect()
                 }
                 Graphic::Circle { center, radius } => {
-                    vec![EntityKind::Circle(Circle { center: v(*center), radius: *radius })]
+                    vec![EntityKind::Circle(Circle { center: v(m(*center)), radius: *radius })]
                 }
-                Graphic::Text { at, height, value } => vec![EntityKind::Text(text(*at, *height, value))],
+                // Text stays readable: it moves to the mirrored place, not mirrored itself.
+                Graphic::Text { at, height, value } => {
+                    let at = if *mirrored {
+                        let width = value.chars().count() as f64 * height * 0.8;
+                        Point::new(-(at.x + width), at.y)
+                    } else {
+                        *at
+                    };
+                    vec![EntityKind::Text(text(at, *height, value))]
+                }
             };
             for kind in kinds {
                 let h = d.new_handle();
                 b.entities.push(Entity::new(h, kind));
             }
         }
-        d.blocks.insert(id.0.clone(), Arc::new(b));
+        d.blocks.insert(block_name(id, *mirrored), Arc::new(b));
     }
 
     // First everything with a fixed place: symbols' point labels, contact tables, wires, cables
@@ -349,7 +363,7 @@ pub fn page_drawing(project: &Project, page: PageId) -> Result<Drawing> {
         let lines = if sym.role == Role::Main { Vec::new() } else { cross_reference_lines(project, f.id, sym.role)? };
         tagged.push(Tagged {
             id: f.id,
-            symbol: f.symbol.0.clone(),
+            symbol: block_name(&f.symbol, f.mirrored),
             position: f.position,
             rotation: f.rotation.degrees().to_radians(),
             bounds: (tag_min, tag_max),
@@ -376,10 +390,16 @@ pub fn page_drawing(project: &Project, page: PageId) -> Result<Drawing> {
     // Colour 150 (mid blue) reads on dark screens and on white paper; pure blue (5) vanishes on dark.
     let wire = Common { color: Color::from_aci(150), ..on(LAYER_WIRES) };
     let mut numbered = Vec::new();
+    let earth_wires = project.protective_earth_wires();
     for c in project.connections_on(page) {
         let route = project.route(c)?;
+        // A protective earth conductor is drawn dashed, as on printed diagrams.
+        let earth = earth_wires.contains(&c.id);
         for seg in route.windows(2) {
-            d.add(&Space::Model, wire.clone(), EntityKind::Line(Line { a: v(seg[0]), b: v(seg[1]) })).map_err(err)?;
+            let pieces = if earth { dash_pattern(seg[0], seg[1], 3.0, 4.5) } else { vec![(seg[0], seg[1])] };
+            for (a, b) in pieces {
+                d.add(&Space::Model, wire.clone(), EntityKind::Line(Line { a: v(a), b: v(b) })).map_err(err)?;
+            }
             placer.add_wire(seg[0], seg[1]);
         }
         // Cross-section and colour go just after the number: `2,5 BU`.
@@ -513,6 +533,12 @@ pub fn page_drawing(project: &Project, page: PageId) -> Result<Drawing> {
     Ok(d)
 }
 
+/// The block a drawing is inserted from: its symbol's, or for a mirrored drawing the mirrored
+/// copy (`iec.contact_no~m`).
+pub(crate) fn block_name(symbol: &ecad_model::SymbolId, mirrored: bool) -> String {
+    if mirrored { format!("{}~m", symbol.0) } else { symbol.0.clone() }
+}
+
 /// Location boxes: a dashed rectangle with its label above the top-left corner.
 fn draw_boxes(d: &mut Drawing, project: &Project, page: PageId) -> Result<()> {
     let layer = on(LAYER_BOXES);
@@ -555,17 +581,37 @@ fn cable_mark(route: &[Point]) -> Option<(Point, bool)> {
     Some((at, seg[0].x == seg[1].x))
 }
 
+/// Marks for a cable's wires all at one height, so that the dashed line joining them runs
+/// straight: a third of the way down the stretch where every wire runs vertically, if there is
+/// one.
+fn common_cable_marks(routes: &[Vec<Point>]) -> Option<Vec<(Point, bool)>> {
+    let len = |s: &[Point]| (s[1].y - s[0].y).abs();
+    let longest: Vec<&[Point]> = routes
+        .iter()
+        .map(|r| r.windows(2).filter(|s| s[0].x == s[1].x).max_by(|a, b| len(a).total_cmp(&len(b))))
+        .collect::<Option<_>>()?;
+    let lo = longest.iter().map(|s| s[0].y.min(s[1].y)).fold(f64::MIN, f64::max);
+    let hi = longest.iter().map(|s| s[0].y.max(s[1].y)).fold(f64::MAX, f64::min);
+    if hi - lo < 2.0 {
+        return None;
+    }
+    let y = hi - (hi - lo) / 3.0;
+    Some(longest.iter().map(|s| (Point::new(s[0].x, y), true)).collect())
+}
+
 /// Cables: a short slash across each wire that runs in one, a dashed line joining the slashes
 /// of the same cable on the page, and the cable's tag and type beside the first slash
 /// (`-WM10A 4x2,5 SCH`).
 fn draw_cables(d: &mut Drawing, project: &Project, page: PageId) -> Result<()> {
     let layer = on(LAYER_WIRES);
     for cable in project.cables.values() {
-        let mut marks: Vec<(Point, bool)> = project
+        let routes: Vec<Vec<Point>> = project
             .connections_on(page)
             .filter(|c| c.spec.cable.as_ref().is_some_and(|k| k.cable == cable.id))
-            .filter_map(|c| project.route(c).ok().and_then(|r| cable_mark(&r)))
+            .filter_map(|c| project.route(c).ok())
             .collect();
+        let mut marks: Vec<(Point, bool)> =
+            common_cable_marks(&routes).unwrap_or_else(|| routes.iter().filter_map(|r| cable_mark(r)).collect());
         if marks.is_empty() {
             continue;
         }

@@ -65,6 +65,8 @@ pub enum Key {
     Delete,
     /// Rotate the selected symbol a quarter turn counter-clockwise.
     Rotate,
+    /// Flip the selected symbol left to right (again to undo the flip).
+    Mirror,
     Undo,
     Redo,
 }
@@ -787,6 +789,16 @@ impl Editor {
                     self.report(r);
                 }
             }
+            Key::Mirror => {
+                if let Some(Selected::Function(f)) = self.selection
+                    && let Ok(func) = self.project.function(f)
+                {
+                    let to = !func.mirrored;
+                    let label = format!("{} {}", if to { "Mirror" } else { "Unmirror" }, self.tag_of(f));
+                    let r = self.execute(&label, Command::Mirror { id: f, to });
+                    self.report(r);
+                }
+            }
             Key::Undo => match self.history.undo(&mut self.project) {
                 Ok(Some(label)) => self.changed(format!("Undid: {label}")),
                 Ok(None) => self.status = "Nothing to undo".into(),
@@ -1054,6 +1066,7 @@ impl Editor {
                 designations: self.project.next_designations(device, symbol),
                 // A PLC channel gets the next free address.
                 properties: self.project.new_drawing_properties(symbol),
+                mirrored: false,
             }),
         ]);
         let result = self.execute(&format!("Place {tag}"), cmd);
@@ -1089,6 +1102,7 @@ impl Editor {
             rotation: Rotation::R0,
             designations,
             properties: self.project.new_drawing_properties(symbol),
+            mirrored: false,
         });
         let result = self.execute(&format!("Place {tag}{what}"), cmd);
         if result.is_ok() {

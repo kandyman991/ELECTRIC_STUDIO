@@ -172,7 +172,10 @@ pub fn page_clashes(project: &Project, page: PageId) -> Result<Vec<Clash>> {
             }
             EntityKind::Insert(i) => {
                 let at = pt(i.insert);
-                let owner = functions.iter().find(|f| f.position == at && f.symbol.0 == i.block).map(|f| f.id);
+                let owner = functions
+                    .iter()
+                    .find(|f| f.position == at && crate::block_name(&f.symbol, f.mirrored) == i.block)
+                    .map(|f| f.id);
                 for a in i.attribs.iter().filter(|a| !a.invisible) {
                     if let Some(r) = text_rect(&a.text) {
                         texts.push((a.text.value.clone(), r, owner));

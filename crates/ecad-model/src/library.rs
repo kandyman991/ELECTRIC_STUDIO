@@ -790,6 +790,19 @@ pub fn black_box(id: &str, spec: &BlackBox) -> SymbolDef {
     // A bridge between terminals on the top or bottom: a bus line inside, under their names,
     // with a tick at each; between a top and a bottom terminal in line, a line straight down.
     for group in &spec.bridges {
+        // Between a left and a right terminal on one level, a line across between their names.
+        for (i, name) in spec.left.iter().enumerate() {
+            if let Some(right) = spec.right.get(i).filter(|r| group.contains(*r))
+                && group.contains(name)
+            {
+                let y = -BOX_PITCH * (i as f64 + 1.0);
+                let width = |n: &String| n.chars().count() as f64 * label * 0.8;
+                let (from, to) = (x0 + 1.0 + width(name) + 0.8, x1 - 1.0 - width(right) - 0.8);
+                if from < to {
+                    g.push(line(from, y, to, y));
+                }
+            }
+        }
         for (i, name) in spec.top.iter().enumerate() {
             if group.contains(name) && spec.bottom.get(i).is_some_and(|b| group.contains(b)) {
                 let x = BOX_PITCH * (i as f64 + 1.0);
@@ -922,6 +935,7 @@ mod tests {
             rotation: Default::default(),
             designations: Default::default(),
             properties: Default::default(),
+            mirrored: false,
         })
         .unwrap();
         // Potentials are made of wired points: give each terminal a wire to its own junction.
@@ -938,6 +952,7 @@ mod tests {
                 rotation: Default::default(),
                 designations: Default::default(),
                 properties: Default::default(),
+                mirrored: false,
             })
             .unwrap();
             p.connect(crate::Connection {

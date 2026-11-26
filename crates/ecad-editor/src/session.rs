@@ -246,6 +246,7 @@ pub enum KeyName {
     Escape,
     Delete,
     Rotate,
+    Mirror,
     Undo,
     Redo,
 }
@@ -555,6 +556,7 @@ impl Session {
                 KeyName::Escape => Key::Escape,
                 KeyName::Delete => Key::Delete,
                 KeyName::Rotate => Key::Rotate,
+                KeyName::Mirror => Key::Mirror,
                 KeyName::Undo => Key::Undo,
                 KeyName::Redo => Key::Redo,
             }),

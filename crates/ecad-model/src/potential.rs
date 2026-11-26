@@ -205,6 +205,7 @@ mod tests {
                 rotation: Rotation::R0,
                 designations: Default::default(),
                 properties: Default::default(),
+                mirrored: false,
             };
             let id = f.id;
             p.place(f).unwrap();
