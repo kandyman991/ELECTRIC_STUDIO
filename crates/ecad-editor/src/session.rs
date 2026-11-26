@@ -112,6 +112,21 @@ pub enum UiEvent {
     DescribePage {
         text: String,
     },
+    /// The current page title's second line (e.g. in a second language).
+    SubtitlePage {
+        text: String,
+    },
+    /// The project name and title-block fields, as the project settings show them.
+    ProjectInfo {
+        name: String,
+        info: ecad_model::ProjectInfo,
+    },
+    /// The sheet's columns (numbered from `first_column`, 0 or 1) and lettered rows (0: none).
+    SheetGrid {
+        columns: u32,
+        first_column: u32,
+        rows: u32,
+    },
     /// Move the current page earlier (negative) or later (positive).
     MovePage {
         delta: i32,
@@ -202,6 +217,15 @@ pub struct PageInfo {
     pub id: PageId,
     pub name: String,
     pub description: String,
+    pub subtitle: String,
+}
+
+/// The sheet's grid, for the project settings.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
+pub struct SheetGrid {
+    pub columns: u32,
+    pub first_column: u32,
+    pub rows: u32,
 }
 
 /// What is selected, with the fields the side panel shows and edits.
@@ -288,6 +312,10 @@ pub struct Frame {
     pub parts: Vec<Part>,
     /// All pages in order, and the one shown.
     pub pages: Vec<PageInfo>,
+    /// The project name as the settings edit it (the title adds a `*` when unsaved).
+    pub project_name: String,
+    pub info: ecad_model::ProjectInfo,
+    pub sheet: SheetGrid,
     /// The project's checks, errors first; updated on every change.
     pub checks: Vec<CheckInfo>,
     pub page: PageId,
@@ -488,6 +516,18 @@ impl Session {
             }
             UiEvent::DescribePage { text } => {
                 let r = self.editor.describe_page(&text);
+                self.report(r);
+            }
+            UiEvent::SubtitlePage { text } => {
+                let r = self.editor.subtitle_page(&text);
+                self.report(r);
+            }
+            UiEvent::ProjectInfo { name, info } => {
+                let r = self.editor.set_project_info(&name, info);
+                self.report(r);
+            }
+            UiEvent::SheetGrid { columns, first_column, rows } => {
+                let r = self.editor.set_sheet_grid(columns, first_column, rows);
                 self.report(r);
             }
             UiEvent::MovePage { delta } => {
@@ -843,9 +883,21 @@ impl Session {
             pages: project
                 .pages_in_order()
                 .into_iter()
-                .map(|p| PageInfo { id: p.id, name: p.name.clone(), description: p.description.clone() })
+                .map(|p| PageInfo {
+                    id: p.id,
+                    name: p.name.clone(),
+                    description: p.description.clone(),
+                    subtitle: p.subtitle.clone(),
+                })
                 .collect(),
             page: editor.page(),
+            project_name: project.name.clone(),
+            info: project.info.clone(),
+            sheet: SheetGrid {
+                columns: project.sheet.columns,
+                first_column: project.sheet.first_column,
+                rows: project.sheet.rows,
+            },
             checks: editor
                 .checks()
                 .into_iter()
@@ -1273,6 +1325,33 @@ mod tests {
         assert!(f.status.ends_with("-K2:A1 is not connected"), "{}", f.status);
         s.handle(UiEvent::Key { key: KeyName::Undo });
         assert_eq!(s.frame(None, [0, 0, 0]).checks.len(), before);
+    }
+
+    #[test]
+    fn project_settings_page_subtitles_and_the_sheet_grid_are_undoable() {
+        let (_dir, mut s) = session();
+        let mut info = s.frame(None, [0, 0, 0]).info;
+        info.customer = "Example Foods".into();
+        info.revisions.push(ecad_model::Revision {
+            index: "0".into(),
+            change: "First issue".into(),
+            ..Default::default()
+        });
+        s.handle(UiEvent::ProjectInfo { name: "Panel A".into(), info: info.clone() });
+        s.handle(UiEvent::SubtitlePage { text: "Circuito di avviamento".into() });
+        s.handle(UiEvent::SheetGrid { columns: 8, first_column: 0, rows: 6 });
+        let f = s.frame(None, [0, 0, 0]);
+        assert_eq!((f.project_name.as_str(), &f.info), ("Panel A", &info));
+        assert_eq!(f.pages[0].subtitle, "Circuito di avviamento");
+        assert_eq!((f.sheet.columns, f.sheet.first_column, f.sheet.rows), (8, 0, 6));
+        assert_eq!(s.editor().undo_label(), Some("Sheet columns and rows"));
+        s.handle(UiEvent::SheetGrid { columns: 8, first_column: 0, rows: 30 });
+        assert!(s.frame(None, [0, 0, 0]).status.contains("up to 26 rows"));
+        for _ in 0..3 {
+            s.handle(UiEvent::Key { key: KeyName::Undo });
+        }
+        let f = s.frame(None, [0, 0, 0]);
+        assert_eq!((f.info.customer.as_str(), f.sheet.rows, f.pages[0].subtitle.as_str()), ("", 0, ""));
     }
 
     #[test]

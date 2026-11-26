@@ -142,13 +142,21 @@ pub fn check(project: &Project) -> Vec<Check> {
     overlaps(&mut out);
 
     let order: BTreeMap<PageId, usize> = project.pages_in_order().iter().enumerate().map(|(i, p)| (p.id, i)).collect();
-    let column = |c: &Check| c.location.rsplit('.').next().and_then(|n| n.parse::<u32>().ok()).unwrap_or(0);
+    // Sorted by where they are: column, then row, as a reader scans a page.
+    let place = |c: &Check| {
+        let f = match c.target {
+            Target::Function(f) => Some(f),
+            Target::Connection(id) => project.connection(id).ok().map(|c| c.from.function),
+        };
+        let at = f.and_then(|f| project.function(f).ok()).map_or(Point::ZERO, |f| f.position);
+        (project.sheet.column_of(at), project.sheet.row_of(at).unwrap_or(0))
+    };
     let mut checks = out.checks;
     checks.sort_by(|a, b| {
-        (a.severity, order.get(&a.page), column(a), &a.message).cmp(&(
+        (a.severity, order.get(&a.page), place(a), &a.message).cmp(&(
             b.severity,
             order.get(&b.page),
-            column(b),
+            place(b),
             &b.message,
         ))
     });

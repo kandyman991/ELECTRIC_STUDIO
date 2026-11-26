@@ -320,6 +320,31 @@ mod tests {
     }
 
     #[test]
+    fn references_follow_the_sheet_grid() {
+        let mut p = sample::with_contacts().unwrap();
+        let k1 = p.function(K1_COIL).unwrap().clone();
+        let col = p.sheet.column_of(k1.position);
+        assert_eq!(p.reference(K1_COIL).unwrap(), format!("/1.{col}"));
+        let sheet = Sheet { columns: 8, first_column: 0, rows: 6, ..p.sheet };
+        let undo = p.apply(Command::SetSheet(sheet)).unwrap();
+        let at = p.sheet.address(k1.position);
+        assert!(at.ends_with(|c: char| c.is_ascii_uppercase()), "{at}");
+        assert_eq!(p.reference(K1_COIL).unwrap(), format!("1/{at}"));
+        p.apply(undo).unwrap();
+        assert_eq!(p.sheet.rows, 0);
+        assert_eq!(p.apply(Command::SetSheet(Sheet { columns: 0, ..p.sheet })).unwrap_err(), ModelError::InvalidSheet);
+        let info = ProjectInfo { customer: "Example".into(), ..ProjectInfo::default() };
+        assert_eq!(
+            p.apply(Command::SetProjectInfo { name: " ".into(), info: info.clone() }).unwrap_err(),
+            ModelError::EmptyProjectName
+        );
+        let undo = p.apply(Command::SetProjectInfo { name: "Panel A".into(), info }).unwrap();
+        assert_eq!((p.name.as_str(), p.info.customer.as_str()), ("Panel A", "Example"));
+        p.apply(undo).unwrap();
+        assert_eq!(p.info, ProjectInfo::default());
+    }
+
+    #[test]
     fn plc_channels_are_numbered_per_card_and_addresses_follow_on() {
         let mut p = sample::with_plc().unwrap();
         let channels = |p: &Project| {
