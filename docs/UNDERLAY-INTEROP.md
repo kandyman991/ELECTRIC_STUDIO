@@ -15,7 +15,7 @@ paper from (0, 0)) and land at 1:1 on Electric Studio's sheet; a sheet taller th
 assumed and the import says so. A sheet drawn from its underlay alone matched the PDF of the
 same sheet: frame, grid, symbols, wire numbers, cross-references, title block text.
 
-Three problems this project found, fixed before this record:
+Two problems this project found, fixed before this record:
 
 - The estimate of flattening (which refuses drawings before they are drawn) was 100–1500 ×
   what is drawn, refusing the layout and terminal-strip sheets. It counted hidden attributes
