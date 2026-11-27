@@ -27,6 +27,11 @@ usage:
   ecad import-tia <project-dir> <tags.xlsx>
       Take PLC symbols and comments from a TIA Portal PLC tags export, matched by
       address, and save the project. Tags at other addresses are listed, not added.
+  ecad import-dxf <project-dir> <page> <drawing.dxf|.dwg>
+      Put an existing drawing behind a page (its name, or #n) to redraw over: 1:1 where
+      it was drawn if that is on the sheet, otherwise fitted. Replaces one already there.
+  ecad remove-underlay <project-dir> <page>
+      Take a page's underlay away.
   ecad new-sample <project-dir> [start|contacts|potentials|terminals|plc|power|library|reference]
       Write a sample project (default: start).
   ecad demo <out-dir>
@@ -213,6 +218,28 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             );
             Ok(ExitCode::SUCCESS)
         }
+        ["import-dxf", dir, page, file] => {
+            flags(&[])?;
+            let (project, seen) = ecad_project::load_checked(Path::new(dir)).map_err(|e| e.to_string())?;
+            let page = ecad_editor::script::find_page(&project, page)?;
+            let bytes = std::fs::read(file).map_err(|e| format!("{file}: {e}"))?;
+            let name = Path::new(file).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let mut editor = ecad_editor::Editor::new(project, page).map_err(|e| e.to_string())?;
+            let message = editor.import_underlay(page, &bytes, &name)?;
+            ecad_project::save_checked(editor.project(), Path::new(dir), Some(seen)).map_err(|e| e.to_string())?;
+            println!("{message}");
+            Ok(ExitCode::SUCCESS)
+        }
+        ["remove-underlay", dir, page] => {
+            flags(&[])?;
+            let (project, seen) = ecad_project::load_checked(Path::new(dir)).map_err(|e| e.to_string())?;
+            let page = ecad_editor::script::find_page(&project, page)?;
+            let mut editor = ecad_editor::Editor::new(project, page).map_err(|e| e.to_string())?;
+            editor.remove_underlay(page)?;
+            ecad_project::save_checked(editor.project(), Path::new(dir), Some(seen)).map_err(|e| e.to_string())?;
+            println!("removed the underlay");
+            Ok(ExitCode::SUCCESS)
+        }
         ["new-sample", dir, rest @ ..] if rest.len() <= 1 => {
             flags(&[])?;
             use ecad_model::sample;
@@ -243,7 +270,10 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         [] => Err(format!("no command\n\n{USAGE}")),
-        [cmd, ..] if ["check", "export", "report", "import-tia", "new-sample", "demo"].contains(cmd) => {
+        [cmd, ..]
+            if ["check", "export", "report", "import-tia", "import-dxf", "remove-underlay", "new-sample", "demo"]
+                .contains(cmd) =>
+        {
             Err(format!("wrong arguments for `{cmd}`\n\n{USAGE}"))
         }
         [cmd, ..] => Err(format!("unknown command `{cmd}`\n\n{USAGE}")),

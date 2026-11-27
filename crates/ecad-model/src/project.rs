@@ -350,6 +350,11 @@ pub enum Command {
     SetNaming(crate::Naming),
     /// How wire lengths are estimated.
     SetWireLengthSettings(crate::WireLengthSettings),
+    /// Put an underlay behind a page, change it, or (`None`) take it away.
+    SetUnderlay {
+        page: PageId,
+        underlay: Option<Box<crate::underlay::Underlay>>,
+    },
     /// Put the pages in this order (every page, once).
     ReorderPages(Vec<PageId>),
     /// Make a function part of another device, with the designations it gets there.
@@ -482,6 +487,8 @@ pub enum ModelError {
     NoPanel(String),
     #[error("a plate, rail or duct needs a size above zero")]
     InvalidPanelSize,
+    #[error("an underlay needs a scale above 0 and finite points, at most {} of them", crate::underlay::MAX_POINTS)]
+    InvalidUnderlay,
     #[error("`{0}` is already on a mounting plate")]
     AlreadyOnPanel(String),
     #[error("page `{0}` still has a mounting plate with items on it")]
@@ -553,6 +560,9 @@ pub struct Project {
     /// Rails, ducts and device footprints on the plates.
     #[serde(default)]
     pub panel_items: BTreeMap<PanelItemId, crate::panel::PanelItem>,
+    /// Drawings shown behind pages to redraw over (saved in files of their own).
+    #[serde(skip)]
+    pub underlays: BTreeMap<PageId, crate::underlay::Underlay>,
 }
 
 /// Title-block fields of a project. All free text.
@@ -1058,6 +1068,7 @@ impl Project {
                 if self.functions.values().any(|f| f.page == id)
                     || self.boxes.values().any(|b| b.page == id)
                     || self.panels.contains_key(&id)
+                    || self.underlays.contains_key(&id)
                 {
                     return Err(ModelError::PageNotEmpty(name));
                 }
@@ -1129,6 +1140,17 @@ impl Project {
                 let old_device = std::mem::replace(&mut f.device, device);
                 let old_designations = std::mem::replace(&mut f.designations, designations);
                 Ok(Command::Reassign { id, device: old_device, designations: old_designations })
+            }
+            Command::SetUnderlay { page, underlay } => {
+                self.page(page)?;
+                if underlay.as_ref().is_some_and(|u| !u.is_valid()) {
+                    return Err(ModelError::InvalidUnderlay);
+                }
+                let old = match underlay {
+                    Some(u) => self.underlays.insert(page, *u),
+                    None => self.underlays.remove(&page),
+                };
+                Ok(Command::SetUnderlay { page, underlay: old.map(Box::new) })
             }
             Command::SetPanel { page, panel } => {
                 let name = self.page(page)?.name.clone();

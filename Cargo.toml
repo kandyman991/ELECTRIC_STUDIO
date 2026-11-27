@@ -22,7 +22,7 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 eframe = "0.37"
 rfd = "0.18"
 tempfile = "3"
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 thiserror = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 png = "0.18"

@@ -100,6 +100,33 @@ fn tia_tags_go_out_and_renamed_symbols_come_back() {
 }
 
 #[test]
+fn a_dxf_goes_behind_a_page_and_comes_off_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = sample(dir.path(), "start");
+    // A drawing to trace: one of Electric Studio's own pages, exported as DXF.
+    let out = dir.path().join("out");
+    assert!(ecad(&["export", &start, out.to_str().unwrap(), "--only", "dxf"]).status.success());
+    let dxf = std::fs::read_dir(&out)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.extension().is_some_and(|x| x == "dxf"))
+        .unwrap();
+    let o = ecad(&["import-dxf", &start, "#1", dxf.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains("1:1 as drawn"), "{}", text(&o));
+    let underlays = Path::new(&start).join("underlays");
+    assert_eq!(std::fs::read_dir(&underlays).unwrap().count(), 1);
+    // The check doesn't see it; the export doesn't draw it.
+    assert!(ecad(&["check", &start]).status.success());
+    let o = ecad(&["import-dxf", &start, "Z9", dxf.to_str().unwrap()]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(text(&o).contains("no page `Z9`"), "{}", text(&o));
+    assert!(ecad(&["remove-underlay", &start, "#1"]).status.success());
+    assert_eq!(std::fs::read_dir(&underlays).unwrap().count(), 0);
+    assert_eq!(ecad(&["remove-underlay", &start, "#1"]).status.code(), Some(2));
+}
+
+#[test]
 fn report_prints_one_csv() {
     let dir = tempfile::tempdir().unwrap();
     let plc = sample(dir.path(), "plc");

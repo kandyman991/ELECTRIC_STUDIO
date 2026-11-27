@@ -14,6 +14,7 @@ use std::sync::Arc;
 pub mod clash;
 mod panel;
 mod place;
+pub mod underlay;
 
 use place::{Placer, Side, TagSize};
 
@@ -673,7 +674,9 @@ pub fn page_primitives(project: &Project, page: PageId, background: [u8; 3]) -> 
     let list = cadcraft_render::build(&d, &Space::Model, &Options { tolerance: 0.05, ..Options::default() });
     let bg = cadcraft_doc::color::Rgb(background[0], background[1], background[2]);
     let pt = |p: &cadcraft_doc::geom::Vec2| Point::new(p.x, p.y);
-    let mut out = Vec::with_capacity(list.prims.len());
+    // An underlay first, so the page draws over it.
+    let mut out = underlay::primitives(project, page, background);
+    out.reserve(list.prims.len());
     for prim in &list.prims {
         let c = prim.display_rgb(bg);
         let (start, len) = (prim.start as usize, prim.len as usize);

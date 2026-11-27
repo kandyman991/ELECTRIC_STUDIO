@@ -1219,6 +1219,7 @@ dependencies = [
 name = "ecad-cli"
 version = "0.0.1"
 dependencies = [
+ "ecad-editor",
  "ecad-exchange",
  "ecad-model",
  "ecad-project",

@@ -34,7 +34,7 @@ pub const STAGED: &str = ".ecad-new";
 pub const STALE_LOCK: Duration = Duration::from_secs(120);
 
 /// The folders that hold project files, besides the project folder itself.
-const SUBDIRS: [&str; 2] = ["pages", "symbols"];
+const SUBDIRS: [&str; 3] = ["pages", "symbols", "underlays"];
 
 #[derive(Serialize, Deserialize)]
 struct Journal {

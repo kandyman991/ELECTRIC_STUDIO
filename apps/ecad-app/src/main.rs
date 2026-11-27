@@ -35,6 +35,8 @@ struct App {
     /// Side-panel edit buffers, reset when the selection changes.
     fields: Fields,
     page_fields: PageFields,
+    /// The shown page's underlay placement being edited: (key, x, y, scale).
+    underlay_fields: (Option<String>, f64, f64, f64),
     /// The parts catalogue window.
     show_parts: bool,
     /// Whether the checks panel is open.
@@ -964,6 +966,46 @@ impl App {
         }
     }
 
+    /// The shown page's underlay: import one, or show, place and remove it.
+    fn underlay(&mut self, ui: &mut egui::Ui, frame: &Frame, events: &mut Vec<UiEvent>) {
+        let tip = "An existing drawing (DXF or DWG) shown faintly behind this page, to redraw over. \
+                   Not snapped to, checked or exported.";
+        let Some(u) = &frame.underlay else {
+            if ui.button("Import underlay…").on_hover_text(tip).clicked()
+                && let Some(path) = rfd::FileDialog::new().add_filter("Drawing", &["dxf", "dwg"]).pick_file()
+            {
+                events.push(UiEvent::ImportUnderlay { path });
+            }
+            return;
+        };
+        let key = Some(format!("{:?} {} {} {} {}", frame.page, u.source, u.x, u.y, u.scale));
+        if key != self.underlay_fields.0 {
+            self.underlay_fields = (key, u.x, u.y, u.scale);
+        }
+        ui.horizontal(|ui| {
+            let mut visible = u.visible;
+            if ui.checkbox(&mut visible, format!("Underlay {} ({})", u.source, u.ratio)).on_hover_text(tip).changed() {
+                events.push(UiEvent::ShowUnderlay { visible });
+            }
+            if ui.small_button("Remove").on_hover_text("Take the underlay off this page (undoable)").clicked() {
+                events.push(UiEvent::RemoveUnderlay);
+            }
+        });
+        ui.horizontal(|ui| {
+            let (_, x, y, scale) = &mut self.underlay_fields;
+            ui.label("At");
+            ui.add(egui::DragValue::new(x).speed(1.0).suffix(" mm"));
+            ui.add(egui::DragValue::new(y).speed(1.0).suffix(" mm"));
+            ui.label("Scale");
+            ui.add(egui::DragValue::new(scale).speed(0.01).range(0.001..=1000.0))
+                .on_hover_text("Page mm per drawing unit");
+            let changed = (*x, *y, *scale) != (u.x, u.y, u.scale);
+            if ui.add_enabled(changed, egui::Button::new("Apply")).clicked() {
+                events.push(UiEvent::PlaceUnderlay { x: *x, y: *y, scale: *scale });
+            }
+        });
+    }
+
     fn pages(&mut self, ui: &mut egui::Ui, frame: &Frame) {
         ui.heading("Pages");
         let mut events = Vec::new();
@@ -1005,6 +1047,7 @@ impl App {
                 events.push(UiEvent::MovePage { delta: 1 });
             }
         });
+        self.underlay(ui, frame, &mut events);
         ui.separator();
         if let Some(current) = frame.pages.iter().find(|p| p.id == frame.page) {
             let key = Some(format!("{:?} {} {} {}", current.id, current.name, current.description, current.subtitle));
@@ -1608,6 +1651,7 @@ fn main() -> eframe::Result {
                 size: Vec2::ZERO,
                 fields: Fields::default(),
                 page_fields: PageFields::default(),
+                underlay_fields: (None, 0.0, 0.0, 1.0),
                 show_parts: false,
                 show_checks: false,
                 symbol_filter: String::new(),

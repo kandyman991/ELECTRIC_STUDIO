@@ -22,6 +22,8 @@ pub use view::Viewport;
 
 pub mod script;
 pub mod session;
+mod underlay;
+pub use underlay::ratio;
 pub mod view;
 
 /// Default snapping grid (IEC 4 mm).
@@ -423,6 +425,9 @@ impl Editor {
         // The page's plate and items, and the footprints of the devices that go with it.
         cmds.extend(self.clear_panel_commands(page, &going));
         cmds.extend(going.into_iter().map(Command::RemoveDevice));
+        if self.project.underlays.contains_key(&page) {
+            cmds.push(Command::SetUnderlay { page, underlay: None });
+        }
         cmds.push(Command::RemovePage(page));
         let index = order.iter().position(|p| *p == page).unwrap_or(0);
         let next = if index > 0 { order[index - 1] } else { order[1] };
