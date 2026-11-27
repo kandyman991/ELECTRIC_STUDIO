@@ -127,6 +127,43 @@ fn a_dxf_goes_behind_a_page_and_comes_off_again() {
 }
 
 #[test]
+fn a_dwg_and_chosen_units_go_through_the_worker() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = sample(dir.path(), "start");
+    let out = dir.path().join("out");
+    assert!(ecad(&["export", &start, out.to_str().unwrap(), "--only", "dwg"]).status.success());
+    let dwg = std::fs::read_dir(&out)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.extension().is_some_and(|x| x == "dwg"))
+        .unwrap();
+    // The DWG reader runs only in a worker process: `ecad` starts a copy of itself.
+    let o = ecad(&["import-dxf", &start, "#1", dwg.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains("in mm, 1:1 as drawn"), "{}", text(&o));
+    // Chosen units win over the file's.
+    let o = ecad(&["import-dxf", &start, "#1", dwg.to_str().unwrap(), "--units", "inch"]);
+    assert!(text(&o).contains("in inch as chosen") && text(&o).contains("fitted"), "{}", text(&o));
+    let o = ecad(&["import-dxf", &start, "#1", dwg.to_str().unwrap(), "--units", "furlong"]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(text(&o).contains("unknown unit `furlong`"), "{}", text(&o));
+    assert_eq!(ecad(&["check", &start, "--units", "mm"]).status.code(), Some(2), "--units is only for import-dxf");
+}
+
+#[test]
+fn a_crash_while_reading_a_drawing_costs_only_that_import() {
+    // The worker is this crate's `ecad` program; the test harness can't be one.
+    ecad_view::worker::use_worker(env!("CARGO_BIN_EXE_ecad").into());
+    let e = ecad_view::worker::import_underlay(b"anything", ecad_view::worker::CRASH_FOR_TEST).unwrap_err();
+    assert!(e.to_string().contains("stopped the import worker"), "{e}");
+    // This process carries on, and the next import works.
+    let p = ecad_model::sample::start_circuit().unwrap();
+    let dxf = ecad_view::page_dxf(&p, ecad_model::sample::PAGE_1).unwrap();
+    let imported = ecad_view::worker::import_underlay(dxf.as_bytes(), "page.dxf").unwrap();
+    assert!(imported.shapes.lines.len() > 10);
+}
+
+#[test]
 fn report_prints_one_csv() {
     let dir = tempfile::tempdir().unwrap();
     let plc = sample(dir.path(), "plc");

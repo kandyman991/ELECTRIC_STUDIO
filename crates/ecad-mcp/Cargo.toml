@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 ecad-model = { workspace = true }
 ecad-editor = { workspace = true }
+ecad-view = { workspace = true }
 ecad-project = { workspace = true }
 ecad-reports = { workspace = true }
 ecad-rules = { workspace = true }

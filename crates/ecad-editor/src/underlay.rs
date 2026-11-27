@@ -2,29 +2,75 @@
 
 use crate::Editor;
 use ecad_model::geometry::Point;
-use ecad_model::underlay::Underlay;
+use ecad_model::underlay::{Underlay, Units, UnitsFrom};
 use ecad_model::{Command, PageId};
 use std::sync::Arc;
 
 impl Editor {
-    /// Put a DXF or DWG drawing behind `page`, replacing any there: 1:1 where it was drawn if
-    /// that is on the sheet, otherwise fitted to the sheet. Says how it was placed.
-    pub fn import_underlay(&mut self, page: PageId, bytes: &[u8], name: &str) -> Result<String, String> {
+    /// Put a DXF or DWG file behind `page`: read with a size limit, then as
+    /// [`Editor::import_underlay`]. A file that fails leaves the page as it was.
+    pub fn import_underlay_file(
+        &mut self,
+        page: PageId,
+        path: &std::path::Path,
+        units: Option<Units>,
+    ) -> Result<String, String> {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let bytes = ecad_project::read_bounded(path, ecad_view::underlay::MAX_FILE).map_err(|e| e.to_string())?;
+        self.import_underlay(page, &bytes, &name, units)
+    }
+
+    /// Put a DXF or DWG drawing behind `page`, replacing any there. It is read in a separate
+    /// worker process when the program set one up (`ecad_view::worker`), so a hostile file
+    /// can't take the editor down. `units` overrides the file's own (`$INSUNITS`); without
+    /// either it is taken as millimetres, and the message says so. It is placed at its real
+    /// size where it was drawn if that is on the sheet, otherwise fitted to the sheet. A file
+    /// that fails leaves the page as it was. Says how it was placed.
+    pub fn import_underlay(
+        &mut self,
+        page: PageId,
+        bytes: &[u8],
+        name: &str,
+        units: Option<Units>,
+    ) -> Result<String, String> {
         self.project.page(page).map_err(|e| e.to_string())?;
-        let imported = ecad_view::underlay::import(bytes, name).map_err(|e| e.to_string())?;
+        let imported = ecad_view::worker::import_underlay(bytes, name).map_err(|e| e.to_string())?;
+        let (units, units_from) = match (units, imported.units) {
+            (Some(u), _) => (u, UnitsFrom::Chosen),
+            (None, Some(u)) => (u, UnitsFrom::File),
+            (None, None) => (Units::Millimetres, UnitsFrom::Assumed),
+        };
         let sheet = self.project.sheet;
         let (lo, hi) = (sheet.origin, Point::new(sheet.origin.x + sheet.width, sheet.origin.y + sheet.height));
-        let (at, scale) = Underlay::placement(&imported.shapes, imported.origin, lo, hi);
+        let (at, scale) = Underlay::placement(&imported.shapes, imported.origin, units, lo, hi);
         let points = imported.shapes.points();
-        let underlay =
-            Underlay { source: name.to_owned(), shapes: Arc::new(imported.shapes), at, scale, visible: true };
+        let underlay = Underlay {
+            source: name.to_owned(),
+            shapes: Arc::new(imported.shapes),
+            at,
+            scale,
+            visible: true,
+            units,
+            units_from,
+        };
+        let real = underlay.real_scale();
         let label = format!("Underlay {name}");
         self.execute(&label, Command::SetUnderlay { page, underlay: Some(Box::new(underlay)) })
             .map_err(|e| e.to_string())?;
-        let how =
-            if scale == 1.0 { "1:1 as drawn".to_owned() } else { format!("fitted to the sheet at {}", ratio(scale)) };
+        let how = if (real - 1.0).abs() < 1e-9 {
+            "1:1 as drawn".to_owned()
+        } else {
+            format!("fitted to the sheet at {}", ratio(real))
+        };
         let from = if imported.space == "Model" { String::new() } else { format!(" (layout {})", imported.space) };
-        Ok(format!("Underlay {name}{from}: {points} points, {how}"))
+        let unit = match units_from {
+            UnitsFrom::File => format!("in {}", units.name()),
+            UnitsFrom::Chosen => format!("in {} as chosen", units.name()),
+            UnitsFrom::Assumed => {
+                "units not given in the file, taken as mm (import again choosing its units if not)".to_owned()
+            }
+        };
+        Ok(format!("Underlay {name}{from}: {points} points, {unit}, {how}"))
     }
 
     /// Show or hide `page`'s underlay.
@@ -90,9 +136,12 @@ mod tests {
         let mut e = editor();
         let page = e.page();
         let base = e.base([255, 255, 255]).unwrap().len();
-        let message = e.import_underlay(page, &a_schematic_dxf(), "old-sheet.dxf").unwrap();
+        let message = e.import_underlay(page, &a_schematic_dxf(), "old-sheet.dxf", None).unwrap();
         // Our own A3 page lies on the sheet as drawn.
-        assert!(message.starts_with("Underlay old-sheet.dxf: ") && message.ends_with("1:1 as drawn"), "{message}");
+        assert!(
+            message.starts_with("Underlay old-sheet.dxf: ") && message.ends_with("in mm, 1:1 as drawn"),
+            "{message}"
+        );
         assert!(e.base([255, 255, 255]).unwrap().len() > base + 100);
         assert!(!e.checks().iter().any(|c| c.message.contains("underlay")), "not checked");
         e.show_underlay(page, false).unwrap();
@@ -120,9 +169,47 @@ mod tests {
         let dxf = ecad_view::page_dxf(&big, ecad_model::sample::PAGE_1).unwrap();
         let mut e = editor();
         let page = e.page();
-        let message = e.import_underlay(page, dxf.as_bytes(), "big.dxf").unwrap();
+        let message = e.import_underlay(page, dxf.as_bytes(), "big.dxf", None).unwrap();
         assert!(message.contains("fitted to the sheet at 1:"), "{message}");
-        assert!(e.import_underlay(page, b"not a drawing", "x.dxf").is_err());
+        assert!(e.import_underlay(page, b"not a drawing", "x.dxf", None).is_err());
+    }
+
+    #[test]
+    fn units_given_chosen_or_assumed_decide_the_size() {
+        let mut e = editor();
+        let page = e.page();
+        // Our own DXF says mm; chosen as cm it is ten times the size, so fitted.
+        let dxf = a_schematic_dxf();
+        let m = e.import_underlay(page, &dxf, "a.dxf", Some(Units::Centimetres)).unwrap();
+        assert!(m.contains("in cm as chosen") && m.contains("fitted to the sheet at 1:"), "{m}");
+        let u = &e.project().underlays[&page];
+        assert_eq!((u.units, u.units_from), (Units::Centimetres, UnitsFrom::Chosen));
+        // A file that doesn't say: taken as mm, and the message says so.
+        let text =
+            String::from_utf8(dxf).unwrap().replacen("$INSUNITS\r\n 70\r\n4\r\n", "$INSUNITS\r\n 70\r\n0\r\n", 1);
+        assert!(text.contains("$INSUNITS\r\n 70\r\n0\r\n"), "the header was changed");
+        let m = e.import_underlay(page, text.as_bytes(), "b.dxf", None).unwrap();
+        assert!(m.contains("units not given in the file, taken as mm"), "{m}");
+        assert_eq!(e.project().underlays[&page].units_from, UnitsFrom::Assumed);
+    }
+
+    #[test]
+    fn a_file_too_big_or_broken_leaves_the_page_as_it_was() {
+        let mut e = editor();
+        let page = e.page();
+        e.import_underlay(page, &a_schematic_dxf(), "kept.dxf", None).unwrap();
+        let before = e.project().clone();
+        let dir = tempfile::tempdir().unwrap();
+        // A sparse file just over the limit: refused before it is read.
+        let huge = dir.path().join("huge.dxf");
+        std::fs::File::create(&huge).unwrap().set_len(ecad_view::underlay::MAX_FILE as u64 + 1).unwrap();
+        let err = e.import_underlay_file(page, &huge, None).unwrap_err();
+        assert!(err.contains("too big"), "{err}");
+        let junk = dir.path().join("junk.dxf");
+        std::fs::write(&junk, "not a drawing").unwrap();
+        assert!(e.import_underlay_file(page, &junk, None).is_err());
+        assert_eq!(e.project(), &before);
+        assert_eq!(e.undo_label(), Some("Underlay kept.dxf"));
     }
 
     #[test]

@@ -487,7 +487,11 @@ pub enum ModelError {
     NoPanel(String),
     #[error("a plate, rail or duct needs a size above zero")]
     InvalidPanelSize,
-    #[error("an underlay needs a scale above 0 and finite points, at most {} of them", crate::underlay::MAX_POINTS)]
+    #[error(
+        "an underlay needs a scale above 0, polylines of two points or more within its size, at most {} points, and to stay within {} km of the page",
+        crate::underlay::MAX_POINTS,
+        crate::underlay::MAX_PAGE_COORD / 1e6
+    )]
     InvalidUnderlay,
     #[error("`{0}` is already on a mounting plate")]
     AlreadyOnPanel(String),

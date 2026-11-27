@@ -15,6 +15,11 @@ usage:
   ecad-mcp --help | --version";
 
 fn main() -> ExitCode {
+    // A copy of this program started to read an outside DWG does that and nothing else.
+    if let Some(code) = ecad_view::worker::serve_if_asked() {
+        return ExitCode::from(u8::try_from(code).unwrap_or(2));
+    }
+    ecad_view::worker::use_own_worker();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!("{USAGE}");

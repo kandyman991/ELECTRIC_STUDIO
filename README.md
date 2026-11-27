@@ -37,7 +37,7 @@ ecad check my-project                      # exit 1 on errors
 ecad check my-project --strict             # exit 1 on warnings too
 ecad check my-project --json               # the findings as JSON, each with its page, location and target
 ecad export my-project out --only pdf,reports   # any of pdf, dxf, dwg, png, reports
-ecad import-dxf my-project 3 old-page-3.dxf    # an old drawing behind page 3, to redraw over
+ecad import-dxf my-project 3 old-page-3.dwg     # an old drawing behind page 3, to redraw over
 ecad import-tia my-project tags.xlsx       # PLC symbols and comments renamed in TIA Portal, by address
 ecad report my-project bom > bom.csv       # one report on stdout: wire-list, bom, terminal-diagram,
                                            # plc-io-list, cable-list, table-of-contents,

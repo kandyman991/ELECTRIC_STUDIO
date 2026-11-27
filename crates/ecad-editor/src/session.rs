@@ -158,9 +158,12 @@ pub enum UiEvent {
     WireLengths {
         settings: ecad_model::WireLengthSettings,
     },
-    /// Put a DXF or DWG drawing behind the shown page, to redraw over.
+    /// Put a DXF or DWG drawing behind the shown page, to redraw over. `units` overrides the
+    /// file's own (or the millimetres assumed when it gives none).
     ImportUnderlay {
         path: PathBuf,
+        #[serde(default)]
+        units: Option<ecad_model::underlay::Units>,
     },
     /// Show or hide the shown page's underlay.
     ShowUnderlay {
@@ -466,8 +469,12 @@ pub struct UnderlayInfo {
     pub x: f64,
     pub y: f64,
     pub scale: f64,
-    /// The scale as a ratio, `1:10`.
+    /// The drawing's real scale as a ratio, `1:10`, its units counted.
     pub ratio: String,
+    /// The drawing's units: `mm`, `inch`…
+    pub units: String,
+    /// The file gave no units and millimetres were taken.
+    pub units_assumed: bool,
     pub visible: bool,
 }
 
@@ -785,12 +792,9 @@ impl Session {
                 let r = self.editor.create_black_box(&spec);
                 self.report(r);
             }
-            UiEvent::ImportUnderlay { path } => {
+            UiEvent::ImportUnderlay { path, units } => {
                 let page = self.editor.page();
-                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                let result = std::fs::read(&path)
-                    .map_err(|e| format!("{}: {e}", path.display()))
-                    .and_then(|bytes| self.editor.import_underlay(page, &bytes, &name));
+                let result = self.editor.import_underlay_file(page, &path, units);
                 self.message = Some(result.unwrap_or_else(|e| format!("Import failed: {e}")));
             }
             UiEvent::ShowUnderlay { visible } => {
@@ -1457,7 +1461,9 @@ impl Session {
                 x: u.at.x,
                 y: u.at.y,
                 scale: u.scale,
-                ratio: crate::ratio(u.scale),
+                ratio: crate::ratio(u.real_scale()),
+                units: u.units.name().to_owned(),
+                units_assumed: u.units_from == ecad_model::underlay::UnitsFrom::Assumed,
                 visible: u.visible,
             }),
             sheet: SheetGrid {
@@ -1568,7 +1574,7 @@ mod tests {
         let p = ecad_model::reference::reference_project().unwrap();
         let file = dir.path().join("old.dxf");
         std::fs::write(&file, ecad_view::page_dxf(&p, p.pages_in_order()[2].id).unwrap()).unwrap();
-        s.handle(UiEvent::ImportUnderlay { path: file });
+        s.handle(UiEvent::ImportUnderlay { path: file, units: None });
         let f = s.frame(None, [0, 0, 0]);
         assert!(f.status.starts_with("Underlay old.dxf"), "{}", f.status);
         let u = f.underlay.clone().unwrap();
@@ -1581,7 +1587,7 @@ mod tests {
         assert_eq!(ecad_project::load(dir.path()).unwrap().underlays.len(), 1);
         s.handle(UiEvent::RemoveUnderlay);
         assert!(s.frame(None, [0, 0, 0]).underlay.is_none());
-        s.handle(UiEvent::ImportUnderlay { path: dir.path().join("missing.dxf") });
+        s.handle(UiEvent::ImportUnderlay { path: dir.path().join("missing.dxf"), units: None });
         assert!(s.frame(None, [0, 0, 0]).status.starts_with("Import failed:"));
         // A page with an underlay can still be deleted, and undeleted with it.
         s.handle(UiEvent::Key { key: KeyName::Undo });

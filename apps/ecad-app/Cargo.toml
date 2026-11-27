@@ -12,6 +12,8 @@ path = "src/main.rs"
 
 [dependencies]
 ecad-editor = { workspace = true }
+ecad-model = { workspace = true }
+ecad-view = { workspace = true }
 eframe = { workspace = true }
 rfd = { workspace = true }
 

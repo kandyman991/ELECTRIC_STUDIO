@@ -15,6 +15,7 @@ pub mod clash;
 mod panel;
 mod place;
 pub mod underlay;
+pub mod worker;
 
 use place::{Placer, Side, TagSize};
 

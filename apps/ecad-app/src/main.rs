@@ -37,6 +37,8 @@ struct App {
     page_fields: PageFields,
     /// The shown page's underlay placement being edited: (key, x, y, scale).
     underlay_fields: (Option<String>, f64, f64, f64),
+    /// Units for the next underlay import: `None` takes the file's own.
+    underlay_units: Option<ecad_model::underlay::Units>,
     /// The parts catalogue window.
     show_parts: bool,
     /// Whether the checks panel is open.
@@ -971,11 +973,21 @@ impl App {
         let tip = "An existing drawing (DXF or DWG) shown faintly behind this page, to redraw over. \
                    Not snapped to, checked or exported.";
         let Some(u) = &frame.underlay else {
-            if ui.button("Import underlay…").on_hover_text(tip).clicked()
-                && let Some(path) = rfd::FileDialog::new().add_filter("Drawing", &["dxf", "dwg"]).pick_file()
-            {
-                events.push(UiEvent::ImportUnderlay { path });
-            }
+            ui.horizontal(|ui| {
+                if ui.button("Import underlay…").on_hover_text(tip).clicked()
+                    && let Some(path) = rfd::FileDialog::new().add_filter("Drawing", &["dxf", "dwg"]).pick_file()
+                {
+                    events.push(UiEvent::ImportUnderlay { path, units: self.underlay_units });
+                }
+                let shown = self.underlay_units.map_or("units: from file", |u| u.name());
+                egui::ComboBox::from_id_salt("underlay-units").selected_text(shown).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.underlay_units, None, "units: from file")
+                        .on_hover_text("The file's own units; mm if it gives none");
+                    for u in ecad_model::underlay::Units::ALL {
+                        ui.selectable_value(&mut self.underlay_units, Some(u), u.name());
+                    }
+                });
+            });
             return;
         };
         let key = Some(format!("{:?} {} {} {} {}", frame.page, u.source, u.x, u.y, u.scale));
@@ -984,7 +996,14 @@ impl App {
         }
         ui.horizontal(|ui| {
             let mut visible = u.visible;
-            if ui.checkbox(&mut visible, format!("Underlay {} ({})", u.source, u.ratio)).on_hover_text(tip).changed() {
+            let label =
+                format!("Underlay {} ({}, {}{})", u.source, u.ratio, u.units, if u.units_assumed { "?" } else { "" });
+            let tip = if u.units_assumed {
+                "The file gave no units: taken as mm. Import again choosing its units if not."
+            } else {
+                tip
+            };
+            if ui.checkbox(&mut visible, label).on_hover_text(tip).changed() {
                 events.push(UiEvent::ShowUnderlay { visible });
             }
             if ui.small_button("Remove").on_hover_text("Take the underlay off this page (undoable)").clicked() {
@@ -1628,6 +1647,11 @@ impl eframe::App for App {
 }
 
 fn main() -> eframe::Result {
+    // A copy of this program started to read an outside drawing does that and nothing else.
+    if let Some(code) = ecad_view::worker::serve_if_asked() {
+        std::process::exit(code);
+    }
+    ecad_view::worker::use_own_worker();
     let dir = std::env::args().nth(1).map(PathBuf::from).unwrap_or_else(default_dir);
     let session = match Session::open(&dir) {
         Ok(s) => s,
@@ -1652,6 +1676,7 @@ fn main() -> eframe::Result {
                 fields: Fields::default(),
                 page_fields: PageFields::default(),
                 underlay_fields: (None, 0.0, 0.0, 1.0),
+                underlay_units: None,
                 show_parts: false,
                 show_checks: false,
                 symbol_filter: String::new(),
