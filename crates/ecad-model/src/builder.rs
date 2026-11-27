@@ -30,7 +30,7 @@ impl Builder {
             name: name.into(),
             description: description.into(),
             subtitle: subtitle.into(),
-            order,
+            order: order.into(),
         }))?;
         self.page = id;
         Ok(())

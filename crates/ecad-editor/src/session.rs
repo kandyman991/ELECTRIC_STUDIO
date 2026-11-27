@@ -5,7 +5,7 @@
 
 use crate::view::Viewport;
 use crate::{Editor, Key, Overlay, Primitive, Selected, Tool};
-use ecad_model::{Page, PageId, Part, PartRef, Point, Project, Role, SymbolId};
+use ecad_model::{Page, PageId, Part, PartRef, Point, ProductId, Project, Role, SymbolId};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -224,24 +224,24 @@ pub enum UiEvent {
     AddPart {
         part: Part,
     },
-    /// Replace the catalogue entry with this part's number.
+    /// Replace the catalogue entry with this part's id.
     UpdatePart {
         part: Part,
     },
     /// A part's size, as typed: `45 x 90` or `45 x 90 x 75` (mm), empty to clear.
     PartSize {
-        number: String,
+        product: ProductId,
         size: String,
     },
     /// A part's contact blocks, as typed: `13-14 21-22` or `11-12-14`.
     PartContacts {
-        number: String,
+        product: ProductId,
         contacts: String,
     },
     RemovePart {
-        number: String,
+        product: ProductId,
     },
-    /// Import a CSV catalogue: new part numbers are added, known ones updated.
+    /// Import a CSV catalogue: new parts are added, known ones (same maker and number) updated.
     ImportParts {
         path: PathBuf,
     },
@@ -251,20 +251,20 @@ pub enum UiEvent {
     },
     /// Give the selected symbol's device one of this part (or one more).
     AddDevicePart {
-        number: String,
+        product: ProductId,
     },
     RemoveDevicePart {
-        number: String,
+        product: ProductId,
     },
     SetDevicePartQuantity {
-        number: String,
+        product: ProductId,
         quantity: u32,
     },
     /// On a terminal strip, how a part counts: `terminal` once per terminal, `strip` once for
     /// the strip (end plates, brackets), or a terminal symbol's id once per terminal drawn with
     /// it (PE terminals with `iec.terminal_pe`). See [`DevicePart::count`].
     SetDevicePartCount {
-        number: String,
+        product: ProductId,
         count: String,
     },
     /// Write every report as CSV into this folder.
@@ -423,6 +423,7 @@ pub struct PlcInfo {
 /// A part of the selected device, with its catalogue description.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct DevicePart {
+    pub product: ProductId,
     pub number: String,
     pub quantity: u32,
     /// On a strip: `terminal`, `strip` or a terminal symbol's id (see
@@ -867,12 +868,12 @@ impl Session {
                 let r = self.editor.update_part(part);
                 self.report(r);
             }
-            UiEvent::PartSize { number, size } => match ecad_model::parts::parse_size(&size) {
+            UiEvent::PartSize { product, size } => match ecad_model::parts::parse_size(&size) {
                 Err(bad) => {
                     self.message = Some(format!("`{bad}` isn't a size: write width x height, e.g. 45 x 90 (mm)"))
                 }
                 Ok((width, height, depth)) => {
-                    if let Some(mut part) = self.editor.project().parts.get(&number).cloned()
+                    if let Some(mut part) = self.editor.project().parts.get(&product).cloned()
                         && (part.width, part.height, part.depth) != (width, height, depth)
                     {
                         (part.width, part.height, part.depth) = (width, height, depth);
@@ -881,13 +882,13 @@ impl Session {
                     }
                 }
             },
-            UiEvent::PartContacts { number, contacts } => match ecad_model::parts::parse_blocks(&contacts) {
+            UiEvent::PartContacts { product, contacts } => match ecad_model::parts::parse_blocks(&contacts) {
                 Err(bad) => {
                     self.message =
                         Some(format!("`{bad}` isn't a contact: write 13-14 (NO), 21-22 (NC) or 11-12-14 (CO)"));
                 }
                 Ok(blocks) => {
-                    if let Some(mut part) = self.editor.project().parts.get(&number).cloned()
+                    if let Some(mut part) = self.editor.project().parts.get(&product).cloned()
                         && part.contacts != blocks
                     {
                         part.contacts = blocks;
@@ -896,28 +897,28 @@ impl Session {
                     }
                 }
             },
-            UiEvent::RemovePart { number } => {
-                let r = self.editor.remove_part(&number);
+            UiEvent::RemovePart { product } => {
+                let r = self.editor.remove_part(product);
                 self.report(r);
             }
             UiEvent::ImportParts { path } => self.import_parts(&path),
             UiEvent::ImportTiaTags { path } => self.import_tia_tags(&path),
-            UiEvent::AddDevicePart { number } => {
-                self.edit_device_parts(|parts| match parts.iter_mut().find(|p| p.number == number) {
+            UiEvent::AddDevicePart { product } => {
+                self.edit_device_parts(|parts| match parts.iter_mut().find(|p| p.product == product) {
                     Some(p) => p.quantity += 1,
-                    None => parts.push(PartRef::new(&number, 1)),
+                    None => parts.push(PartRef::to(product, 1)),
                 })
             }
-            UiEvent::RemoveDevicePart { number } => {
-                self.edit_device_parts(|parts| parts.retain(|p| p.number != number))
+            UiEvent::RemoveDevicePart { product } => {
+                self.edit_device_parts(|parts| parts.retain(|p| p.product != product))
             }
-            UiEvent::SetDevicePartQuantity { number, quantity } => self.edit_device_parts(|parts| {
-                if let Some(p) = parts.iter_mut().find(|p| p.number == number) {
+            UiEvent::SetDevicePartQuantity { product, quantity } => self.edit_device_parts(|parts| {
+                if let Some(p) = parts.iter_mut().find(|p| p.product == product) {
                     p.quantity = quantity;
                 }
             }),
-            UiEvent::SetDevicePartCount { number, count } => self.edit_device_parts(|parts| {
-                if let Some(p) = parts.iter_mut().find(|p| p.number == number) {
+            UiEvent::SetDevicePartCount { product, count } => self.edit_device_parts(|parts| {
+                if let Some(p) = parts.iter_mut().find(|p| p.product == product) {
                     (p.per_strip, p.only) = match count.as_str() {
                         "terminal" => (false, None),
                         "strip" => (true, None),
@@ -992,11 +993,15 @@ impl Session {
     }
 
     pub fn save(&mut self) {
+        let upgrade = ecad_project::upgrade_note(&self.dir);
         self.message = Some(match ecad_project::save_checked(self.editor.project(), &self.dir, self.seen) {
             Ok(seen) => {
                 self.seen = Some(seen);
                 self.editor.mark_saved();
-                format!("Saved to {}", self.dir.display())
+                match upgrade {
+                    Some(note) => format!("Saved to {}: {note}", self.dir.display()),
+                    None => format!("Saved to {}", self.dir.display()),
+                }
             }
             Err(e @ ecad_project::ProjectError::Changed(_)) => {
                 format!(
@@ -1282,7 +1287,8 @@ impl Session {
                         .parts
                         .iter()
                         .map(|r| DevicePart {
-                            number: r.number.clone(),
+                            product: r.product,
+                            number: project.parts.get(&r.product).map(|p| p.number.clone()).unwrap_or_default(),
                             quantity: r.quantity,
                             count: match (&r.only, r.per_strip) {
                                 (_, true) => "strip".into(),
@@ -1291,7 +1297,7 @@ impl Session {
                             },
                             description: project
                                 .parts
-                                .get(&r.number)
+                                .get(&r.product)
                                 .map(|p| p.description.clone())
                                 .unwrap_or_default(),
                         })
@@ -1396,7 +1402,11 @@ impl Session {
                 items.sort_by(|a, b| (&a.category, &a.description).cmp(&(&b.category, &b.description)));
                 items
             },
-            parts: project.parts.values().cloned().collect(),
+            parts: {
+                let mut parts: Vec<Part> = project.parts.values().cloned().collect();
+                parts.sort_by(|a, b| a.number.cmp(&b.number).then_with(|| a.key().cmp(&b.key())));
+                parts
+            },
             contact_palette: project
                 .symbols
                 .values()
@@ -1889,17 +1899,18 @@ mod tests {
         assert!(s.frame(None, [0, 0, 0]).status.starts_with("Nothing new"));
 
         // Select -K1 and give it two auxiliary blocks.
+        let aux = s.editor.project().part_by_number("EX-AUX-1NO1NC").unwrap().id;
         let (x, y) = s.view().to_screen(Point::new(2.0, 12.0));
         s.handle(UiEvent::PointerDown { x, y, button: Button::Primary });
         s.handle(UiEvent::PointerUp { x, y, button: Button::Primary });
-        s.handle(UiEvent::AddDevicePart { number: "EX-AUX-1NO1NC".into() });
-        s.handle(UiEvent::AddDevicePart { number: "EX-AUX-1NO1NC".into() });
+        s.handle(UiEvent::AddDevicePart { product: aux });
+        s.handle(UiEvent::AddDevicePart { product: aux });
         let Some(SelectionInfo::Device { parts, .. }) = s.frame(None, [0, 0, 0]).selection else { panic!() };
         let summary: Vec<(String, u32)> = parts.iter().map(|p| (p.number.clone(), p.quantity)).collect();
         assert_eq!(summary, [("EX-CT-24DC".to_owned(), 1), ("EX-AUX-1NO1NC".to_owned(), 2)]);
-        s.handle(UiEvent::SetDevicePartQuantity { number: "EX-AUX-1NO1NC".into(), quantity: 1 });
-        s.handle(UiEvent::RemovePart { number: "EX-AUX-1NO1NC".into() });
-        assert_eq!(s.frame(None, [0, 0, 0]).status, "part `EX-AUX-1NO1NC` is used by -K1");
+        s.handle(UiEvent::SetDevicePartQuantity { product: aux, quantity: 1 });
+        s.handle(UiEvent::RemovePart { product: aux });
+        assert_eq!(s.frame(None, [0, 0, 0]).status, "part `Example EX-AUX-1NO1NC` is used by -K1");
 
         let out = dir.path().join("reports");
         s.handle(UiEvent::ExportReports { path: out.clone() });

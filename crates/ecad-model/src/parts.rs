@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 /// A catalogue entry: something that can be ordered.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Part {
-    /// Manufacturer's order number, unique in the catalogue, e.g. `3RT2015-1BB41`.
+    /// The product's identity (D7): never its number or maker, which are properties.
+    pub id: crate::ProductId,
+    /// Manufacturer's order number, e.g. `3RT2015-1BB41`. Unique per manufacturer.
     pub number: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub manufacturer: String,
@@ -26,6 +28,37 @@ pub struct Part {
     pub height: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub depth: Option<f64>,
+}
+
+impl Part {
+    /// A product with only a number, with the id [`crate::ProductId::for_number`] gives it.
+    pub fn new(number: &str) -> Self {
+        Part {
+            id: crate::ProductId::for_number(number),
+            number: number.trim().to_owned(),
+            manufacturer: String::new(),
+            description: String::new(),
+            code: String::new(),
+            contacts: Vec::new(),
+            width: None,
+            height: None,
+            depth: None,
+        }
+    }
+
+    /// What makes a product unique besides its id: manufacturer (case ignored) and number.
+    pub fn key(&self) -> (String, String) {
+        (self.manufacturer.trim().to_lowercase(), self.number.trim().to_owned())
+    }
+
+    /// How a product is named in messages: `Example EX-CT-9`, or just the number.
+    pub fn label(&self) -> String {
+        if self.manufacturer.is_empty() {
+            self.number.clone()
+        } else {
+            format!("{} {}", self.manufacturer, self.number)
+        }
+    }
 }
 
 /// A part's width, height and depth in mm, each optional.
@@ -99,7 +132,8 @@ pub fn parse_blocks(text: &str) -> Result<Vec<String>, String> {
 /// A part used by a device, e.g. a contactor plus its auxiliary block.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartRef {
-    pub number: String,
+    /// The product, by id. Files keep its number beside it, for people reading them.
+    pub product: crate::ProductId,
     #[serde(default = "one", skip_serializing_if = "is_one")]
     pub quantity: u32,
     /// On a terminal strip or connector, parts normally count once per terminal; this one counts
@@ -122,8 +156,15 @@ fn is_one(q: &u32) -> bool {
 }
 
 impl PartRef {
+    /// The product with the id [`crate::ProductId::for_number`] gives `number`: the products of
+    /// a format 1 project and of the built-in samples.
     pub fn new(number: &str, quantity: u32) -> Self {
-        PartRef { number: number.to_owned(), quantity, per_strip: false, only: None }
+        PartRef::to(crate::ProductId::for_number(number), quantity)
+    }
+
+    /// `quantity` of `product`.
+    pub fn to(product: crate::ProductId, quantity: u32) -> Self {
+        PartRef { product, quantity, per_strip: false, only: None }
     }
 
     /// A part counted once for a whole strip, not per terminal.
@@ -147,16 +188,7 @@ mod size_tests {
         assert_eq!(parse_size("6,4×90*87"), Ok((Some(6.4), Some(90.0), Some(87.0))));
         assert_eq!(parse_size(""), Ok((None, None, None)));
         assert!(parse_size("45").is_err() && parse_size("45 x 0").is_err() && parse_size("a x b").is_err());
-        let p = Part {
-            number: "X".into(),
-            manufacturer: String::new(),
-            description: String::new(),
-            code: String::new(),
-            contacts: Vec::new(),
-            width: Some(6.4),
-            height: Some(90.0),
-            depth: None,
-        };
+        let p = Part { width: Some(6.4), height: Some(90.0), ..Part::new("X") };
         assert_eq!(format_size(&p), "6,4 x 90");
     }
 }

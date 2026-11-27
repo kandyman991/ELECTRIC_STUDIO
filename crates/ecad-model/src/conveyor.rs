@@ -18,6 +18,7 @@
 //! - L1: the cabinet mounting plate.
 
 use crate::Direction::{Down, Up};
+use crate::ProductId;
 use crate::builder::{Builder, F};
 use crate::geometry::{Point, Rotation};
 use crate::library::BlackBox;
@@ -83,11 +84,12 @@ impl Builder {
         contacts: &[&str],
         size: Option<(f64, f64, f64)>,
     ) -> Result<()> {
-        if self.p.parts.contains_key(number) {
+        if self.p.parts.contains_key(&ProductId::for_number(number)) {
             return Ok(());
         }
         self.p
             .apply(Command::AddPart(Part {
+                id: ProductId::for_number(number),
                 number: number.into(),
                 manufacturer: MAKER.into(),
                 description: description.into(),

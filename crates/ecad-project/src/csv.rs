@@ -78,7 +78,8 @@ fn column(header: &[String], names: &[&str]) -> Option<usize> {
     })
 }
 
-/// Parts from a CSV catalogue. The header must have a part-number column (`part number`,
+/// Parts from a CSV catalogue, each with a new id. The same number from two manufacturers is two
+/// parts; the same number twice from one is refused. The header must have a part-number column (`part number`,
 /// `number`, `order number`, `article`…); `manufacturer`, `description`, `code`, `contacts`
 /// (blocks like `13-14 21-22`) and `width`, `height`, `depth` (mm) are optional. Other columns
 /// are ignored.
@@ -116,14 +117,17 @@ pub fn read_parts(text: &str) -> Result<Vec<Part>, CsvError> {
         if n.is_empty() {
             return Err(err(*line, "the part number is empty"));
         }
-        if parts.iter().any(|p| p.number == n) {
+        let maker = get(r, manufacturer);
+        if parts.iter().any(|p| p.number == n && p.manufacturer.to_lowercase() == maker.to_lowercase()) {
             return Err(err(*line, format!("part `{n}` appears twice in the file")));
         }
         let contacts = ecad_model::parts::parse_blocks(&get(r, contacts))
             .map_err(|bad| err(*line, format!("`{bad}` isn't a contact block (write 13-14, 21-22 or 11-12-14)")))?;
+        // A new id: the import matches it to a catalogue product by maker and number.
         parts.push(Part {
+            id: ecad_model::ProductId::new(),
             number: n,
-            manufacturer: get(r, manufacturer),
+            manufacturer: maker,
             description: get(r, description),
             code: get(r, code),
             contacts,
@@ -155,16 +159,13 @@ mod tests {
         assert_eq!(
             parts[0],
             Part {
-                number: "EX-1".into(),
+                id: parts[0].id,
                 manufacturer: "Example".into(),
                 description: "Contactor; 24 V".into(),
-                code: String::new(),
-                contacts: Vec::new(),
-                width: None,
-                height: None,
-                depth: None,
+                ..Part::new("EX-1")
             }
         );
+        assert_ne!(parts[0].id, parts[1].id);
         assert_eq!(parts[1].manufacturer, "");
         let with = read_parts("number,contacts\nK,\"13-14 21-22\"\nR,11-12-14\n").unwrap();
         assert_eq!(with[0].contacts, ["13-14", "21-22"]);
@@ -179,6 +180,8 @@ mod tests {
         assert_eq!(read_parts("Manufacturer,Description\nA,B\n").unwrap_err().line, 1);
         assert_eq!(read_parts("number,description\nX,a\n,b\n").unwrap_err(), err(3, "the part number is empty"));
         assert_eq!(read_parts("order_number\nX\nX\n").unwrap_err(), err(3, "part `X` appears twice in the file"));
+        // The same number from two makers is two parts (D7).
+        assert_eq!(read_parts("number,maker\nX,A\nX,B\n").unwrap().len(), 2);
         assert_eq!(read_parts("").unwrap_err().line, 1);
     }
 }

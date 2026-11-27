@@ -1,0 +1,93 @@
+{
+  "id": "iec.plc_ai",
+  "description": "PLC analog input",
+  "tag_prefix": "-KF",
+  "role": {
+    "type": "PlcChannel",
+    "kind": "AnalogIn"
+  },
+  "hide_point_labels": true,
+  "category": "PLC",
+  "graphics": [
+    {
+      "Line": {
+        "a": {
+          "x": -4.0,
+          "y": -3.0
+        },
+        "b": {
+          "x": 4.0,
+          "y": -3.0
+        }
+      }
+    },
+    {
+      "Line": {
+        "a": {
+          "x": 4.0,
+          "y": -3.0
+        },
+        "b": {
+          "x": 4.0,
+          "y": 3.0
+        }
+      }
+    },
+    {
+      "Line": {
+        "a": {
+          "x": 4.0,
+          "y": 3.0
+        },
+        "b": {
+          "x": -4.0,
+          "y": 3.0
+        }
+      }
+    },
+    {
+      "Line": {
+        "a": {
+          "x": -4.0,
+          "y": 3.0
+        },
+        "b": {
+          "x": -4.0,
+          "y": -3.0
+        }
+      }
+    },
+    {
+      "Line": {
+        "a": {
+          "x": 0.0,
+          "y": 3.0
+        },
+        "b": {
+          "x": 0.0,
+          "y": 6.0
+        }
+      }
+    },
+    {
+      "Text": {
+        "at": {
+          "x": -1.8,
+          "y": -1.25
+        },
+        "height": 2.5,
+        "value": "AI"
+      }
+    }
+  ],
+  "connection_points": [
+    {
+      "name": "1",
+      "at": {
+        "x": 0.0,
+        "y": 6.0
+      },
+      "leaves": "Up"
+    }
+  ]
+}

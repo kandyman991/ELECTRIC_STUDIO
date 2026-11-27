@@ -2,3 +2,4 @@
 crates/ecad-view/tests/golden/** -text
 tests/acceptance/conveyor/expected/** -text
 tests/acceptance/conveyor/pages/** -text
+tests/acceptance/conveyor/format1/** -text

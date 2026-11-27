@@ -1,0 +1,74 @@
+{
+  "format": 1,
+  "name": "Belt conveyor",
+  "sheet": {
+    "origin": {
+      "x": -20.0,
+      "y": -10.0
+    },
+    "width": 420.0,
+    "height": 297.0,
+    "columns": 8,
+    "first_column": 0,
+    "rows": 6
+  },
+  "info": {
+    "customer": "Example Logistics",
+    "plant": "Belt conveyor 3 m",
+    "code": "EX-CONV-1",
+    "designer": "A.B.",
+    "date": "2026-11-27",
+    "revisions": [
+      {
+        "index": "0",
+        "change": "First issue",
+        "date": "2026-11-27",
+        "by": "A.B."
+      }
+    ]
+  },
+  "pages": [
+    {
+      "id": "00000000-0000-0000-0000-000000000100",
+      "name": "1",
+      "description": "Supply and conveyor drive",
+      "subtitle": "Alimentazione e motore nastro",
+      "order": 0
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000101",
+      "name": "2",
+      "description": "24 V DC supply",
+      "subtitle": "Alimentazione 24 V DC",
+      "order": 1
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000102",
+      "name": "3",
+      "description": "Emergency stop",
+      "subtitle": "Arresto di emergenza",
+      "order": 2
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000103",
+      "name": "4",
+      "description": "PLC outputs",
+      "subtitle": "Uscite PLC",
+      "order": 3
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000104",
+      "name": "5",
+      "description": "PLC inputs",
+      "subtitle": "Ingressi PLC",
+      "order": 4
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000105",
+      "name": "L1",
+      "description": "Cabinet layout",
+      "subtitle": "Layout quadro",
+      "order": 5
+    }
+  ]
+}

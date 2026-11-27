@@ -12,6 +12,61 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
+/// The gap between the sort keys of pages added in a row, so a page fits between any two.
+pub const PAGE_STEP: u64 = 1 << 16;
+
+/// Sort keys putting the pages in `order`, changing as few as possible of `old`: the longest run
+/// of pages already in increasing key order keeps its keys, and each other page takes a key
+/// between its neighbours. Only if there is no room between two is every page re-keyed, one
+/// [`PAGE_STEP`] apart.
+pub fn sparse_keys(order: &[PageId], old: &BTreeMap<PageId, u64>) -> BTreeMap<PageId, u64> {
+    let keys: Vec<u64> = order.iter().map(|id| old.get(id).copied().unwrap_or(0)).collect();
+    // Longest strictly increasing subsequence of the keys, O(n log n).
+    let mut tails: Vec<usize> = Vec::new();
+    let mut prev = vec![usize::MAX; keys.len()];
+    for i in 0..keys.len() {
+        let at = tails.partition_point(|&t| keys[t] < keys[i]);
+        if at > 0 {
+            prev[i] = tails[at - 1];
+        }
+        if at == tails.len() {
+            tails.push(i);
+        } else {
+            tails[at] = i;
+        }
+    }
+    let mut keep = vec![false; keys.len()];
+    let mut i = tails.last().copied().unwrap_or(usize::MAX);
+    while i != usize::MAX {
+        keep[i] = true;
+        i = prev[i];
+    }
+    let mut out = BTreeMap::new();
+    let mut lower = 0u64;
+    let mut i = 0;
+    while i < order.len() {
+        if keep[i] {
+            out.insert(order[i], keys[i]);
+            lower = keys[i];
+            i += 1;
+            continue;
+        }
+        // A run of pages to place between `lower` and the next kept key.
+        let end = (i..order.len()).find(|&j| keep[j]).unwrap_or(order.len());
+        let upper = if end < order.len() { keys[end] } else { lower.saturating_add(PAGE_STEP * (end - i + 1) as u64) };
+        let gap = upper.saturating_sub(lower) / (end - i + 1) as u64;
+        if gap == 0 {
+            return order.iter().enumerate().map(|(n, id)| (*id, PAGE_STEP * (n as u64 + 1))).collect();
+        }
+        for (n, id) in order[i..end].iter().enumerate() {
+            out.insert(*id, lower + gap * (n as u64 + 1));
+        }
+        lower += gap * (end - i) as u64;
+        i = end;
+    }
+    out
+}
+
 macro_rules! id_type {
     ($(#[$doc:meta])* $name:ident) => {
         $(#[$doc])*
@@ -48,6 +103,22 @@ id_type!(
     FunctionId
 );
 id_type!(ConnectionId);
+id_type!(
+    /// A product in the project's catalogue (D7). Its manufacturer and order number are
+    /// properties: two makers' products with the same number are two products.
+    ProductId
+);
+
+/// The namespace of ids derived from legacy data (format 1 products, D7).
+const LEGACY: Uuid = Uuid::from_u128(0x6563_6164_2d6c_6567_6163_792d_6964_7300);
+
+impl ProductId {
+    /// The id a product numbered `number` gets when a format 1 project (where numbers were
+    /// unique) is read, and in the built-in samples: the same on every conversion.
+    pub fn for_number(number: &str) -> Self {
+        ProductId(Uuid::new_v5(&LEGACY, format!("product/{}", number.trim()).as_bytes()))
+    }
+}
 id_type!(CableId);
 id_type!(BoxId);
 id_type!(
@@ -68,11 +139,11 @@ pub struct Page {
     pub subtitle: String,
     /// Position in the project; pages are shown sorted by it.
     #[serde(default)]
-    pub order: u32,
+    pub order: u64,
 }
 
 impl Page {
-    pub fn new(name: &str, order: u32) -> Self {
+    pub fn new(name: &str, order: u64) -> Self {
         Page { id: PageId::new(), name: name.to_owned(), description: String::new(), subtitle: String::new(), order }
     }
 }
@@ -360,8 +431,11 @@ pub enum Command {
         page: PageId,
         underlay: Option<Box<crate::underlay::Underlay>>,
     },
-    /// Put the pages in this order (every page, once).
+    /// Put the pages in this order (every page, once). Only the pages that move get a new
+    /// sort key; the others keep theirs (sparse keys, so a page fits between two).
     ReorderPages(Vec<PageId>),
+    /// Give these pages these exact sort keys, leaving the others': how a reorder is undone.
+    SetPageKeys(BTreeMap<PageId, u64>),
     /// Make a function part of another device, with the designations it gets there.
     Reassign {
         id: FunctionId,
@@ -406,7 +480,7 @@ pub enum Command {
     /// Replace a catalogue entry with the same number.
     UpdatePart(Part),
     /// Remove a catalogue entry no device uses.
-    RemovePart(String),
+    RemovePart(ProductId),
     /// Set the parts a device is built from.
     SetDeviceParts {
         id: DeviceId,
@@ -478,6 +552,8 @@ pub enum ModelError {
     UnknownCable(String),
     #[error("part `{0}` is already in the catalogue")]
     DuplicatePart(String),
+    #[error("more than one manufacturer makes a part numbered `{0}`; say which")]
+    AmbiguousPart(String),
     #[error("part `{0}` is not in the catalogue")]
     UnknownPart(String),
     #[error("part `{0}` is used by {1}")]
@@ -551,9 +627,9 @@ pub struct Project {
     /// The sheet every page is drawn on.
     #[serde(default)]
     pub sheet: Sheet,
-    /// The parts catalogue, by part number.
+    /// The parts catalogue (the project's products), by product id.
     #[serde(default)]
-    pub parts: BTreeMap<String, Part>,
+    pub parts: BTreeMap<ProductId, Part>,
     /// What the title block shows besides the project name.
     #[serde(default)]
     pub info: ProjectInfo,
@@ -737,7 +813,7 @@ impl Project {
         let Ok(d) = self.device(device) else { return Vec::new() };
         let mut out = Vec::new();
         for r in &d.parts {
-            let Some(part) = self.parts.get(&r.number) else { continue };
+            let Some(part) = self.parts.get(&r.product) else { continue };
             for copy in 0..r.quantity.max(1) {
                 for block in &part.contacts {
                     let points = crate::parts::block_points(block);
@@ -1144,13 +1220,26 @@ impl Project {
                 if sorted.len() != order.len() || sorted != self.pages.keys().copied().collect::<Vec<_>>() {
                     return Err(ModelError::BadPageOrder);
                 }
-                let old: Vec<PageId> = self.pages_in_order().iter().map(|p| p.id).collect();
-                for (i, id) in order.iter().enumerate() {
-                    if let Some(p) = self.pages.get_mut(id) {
-                        p.order = i as u32;
+                let old: BTreeMap<PageId, u64> = self.pages.values().map(|p| (p.id, p.order)).collect();
+                for (id, key) in sparse_keys(&order, &old) {
+                    if let Some(p) = self.pages.get_mut(&id) {
+                        p.order = key;
                     }
                 }
-                Ok(Command::ReorderPages(old))
+                Ok(Command::SetPageKeys(old))
+            }
+            Command::SetPageKeys(keys) => {
+                if let Some(id) = keys.keys().find(|id| !self.pages.contains_key(id)) {
+                    return Err(ModelError::NoPage(*id));
+                }
+                let old: BTreeMap<PageId, u64> =
+                    keys.keys().filter_map(|id| self.pages.get(id).map(|p| (*id, p.order))).collect();
+                for (id, key) in keys {
+                    if let Some(p) = self.pages.get_mut(&id) {
+                        p.order = key;
+                    }
+                }
+                Ok(Command::SetPageKeys(old))
             }
             Command::Reassign { id, device, designations } => {
                 self.device(device)?;
@@ -1295,37 +1384,30 @@ impl Project {
                 Ok(Command::AddSymbol(symbol))
             }
             Command::AddPart(part) => {
-                finite(&part)?;
-                let part = Part { number: part.number.trim().to_owned(), ..part };
-                if part.number.is_empty() {
-                    return Err(ModelError::EmptyPartNumber);
-                }
-                if self.parts.contains_key(&part.number) {
-                    return Err(ModelError::DuplicatePart(part.number));
-                }
-                let number = part.number.clone();
-                self.parts.insert(number.clone(), part);
-                Ok(Command::RemovePart(number))
+                let part = self.check_part(part, true)?;
+                let id = part.id;
+                self.parts.insert(id, part);
+                Ok(Command::RemovePart(id))
             }
             Command::UpdatePart(part) => {
-                finite(&part)?;
-                let slot =
-                    self.parts.get_mut(&part.number).ok_or_else(|| ModelError::UnknownPart(part.number.clone()))?;
+                let part = self.check_part(part, false)?;
+                let slot = self.parts.get_mut(&part.id).ok_or_else(|| ModelError::UnknownPart(part.number.clone()))?;
                 let old = std::mem::replace(slot, part);
                 Ok(Command::UpdatePart(old))
             }
-            Command::RemovePart(number) => {
+            Command::RemovePart(id) => {
+                let name = self.parts.get(&id).map_or_else(|| id.0.to_string(), Part::label);
                 let mut users: Vec<&str> = self
                     .devices
                     .values()
-                    .filter(|d| d.parts.iter().any(|p| p.number == number))
+                    .filter(|d| d.parts.iter().any(|p| p.product == id))
                     .map(|d| d.tag.as_str())
                     .collect();
                 if !users.is_empty() {
                     users.sort();
-                    return Err(ModelError::PartInUse(number, users.join(", ")));
+                    return Err(ModelError::PartInUse(name, users.join(", ")));
                 }
-                let part = self.parts.remove(&number).ok_or(ModelError::UnknownPart(number))?;
+                let part = self.parts.remove(&id).ok_or(ModelError::UnknownPart(name))?;
                 Ok(Command::AddPart(part))
             }
             Command::SetDeviceParts { id, parts } => {
@@ -1441,10 +1523,45 @@ impl Project {
         Ok(())
     }
 
+    /// A product as it may enter the catalogue: a non-empty number (trimmed), finite sizes, and
+    /// no other product with the same manufacturer and number (the same number from two makers
+    /// is fine). `new`: the id must be free; otherwise it must exist.
+    fn check_part(&self, part: Part, new: bool) -> Result<Part> {
+        finite(&part)?;
+        let part =
+            Part { number: part.number.trim().to_owned(), manufacturer: part.manufacturer.trim().to_owned(), ..part };
+        if part.number.is_empty() {
+            return Err(ModelError::EmptyPartNumber);
+        }
+        if new && self.parts.contains_key(&part.id) {
+            return Err(ModelError::DuplicateId(part.id.0));
+        }
+        let key = part.key();
+        if self.parts.values().any(|other| other.id != part.id && other.key() == key) {
+            return Err(ModelError::DuplicatePart(part.label()));
+        }
+        Ok(part)
+    }
+
+    /// The products numbered `number` (trimmed), by any manufacturer.
+    pub fn parts_numbered(&self, number: &str) -> Vec<&Part> {
+        let number = number.trim();
+        self.parts.values().filter(|p| p.number == number).collect()
+    }
+
+    /// The one product numbered `number`: an error if there is none, or more than one maker's.
+    pub fn part_by_number(&self, number: &str) -> Result<&Part> {
+        match self.parts_numbered(number).as_slice() {
+            [one] => Ok(one),
+            [] => Err(ModelError::UnknownPart(number.trim().to_owned())),
+            _ => Err(ModelError::AmbiguousPart(number.trim().to_owned())),
+        }
+    }
+
     fn check_part_refs(&self, parts: &[PartRef]) -> Result<()> {
         for p in parts {
-            if !self.parts.contains_key(&p.number) {
-                return Err(ModelError::UnknownPart(p.number.clone()));
+            if !self.parts.contains_key(&p.product) {
+                return Err(ModelError::UnknownPart(p.product.0.to_string()));
             }
             if p.quantity == 0 {
                 return Err(ModelError::ZeroQuantity);
@@ -1765,4 +1882,56 @@ fn simplify(points: Vec<Point>) -> Vec<Point> {
         out.push(p);
     }
     out
+}
+
+#[cfg(test)]
+mod page_key_tests {
+    use super::*;
+
+    fn ids(n: u128) -> Vec<PageId> {
+        (1..=n).map(PageId::from_u128).collect()
+    }
+
+    #[test]
+    fn moving_one_page_changes_only_its_key() {
+        let pages = ids(5);
+        let old: BTreeMap<PageId, u64> =
+            pages.iter().enumerate().map(|(i, p)| (*p, PAGE_STEP * (i as u64 + 1))).collect();
+        // Page 5 moved between 1 and 2.
+        let order = vec![pages[0], pages[4], pages[1], pages[2], pages[3]];
+        let new = sparse_keys(&order, &old);
+        let changed: Vec<_> = pages.iter().filter(|p| new[p] != old[p]).collect();
+        assert_eq!(changed, [&pages[4]]);
+        let mut sorted = order.clone();
+        sorted.sort_by_key(|p| new[p]);
+        assert_eq!(sorted, order);
+    }
+
+    #[test]
+    fn without_room_every_page_is_rekeyed_in_order() {
+        let pages = ids(3);
+        let old: BTreeMap<PageId, u64> = [(pages[0], 1), (pages[1], 2), (pages[2], 3)].into();
+        let order = vec![pages[0], pages[2], pages[1]];
+        let new = sparse_keys(&order, &old);
+        let mut sorted = order.clone();
+        sorted.sort_by_key(|p| new[p]);
+        assert_eq!(sorted, order);
+    }
+
+    #[test]
+    fn a_reorder_undoes_to_the_exact_keys() {
+        let mut p = Project::new("t");
+        for (i, name) in ["1", "2", "3"].iter().enumerate() {
+            p.add_page(Page { id: PageId::from_u128(i as u128 + 1), ..Page::new(name, PAGE_STEP * (i as u64 + 1)) });
+        }
+        let before = p.clone();
+        let order = vec![PageId::from_u128(3), PageId::from_u128(1), PageId::from_u128(2)];
+        let undo = p.apply(Command::ReorderPages(order.clone())).unwrap();
+        assert_eq!(p.pages_in_order().iter().map(|pg| pg.id).collect::<Vec<_>>(), order);
+        assert_eq!(p.pages[&PageId::from_u128(1)].order, PAGE_STEP, "unmoved pages keep their keys");
+        p.apply(undo).unwrap();
+        assert_eq!(p, before);
+        let unknown: BTreeMap<PageId, u64> = [(PageId::from_u128(9), 1)].into();
+        assert_eq!(p.apply(Command::SetPageKeys(unknown)).unwrap_err(), ModelError::NoPage(PageId::from_u128(9)));
+    }
 }
