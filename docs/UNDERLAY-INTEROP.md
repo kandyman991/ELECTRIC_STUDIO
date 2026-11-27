@@ -45,7 +45,7 @@ done
 
 ## Not yet checked
 
-- Drawings from EPLAN, or from the owner's own projects: the real acceptance. Until then,
-  interoperability with them is not claimed.
+- Drawings exported by electrical CAD programs (EPLAN and the like): none were at hand; the
+  owner doesn't use one. The corpus above covers AutoCAD-made DWG and DXF, the usual source.
 - How an underlay looks against its source in the CAD program it came from (only import, sizes
   and units were checked, not a visual comparison).
