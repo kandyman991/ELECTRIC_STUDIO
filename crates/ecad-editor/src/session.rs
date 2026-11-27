@@ -504,6 +504,9 @@ pub struct Session {
     message: Option<String>,
     pending: Option<Pending>,
     closing: bool,
+    /// The folder as last loaded or saved, so a save over someone else's (the MCP server's,
+    /// another window's) is refused rather than lost.
+    seen: Option<ecad_project::Fingerprint>,
 }
 
 fn first_page_editor(project: Project) -> Result<Editor, String> {
@@ -511,15 +514,23 @@ fn first_page_editor(project: Project) -> Result<Editor, String> {
     Editor::new(project, page).map_err(|e| e.to_string())
 }
 
-fn load_editor(dir: &Path) -> Result<Editor, String> {
-    let mut project = ecad_project::load(dir).map_err(|e| e.to_string())?;
+/// Load a project for editing: its first page shown, and library symbols it was made before
+/// added.
+pub fn load_editor(dir: &Path) -> Result<Editor, String> {
+    load_editor_checked(dir).map(|(editor, _)| editor)
+}
+
+/// [`load_editor`], and the folder's fingerprint as loaded, to refuse a later save over
+/// someone else's.
+pub fn load_editor_checked(dir: &Path) -> Result<(Editor, ecad_project::Fingerprint), String> {
+    let (mut project, seen) = ecad_project::load_checked(dir).map_err(|e| e.to_string())?;
     // Projects made before a library symbol existed get it; the project's own copies win.
     for s in ecad_model::library::iec() {
         if !project.symbols.contains_key(&s.id) {
             project.add_symbol(s);
         }
     }
-    first_page_editor(project)
+    Ok((first_page_editor(project)?, seen))
 }
 
 /// An empty project with one page and the starter symbols, named after its folder.
@@ -536,12 +547,12 @@ fn blank_project(dir: &Path) -> Project {
 impl Session {
     /// Open the project in `dir`, or create the sample project there when the folder has none.
     pub fn open(dir: &Path) -> Result<Self, String> {
-        let editor = if dir.join("project.json").exists() {
-            load_editor(dir)?
+        let (editor, seen) = if dir.join("project.json").exists() {
+            load_editor_checked(dir)?
         } else {
             let p = ecad_model::sample::start_circuit().map_err(|e| e.to_string())?;
-            ecad_project::save(&p, dir).map_err(|e| e.to_string())?;
-            first_page_editor(p)?
+            let seen = ecad_project::save_checked(&p, dir, None).map_err(|e| e.to_string())?;
+            (first_page_editor(p)?, seen)
         };
         Ok(Session {
             editor,
@@ -552,6 +563,7 @@ impl Session {
             message: None,
             pending: None,
             closing: false,
+            seen: Some(seen),
         })
     }
 
@@ -893,35 +905,42 @@ impl Session {
                 self.closing = true;
                 Ok(())
             }
-            Pending::Open(path) => load_editor(&path).map(|e| self.replace(e, path)),
+            Pending::Open(path) => load_editor_checked(&path).map(|(e, seen)| self.replace(e, path, seen)),
             Pending::New(path) => {
                 if path.join("project.json").exists() {
                     Err(format!("{} already contains a project; use Open", path.display()))
                 } else {
                     let p = blank_project(&path);
-                    ecad_project::save(&p, &path)
+                    ecad_project::save_checked(&p, &path, None)
                         .map_err(|e| e.to_string())
-                        .and_then(|()| first_page_editor(p))
-                        .map(|e| self.replace(e, path))
+                        .and_then(|seen| Ok((first_page_editor(p)?, seen)))
+                        .map(|(e, seen)| self.replace(e, path, seen))
                 }
             }
         };
         self.report(result);
     }
 
-    fn replace(&mut self, editor: Editor, dir: PathBuf) {
+    fn replace(&mut self, editor: Editor, dir: PathBuf, seen: ecad_project::Fingerprint) {
         self.message = Some(format!("Opened {}", dir.display()));
         self.editor = editor;
+        self.seen = Some(seen);
         self.dir = dir;
         self.panning = None;
         self.fit();
     }
 
     pub fn save(&mut self) {
-        self.message = Some(match ecad_project::save(self.editor.project(), &self.dir) {
-            Ok(()) => {
+        self.message = Some(match ecad_project::save_checked(self.editor.project(), &self.dir, self.seen) {
+            Ok(seen) => {
+                self.seen = Some(seen);
                 self.editor.mark_saved();
                 format!("Saved to {}", self.dir.display())
+            }
+            Err(e @ ecad_project::ProjectError::Changed(_)) => {
+                format!(
+                    "Save failed: {e}. Your changes are still open here: save them to another folder, or reopen to see the other version"
+                )
             }
             Err(e) => format!("Save failed: {e}"),
         });
@@ -1453,6 +1472,29 @@ mod tests {
         s.handle(UiEvent::Save);
         assert!(!s.frame(None, [0, 0, 0]).dirty);
         assert!(ecad_project::load(dir.path()).unwrap().device_by_tag("-K2").is_some());
+    }
+
+    #[test]
+    fn a_save_over_another_programs_save_is_refused_and_keeps_the_changes() {
+        let (dir, mut s) = session();
+        place_coil(&mut s);
+        // Another program (the MCP server) saves the folder meanwhile.
+        let mut theirs = ecad_project::load(dir.path()).unwrap();
+        theirs.name = "Saved elsewhere".into();
+        ecad_project::save(&theirs, dir.path()).unwrap();
+        s.handle(UiEvent::Save);
+        let f = s.frame(None, [0, 0, 0]);
+        assert!(f.status.contains("changed on disk"), "{}", f.status);
+        assert!(f.dirty, "the changes are still here");
+        assert_eq!(ecad_project::load(dir.path()).unwrap().name, "Saved elsewhere");
+        // Saving twice from here, with nobody else in between, works.
+        let (dir2, mut s2) = session();
+        place_coil(&mut s2);
+        s2.handle(UiEvent::Save);
+        place_coil(&mut s2);
+        s2.handle(UiEvent::Save);
+        assert!(!s2.frame(None, [0, 0, 0]).dirty);
+        assert!(ecad_project::load(dir2.path()).unwrap().device_by_tag("-K3").is_some());
     }
 
     #[test]

@@ -13,6 +13,9 @@
 //!
 //! Loading replays everything through the model's commands, so a hand-edited file that breaks
 //! a rule (duplicate tag, wire to a missing point) is rejected with the file named.
+//!
+//! Saving writes the whole folder as one step, one program at a time, and can refuse to save
+//! over someone else's save ([`save_checked`]): see [`store`].
 
 use ecad_model::{
     Cable, Command, Connection, Device, Function, LocationBox, ModelError, Naming, Page, Part, Point, Project,
@@ -20,6 +23,7 @@ use ecad_model::{
 };
 
 pub mod csv;
+pub mod store;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -37,6 +41,10 @@ pub enum ProjectError {
     Format { path: PathBuf, found: u32 },
     #[error("symbol id `{0}` can't be used as a file name (letters, digits, `.`, `_`, `-` only)")]
     BadSymbolId(String),
+    #[error("{0}: the project changed on disk since it was opened (saved by another program?); not saved")]
+    Changed(PathBuf),
+    #[error("{0}: another program is saving this project right now; try again")]
+    Busy(PathBuf),
 }
 
 pub type Result<T> = std::result::Result<T, ProjectError>;
@@ -85,7 +93,7 @@ struct PageFile {
     panel_items: Vec<ecad_model::PanelItem>,
 }
 
-fn io(path: &Path) -> impl FnOnce(std::io::Error) -> ProjectError + '_ {
+pub(crate) fn io(path: &Path) -> impl FnOnce(std::io::Error) -> ProjectError + '_ {
     move |source| ProjectError::Io { path: path.to_owned(), source }
 }
 
@@ -98,14 +106,11 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
     serde_json::from_str(&text).map_err(|source| ProjectError::Json { path: path.to_owned(), source })
 }
 
-fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+fn render_json<T: Serialize>(path: &Path, value: &T) -> Result<Vec<u8>> {
     let mut text =
         serde_json::to_string_pretty(value).map_err(|source| ProjectError::Json { path: path.to_owned(), source })?;
     text.push('\n');
-    // Write next to the target and rename, so a crash never leaves a half-written file.
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, text).map_err(io(&tmp))?;
-    std::fs::rename(&tmp, path).map_err(io(path))
+    Ok(text.into_bytes())
 }
 
 fn symbol_file_name(id: &str) -> Result<String> {
@@ -113,26 +118,9 @@ fn symbol_file_name(id: &str) -> Result<String> {
     if ok { Ok(format!("{id}.json")) } else { Err(ProjectError::BadSymbolId(id.to_owned())) }
 }
 
-/// Remove `*.json` files in `dir` that aren't in `keep`.
-fn remove_stale(dir: &Path, keep: &[String]) -> Result<()> {
-    for entry in std::fs::read_dir(dir).map_err(io(dir))? {
-        let path = entry.map_err(io(dir))?.path();
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_owned();
-        if name.ends_with(".json") && !keep.contains(&name) {
-            std::fs::remove_file(&path).map_err(io(&path))?;
-        }
-    }
-    Ok(())
-}
-
-/// Write the project into `dir` (created if needed). Files for removed pages or symbols are
-/// deleted; nothing else in the folder is touched.
-pub fn save(project: &Project, dir: &Path) -> Result<()> {
-    let (pages_dir, symbols_dir) = (dir.join("pages"), dir.join("symbols"));
-    for d in [dir, &pages_dir, &symbols_dir] {
-        std::fs::create_dir_all(d).map_err(io(d))?;
-    }
-
+/// Every file of a project, as (path inside the folder, contents).
+fn render(project: &Project) -> Result<Vec<(String, Vec<u8>)>> {
+    let mut files = Vec::new();
     let pages: Vec<Page> = project.pages_in_order().into_iter().cloned().collect();
     let head = ProjectFile {
         format: FORMAT,
@@ -143,28 +131,24 @@ pub fn save(project: &Project, dir: &Path) -> Result<()> {
         wire_lengths: project.wire_length_settings,
         pages,
     };
-    write_json(&dir.join("project.json"), &head)?;
+    files.push(("project.json".to_owned(), render_json(Path::new("project.json"), &head)?));
 
     let parts: Vec<&Part> = project.parts.values().collect();
-    write_json(&dir.join("parts.json"), &parts)?;
+    files.push(("parts.json".to_owned(), render_json(Path::new("parts.json"), &parts)?));
 
     let mut cables: Vec<&Cable> = project.cables.values().collect();
     cables.sort_by(|a, b| a.tag.cmp(&b.tag));
-    write_json(&dir.join("cables.json"), &cables)?;
+    files.push(("cables.json".to_owned(), render_json(Path::new("cables.json"), &cables)?));
 
     let mut devices: Vec<&Device> = project.devices.values().collect();
     devices.sort_by(|a, b| a.tag.cmp(&b.tag));
-    write_json(&dir.join("devices.json"), &devices)?;
+    files.push(("devices.json".to_owned(), render_json(Path::new("devices.json"), &devices)?));
 
-    let mut symbol_files = Vec::new();
     for s in project.symbols.values() {
-        let name = symbol_file_name(&s.id.0)?;
-        write_json(&symbols_dir.join(&name), s)?;
-        symbol_files.push(name);
+        let name = format!("symbols/{}", symbol_file_name(&s.id.0)?);
+        let bytes = render_json(Path::new(&name), s)?;
+        files.push((name, bytes));
     }
-    remove_stale(&symbols_dir, &symbol_files)?;
-
-    let mut page_files = Vec::new();
     for page in project.pages.keys() {
         let file = PageFile {
             functions: project.functions_on(*page).cloned().collect(),
@@ -173,15 +157,84 @@ pub fn save(project: &Project, dir: &Path) -> Result<()> {
             panel: project.panels.get(page).copied(),
             panel_items: project.panel_items_on(*page).into_iter().cloned().collect(),
         };
-        let name = format!("{}.json", page.0);
-        write_json(&pages_dir.join(&name), &file)?;
-        page_files.push(name);
+        let name = format!("pages/{}.json", page.0);
+        let bytes = render_json(Path::new(&name), &file)?;
+        files.push((name, bytes));
     }
-    remove_stale(&pages_dir, &page_files)
+    Ok(files)
+}
+
+/// Write the project into `dir` (created if needed). Files for removed pages or symbols are
+/// deleted; nothing else in the folder is touched.
+///
+/// The save is all or nothing: if it stops part way (a full disk, a crash), the folder loads
+/// as the project before the save, or once the save's journal is written, as the project after
+/// it. See [`store`].
+pub fn save(project: &Project, dir: &Path) -> Result<()> {
+    save_checked(project, dir, None).map(|_| ())
+}
+
+/// Save, but only if the folder is still as it was when it had `expected` (a
+/// [`fingerprint`]): another program's save in between is refused with
+/// [`ProjectError::Changed`], and the folder is left alone. Returns the new fingerprint.
+pub fn save_checked(project: &Project, dir: &Path, expected: Option<Fingerprint>) -> Result<Fingerprint> {
+    let files = render(project)?;
+    for d in [dir.to_owned(), dir.join("pages"), dir.join("symbols")] {
+        std::fs::create_dir_all(&d).map_err(io(&d))?;
+    }
+    let _lock = store::Lock::take(dir)?;
+    store::recover(dir)?;
+    if let Some(expected) = expected
+        && fingerprint(dir)? != expected
+    {
+        return Err(ProjectError::Changed(dir.to_owned()));
+    }
+    store::commit(dir, &files)?;
+    fingerprint(dir)
+}
+
+/// What a project folder holds now, to tell whether someone else saved over it: a hash of
+/// every project file's name and contents. An empty or missing folder has one too.
+pub type Fingerprint = u64;
+
+/// The folder's [`Fingerprint`].
+pub fn fingerprint(dir: &Path) -> Result<Fingerprint> {
+    use std::hash::{Hash, Hasher};
+    let mut names = store::project_files(dir)?;
+    names.sort();
+    // The same in every run of this program (fixed keys), which is all a comparison needs.
+    let mut h = std::hash::DefaultHasher::new();
+    for name in names {
+        let path = dir.join(&name);
+        let bytes = std::fs::read(&path).map_err(io(&path))?;
+        name.hash(&mut h);
+        bytes.hash(&mut h);
+    }
+    Ok(h.finish())
+}
+
+/// Load, and the folder's fingerprint as loaded, for a later [`save_checked`]. If another
+/// program saves while this loads, it loads again, so the fingerprint is that of what loaded.
+pub fn load_checked(dir: &Path) -> Result<(Project, Fingerprint)> {
+    let mut before = fingerprint(dir)?;
+    for _ in 0..3 {
+        let project = load(dir)?;
+        let after = fingerprint(dir)?;
+        if after == before {
+            return Ok((project, after));
+        }
+        before = after;
+    }
+    Err(ProjectError::Busy(dir.to_owned()))
 }
 
 /// Read a project folder written by [`save`].
 pub fn load(dir: &Path) -> Result<Project> {
+    // A save that stopped part way is finished (if it got as far as its journal) or undone.
+    if dir.join(store::JOURNAL).exists() || store::has_staged(dir)? {
+        let _lock = store::Lock::take(dir)?;
+        store::recover(dir)?;
+    }
     let path = dir.join("project.json");
     let head: ProjectFile = read_json(&path)?;
     if head.format > FORMAT {
@@ -276,6 +329,128 @@ fn legacy_sheet(project: &Project) -> Sheet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two revisions of one project: `a`, then `b` with a page, its devices and wires gone
+    /// and a device added, so a mix of their files would not load as either.
+    fn two_revisions() -> (Project, Project) {
+        let a = ecad_model::sample::with_plc().unwrap();
+        let mut b = a.clone();
+        let last = b.pages_in_order().last().unwrap().id;
+        let on_last: Vec<_> = b.functions_on(last).map(|f| (f.id, f.device)).collect();
+        let mut cmds: Vec<Command> = on_last.iter().map(|(f, _)| Command::Unplace(*f)).collect();
+        cmds.push(Command::RemovePage(last));
+        b.apply(Command::Batch(cmds)).unwrap();
+        let orphans: Vec<_> = on_last.iter().map(|(_, d)| *d).filter(|d| b.functions_of(*d).next().is_none()).collect();
+        for d in orphans {
+            if b.devices.contains_key(&d) {
+                b.apply(Command::RemoveDevice(d)).unwrap();
+            }
+        }
+        b.apply(Command::AddDevice(ecad_model::Device::new(ecad_model::DeviceId::new(), "-K77", "added"))).unwrap();
+        (a, b)
+    }
+
+    #[test]
+    fn a_save_stopped_at_any_step_loads_as_the_old_or_the_new_project() {
+        let (a, b) = two_revisions();
+        let (a_dir, b_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        save(&a, a_dir.path()).unwrap();
+        save(&b, b_dir.path()).unwrap();
+        let (old, new) = (load(a_dir.path()).unwrap(), load(b_dir.path()).unwrap());
+        assert_ne!(old, new);
+        let (mut saw_old, mut saw_new) = (false, false);
+        for n in 0.. {
+            let dir = tempfile::tempdir().unwrap();
+            save(&a, dir.path()).unwrap();
+            store::FAIL_AT.with(|f| f.set(Some(n)));
+            let result = save(&b, dir.path());
+            store::FAIL_AT.with(|f| f.set(None));
+            if result.is_ok() {
+                assert_eq!(load(dir.path()).unwrap(), new);
+                assert!(n > 5, "the save took {n} steps");
+                break;
+            }
+            // Loading finishes or undoes the save: one whole revision, never a mix.
+            let back = load(dir.path()).unwrap_or_else(|e| panic!("step {n}: {e}"));
+            if back == old {
+                saw_old = true;
+            } else {
+                assert_eq!(back, new, "step {n}");
+                saw_new = true;
+            }
+            assert!(!dir.path().join(store::JOURNAL).exists() && !store::has_staged(dir.path()).unwrap());
+            // And the folder takes the next save.
+            save(&b, dir.path()).unwrap();
+            assert_eq!(load(dir.path()).unwrap(), new);
+        }
+        assert!(saw_old && saw_new, "failures before and after the journal were both tried");
+    }
+
+    #[test]
+    fn a_failure_while_recovering_is_recovered_next_time() {
+        let (a, b) = two_revisions();
+        let dir = tempfile::tempdir().unwrap();
+        save(&a, dir.path()).unwrap();
+        // Stop just after the journal: the files are staged and the save has happened.
+        let staged = store::project_files(dir.path()).unwrap().len();
+        let mut n = 0;
+        loop {
+            store::FAIL_AT.with(|f| f.set(Some(n)));
+            let r = save(&b, dir.path());
+            store::FAIL_AT.with(|f| f.set(None));
+            assert!(r.is_err(), "no step after the journal was found");
+            if dir.path().join(store::JOURNAL).exists() {
+                break;
+            }
+            n += 1;
+            assert!(n < 100 + staged);
+        }
+        // Recovery itself fails at its first step, then succeeds.
+        store::FAIL_AT.with(|f| f.set(Some(0)));
+        assert!(load(dir.path()).is_err());
+        store::FAIL_AT.with(|f| f.set(None));
+        assert_eq!(load(dir.path()).unwrap().device_by_tag("-K77").unwrap().description, "added");
+    }
+
+    #[test]
+    fn a_save_from_a_stale_copy_is_refused_and_a_clean_save_changes_nothing() {
+        let (a, b) = two_revisions();
+        let dir = tempfile::tempdir().unwrap();
+        save(&a, dir.path()).unwrap();
+        let (mine, seen) = load_checked(dir.path()).unwrap();
+        let (_, theirs_seen) = load_checked(dir.path()).unwrap();
+        // Someone else saves first.
+        let after_theirs = save_checked(&b, dir.path(), Some(theirs_seen)).unwrap();
+        let e = save_checked(&mine, dir.path(), Some(seen)).unwrap_err();
+        assert!(matches!(e, ProjectError::Changed(_)), "{e}");
+        assert_eq!(fingerprint(dir.path()).unwrap(), after_theirs, "the folder wasn't touched");
+        assert_eq!(load(dir.path()).unwrap().device_by_tag("-K77").map(|d| d.tag.clone()), Some("-K77".into()));
+        // Saving what is already there writes nothing.
+        let before = std::fs::metadata(dir.path().join("devices.json")).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let again = save_checked(&load(dir.path()).unwrap(), dir.path(), Some(after_theirs)).unwrap();
+        assert_eq!(again, after_theirs);
+        assert_eq!(std::fs::metadata(dir.path().join("devices.json")).unwrap().modified().unwrap(), before);
+    }
+
+    #[test]
+    fn one_saver_at_a_time_and_a_crashed_savers_lock_is_taken_over() {
+        let p = ecad_model::sample::start_circuit().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        save(&p, dir.path()).unwrap();
+        let held = store::Lock::take(dir.path()).unwrap();
+        assert!(matches!(save(&p, dir.path()), Err(ProjectError::Busy(_))));
+        drop(held);
+        save(&p, dir.path()).unwrap();
+        // A lock file from long ago (a crash) doesn't block.
+        let lock = std::fs::File::create(dir.path().join(store::LOCK)).unwrap();
+        let old = std::time::SystemTime::now() - store::STALE_LOCK - std::time::Duration::from_secs(5);
+        lock.set_modified(old).unwrap();
+        drop(lock);
+        save(&p, dir.path()).unwrap();
+        assert!(!dir.path().join(store::LOCK).exists());
+    }
+
     use ecad_model::sample::start_circuit;
 
     #[test]

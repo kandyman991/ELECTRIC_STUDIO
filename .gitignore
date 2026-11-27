@@ -1,2 +1,6 @@
 /target
 /out
+# Left only by a save that was interrupted; cleaned up when the project is opened.
+*.ecad-new
+.ecad-save.json*
+.ecad-lock
