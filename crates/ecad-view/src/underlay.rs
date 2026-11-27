@@ -82,8 +82,8 @@ pub fn import(bytes: &[u8], name: &str) -> Result<Imported> {
             }
             cadcraft_render::Kind::Tris => {
                 let Some(v) = list.tris.get(start..start + len) else { continue };
-                for t in v.chunks_exact(3) {
-                    shapes.fills.push([pt(&t[0]), pt(&t[1]), pt(&t[2])]);
+                for [a, b, c] in v.as_chunks::<3>().0 {
+                    shapes.fills.push([pt(a), pt(b), pt(c)]);
                 }
                 points += len;
             }

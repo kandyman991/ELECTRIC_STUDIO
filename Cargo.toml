@@ -16,7 +16,6 @@ ecad-rules = { path = "crates/ecad-rules" }
 ecad-project = { path = "crates/ecad-project" }
 ecad-editor = { path = "crates/ecad-editor" }
 ecad-exchange = { path = "crates/ecad-exchange" }
-ecad-mcp = { path = "crates/ecad-mcp" }
 # float_roundtrip: saved coordinates read back exactly (projects compare equal after a round trip).
 serde_json = { version = "1", features = ["float_roundtrip"] }
 eframe = "0.37"
