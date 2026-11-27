@@ -1,7 +1,7 @@
 # Machine-centric platform: architecture proposal
 
-**Status: revised after the owner's reviews of D1–D29 and D30–D38 (27 Nov 2026), for the next
-independent review.** Nothing here is implemented. No implementation work (including the component library
+**Status: all architectural decisions D1–D43 resolved with conditions (27 Nov 2026); final
+revision for independent architecture review.** Nothing here is implemented. No implementation work (including the component library
 in draft PR #32) starts until this revision is approved. The decision record, with each
 decision's approved conditions, is at the end: [Decision record](#decision-record). Where an
 approved decision conflicts with what the code does today, section 14 says so.
@@ -122,7 +122,7 @@ Six layers, each with one owner of its facts. Arrows mean "refers to".
 | Machine structure | **Section**: a functional unit, IEC 81346 function aspect (`=CONV.DRV`) | Name, description, parent, order, safety marking | Parent section |
 | | **Location**: where things are installed, IEC 81346 location aspect (`+CAB.P`, `+CONV`) | Name, description, parent, kind (cabinet, plate, door, field, junction box) | Parent location |
 | Requirements | **Requirement**: what a section needs, independent of maker | Kind, typed parameters with units, quantity, optional ETIM mapping | Section, location |
-| Products | **Product**: an orderable item, electrical or mechanical (today's `Part`, extended by #32) | Canonical product id, manufacturer id, order number and aliases, class, technical data, terminal pattern, symbol mapping, 2D geometry | Manufacturer (library items) |
+| Products | **Product**: one neutral schema for every kind (D39): a **generic** definition, a **commercial** product of a manufacturer, or a **custom** (internally made) component; electrical or mechanical (today's `Part`, extended by #32) | Canonical product id, kind, completeness, manufacturer id and order number (commercial), class, technical data, functions, terminal pattern, symbol mapping, 2D geometry | Manufacturer (commercial); the generic definition it realises (optional) |
 | Device instances | **Device**: one installed thing with a tag | Tag, description, assignments, safety marking | Section, location, requirement, products |
 | Connectivity | **Terminal**: a physical connection point of a device, with a persistent `TerminalId` | Designation (editable), side, kind (coil, contact pole, strip side, PLC channel, port) | Device |
 | | **Node**: a logical connection point with no physical terminal, `NodeId`: a junction, a named potential (`L+`, `M`), an interruption pair | Kind, name | — |
@@ -141,6 +141,12 @@ Rules:
 - **Every layer except structure is optional.** A schematic-first project has devices,
   terminals, nodes, wires and drawings only. Sections, locations, requirements and templates
   add to it, and never become a precondition.
+- **Five things kept distinct** (D39):
+  1. an equipment requirement (what is needed);
+  2. a generic product definition (a kind of product, no maker);
+  3. a manufacturer's commercial product;
+  4. a custom or internally manufactured component;
+  5. the installed device that uses one of them.
 - **Requirement versus product.** A requirement is intent and a product is a selection. They
   are never synchronised automatically; validation reports where a selection doesn't meet
   its requirement.
@@ -289,7 +295,7 @@ my-machine/
   modifications.json  modification packages and their states (section 12.7)     new
   baselines/<id>.json baseline manifests: name, kind, state, format, file hashes   new
   objects/<sha256>    immutable content: baseline files, library revisions, assets, issued exports   new
-  .ecad/state.json    hashes of the files as last saved, to detect outside changes (11.8)          new
+  .ecad/state.json    content manifest: every file and referenced object with its hash, committed with the files (11.8)   new
   pages/<id>.json     functions, node drawings, wire graphics, boxes, layout items, CAD geometry
   underlays/<id>.json as today
 ```
@@ -356,11 +362,32 @@ data, and take/refresh into projects. Reconciled with D7 and D37:
 
 **Product model**
 
-1. **One canonical product definition, independent of any manufacturer or source format.** Every
-   product has the same schema, whoever made it and whichever file it came from. A source
-   format maps into the schema and never shapes it.
-   - **Generic products** (no manufacturer: "contactor 9 A, 24 V DC coil") are allowed as
-     placeholders before a selection, and as user-created components (D39).
+1. **One neutral, extensible canonical product schema** (D39) for every product, whoever made it
+   and whichever file it came from. A source format maps into the schema and never shapes
+   it. Each product has a **kind**:
+
+   | Kind | What it is | Complete when |
+   | --- | --- | --- |
+   | **Generic** | A maker-independent definition ("contactor, 9 A AC-3, 24 V DC coil, 1 NO"). Usable to design with before a selection | Never orderable. A device using one is an **unresolved selection** |
+   | **Commercial** | A manufacturer's orderable product | It has an order number; a missing manufacturer is a warning, not a placeholder |
+   | **Custom** | A component made in-house or to the company's own design (a wired sub-panel, a special bracket) | A person marks it complete; it has the company's own article code |
+
+   - Every product is also **complete or a placeholder.** A generic product is always a
+     placeholder. A custom product is a placeholder until marked complete, which keeps
+     unfinished internal definitions distinguishable from finished ones.
+   - **Design generic, select later.** A device may start with a generic product: its id,
+     terminals (from the generic terminal pattern), connectivity and drawings are then
+     designed as usual.
+     - Selecting a commercial or custom product later is a **replacement** (12.6): the same
+       device, terminals reconciled explicitly by a person, and compatibility-checked against
+       the generic definition and the requirement.
+     - Nothing is recreated.
+   - **Unresolved selections** (devices with a generic or placeholder product) are listed:
+     - in the BOM, as "to be selected", never as an orderable line;
+     - by a check;
+     - in release validation, where they are errors.
+   - A commercial product may name the generic definition it realises. Selection then
+     offers products that realise the device's generic definition first.
 2. **Stable identities** (D7):
    - a UUID per product, given when it is first created;
    - a UUID per manufacturer, with name aliases (`ABB`, `ABB S.p.A.`);
@@ -682,7 +709,9 @@ devices and cable routes drawn over it.
 | Numbering | New `numbering.json`; default **sequential** (D22): after deleting `-K2`, the next device is `-K4`, not `-K2` | **Behaviour yes,** on purpose |
 | Per-potential wire numbers on joining | No longer renumbers existing wires; reports `wire-numbers-differ` instead | **Behaviour yes,** on purpose (section 12.2) |
 | MCP `--write` | Removed; MCP clients query, prepare and preview; a person approves the exact transaction in the app (D32) | **Behaviour yes,** on purpose |
-| CLI editing commands | Dry run unless `--apply` and the project allows automation; recorded as CLI automation (11.8) | **Behaviour yes,** on purpose |
+| CLI editing commands | Dry run unless `--apply` within the project's automation scope; consequential changes through `ecad apply <change-set> --expect <fingerprint>`; recorded as CLI automation with scope and results (11.8) | **Behaviour yes,** on purpose |
+| Content manifest | `.ecad/state.json` written with the first format 2 save; a format 1 project has none, so its first open records the state without reporting changes | No |
+| Kinds of existing parts | Today's parts become commercial products: they have order numbers. Those without a manufacturer get a warning, not an unresolved-selection error. A person may mark one generic or custom | No |
 | Library imports | Three-way against each source's last import instead of "a non-empty value replaces" (5.1) | Behaviour yes, for #32's draft only |
 | Verification | Existing data is unverified (D17); only the configured kinds must be verified before release (section 14, item 5) | No |
 | Baselines, change records, modifications, `objects/` | New; a project starts with none | No |
@@ -828,8 +857,8 @@ Provenance and verification are tracked separately (D17).
 - **Actors.** Every history entry and every applied change set records who made it. The
   application assigns the actor; a client never names itself.
   - a person (the user of the app);
-  - **CLI automation:** the operating-system user, host, command line and time. The CLI acts
-    only with explicit authorisation (section 11.8);
+  - **CLI automation:** the operating-system user, host, command line, program version and
+    time, with the operation scope and results (section 11.8);
   - a generator (template instance, regeneration);
   - an import (file, format and hash);
   - an assistant (provider, model, session; the MCP client as it identified itself, recorded
@@ -930,45 +959,99 @@ They use the layers above and need nothing new in the core:
 All of them produce change sets with suggested provenance. None writes to the model
 directly.
 
-### 11.8 Trust boundary
+### 11.8 Trust boundary, CLI automation and outside changes
 
 Approved distinction (D31): AI that the application runs, versus agents that the application
 doesn't control.
 
 | Inside the boundary: enforced | Outside the boundary: detected where possible |
 | --- | --- |
-| The built-in assistant (AI1 onwards) | An agent with the user's own account privileges: a coding agent with a shell, a desktop-control tool, a script |
+| The built-in assistant (AI1 onwards) | An agent with the engineer's own OS account privileges: a coding agent with a shell, a desktop-control tool, a script |
 | MCP clients, through `ecad-mcp` | Direct edits of project files by any program |
 | The app's review and approval panel | A terminal that an agent may be controlling |
-| Trusted CLI automation, authorised explicitly (below) | — |
+| CLI use within the classes below | — |
 
 - **Inside:** actors are assigned by Electric Studio. Assistants and MCP clients can only
   query, prepare and preview. Approval is a person's act in the app, bound to the exact
   transaction (11.3).
-- **Outside:** an agent running with the user's own privileges can do whatever the user can:
-  run the CLI, edit files, operate the app's window.
+  - **No alternative application interface lets an AI or MCP client bypass the approval of
+    its change sets** (D42). An assistant's change set can't be handed to the CLI for
+    applying; its actor travels with it, and only the app's approval panel applies it.
+- **Outside:** an agent running under the engineer's OS account can do whatever the engineer
+  can: run the CLI, edit files, operate the app's window.
   - **Electric Studio doesn't claim to attribute those changes to an actor.**
-  - Stronger enforcement needs OS-level isolation: the agent runs under a separate account
-    with no write access to the project folder, and a person approves in the app under
-    their own account.
-  - This is stated in the documentation and in the MCP setup guide.
-- **Trusted CLI automation stays supported** (scripts, CI). An editing CLI command applies only
-  with explicit authorisation:
-  - the project allows automation (a setting a person turns on in the app);
-  - the command is given `--apply`; without it, every editing command is a dry run.
-  - The change record names the actor `CLI automation` with OS user, host and command line.
-    The data it writes has provenance `Imported` or `Entered` by automation, and stays
-    unverified until a person verifies it.
-  - The setting is a policy for trusted pipelines, not protection against an agent that can
-    change it. That agent is outside the boundary.
-- **Detecting outside changes.** Every save writes a manifest of each file's SHA-256 to
-  `.ecad/state.json`.
-  - On load, files that differ from it, or that are missing or new, are reported as **modified
-    outside Electric Studio**, with an impact report against the last saved state.
-  - The report lists what changed, not who changed it. A person can accept the changes (a
-    change record with actor *external, unknown*) or restore from the last baseline.
-  - This detects changes. It can't prevent them, and a tool that rewrites the manifest too
-    goes undetected.
+  - Stronger isolation needs restricted filesystem permissions and a controlled execution
+    environment: the agent under a separate account, or in a container, with no write
+    access to the project folder, and a person approving in the app under their own
+    account.
+  - This is stated in the documentation and the MCP setup guide.
+
+**Command-line use (D42)** falls into three classes:
+
+| Class | What it can do | How |
+| --- | --- | --- |
+| **Read-only** | Queries, checks, reports, exports, previews, dry runs, archive creation, verification | Always; nothing to authorise |
+| **Trusted automation** | Deterministic batch operations, imports, automated tests, generation, other legitimate engineering automation, within a declared scope | The project's automation setting (allowed operation classes, set by a person in the app) plus `--apply` per run. For consequential modifications: `ecad apply <change-set> --expect <fingerprint>`, which applies an exact, reviewed change set only if the project is still at the expected revision |
+| **AI and MCP** | Proposals only | Through MCP or the built-in assistant; never applied from the CLI |
+
+- **Not a security boundary.** The setting and `--apply` record configuration and the intent
+  to execute. They aren't presented as a security boundary: anything running as the engineer
+  can change the setting. Global operations (renumbering, regeneration of existing content,
+  layout optimisation) and safety-related changes are outside any automation scope. They go
+  through a reviewed change set (`ecad apply ... --expect`) or the app.
+- **Provenance.** Every automated run writes a change record with:
+  - the actor `CLI automation`: OS user, host, command line, program version;
+  - the operation scope;
+  - the change set's hash, when one was applied;
+  - the results: what changed, checks before and after, failures.
+  Data it writes keeps its provenance and is unverified until a person verifies it.
+- **No enterprise authentication** (accounts, tokens, signing services) is introduced at this
+  stage.
+
+**Outside-change detection (D43).** A content manifest, `.ecad/state.json`, lists every
+engineering file and referenced object with its SHA-256 and size.
+
+- **It is updated in the same transaction as the files.** The manifest is a staged file in
+  the store's journal (4.6), so files and manifest always describe the same commit.
+- **It is verified at:**
+  - project opening;
+  - change-set preview and change-set application;
+  - project saving;
+  - baseline verification and restoration;
+  - project archive creation and restoration.
+- **It detects** added, removed and modified engineering files and referenced assets
+  (objects, underlays, issued documents).
+- **Stale change sets are rejected:** a preview or approval made against another project
+  state can't be applied (11.3).
+- **External modifications are never silently overwritten.** A save over files that changed
+  outside Electric Studio is refused, as today's fingerprint check refuses it. The engineer
+  is offered reconciliation.
+- **Controlled reconciliation.** Electric Studio:
+  1. loads the files as they are on disk, read-only;
+  2. validates them through the model (a file that breaks a rule is reported by name);
+  3. shows an impact report against the last committed state.
+  The engineer then either:
+  - accepts the changes as a change record by actor *external, unknown*, after revalidation
+    (checks run, approvals and verifications they touch are invalidated); or
+  - restores the affected files from the last commit's objects, a baseline or an archive.
+- **Missing, damaged and unexpected files:**
+  - missing: reported with what needs it, never recreated from a guess;
+  - damaged (hash mismatch, unreadable, invalid): quarantined, never overwritten;
+  - unexpected (a file that isn't in the manifest and isn't an engineering file the loader
+    knows): listed and ignored, never loaded, never deleted.
+- **Path safety.** Only relative paths inside the project folder are accepted, in manifests,
+  baselines and archives alike. The following are refused:
+  - absolute paths;
+  - `..` segments;
+  - symbolic links or junctions leading outside the folder;
+  - device names and case-only collisions on case-insensitive systems.
+- **Referenced-object integrity.** Every object is checked against its hash when read for use,
+  not only during verification.
+- **What it isn't.** File hashes detect changes; they don't establish who made them.
+  - They don't protect against an attacker who can rewrite both the files and the manifest.
+  - This is external-modification detection, not authentication and not a tamper-proof
+    audit. Both of those would need keys held outside the attacker's reach, which is out of
+    scope.
 
 ## 12. Incremental engineering and as-built preservation
 
@@ -1202,9 +1285,26 @@ An approved modification does not mean the machine has been modified.
 - **Physical status per object follows from it.** An object absent from the latest as-built
   baseline is *not installed yet*. One changed since it is *installed, modification pending*.
   The UI and reports can mark both without storing anything new.
-- **Working on an as-built machine.** Once an as-built baseline exists, every change belongs
-  to the open modification package. A first change with none open asks a person to open one,
-  and nothing is changed until they do (D40).
+- **Working on an as-built machine** (D40).
+  - Once an as-built baseline exists, every **engineering modification** belongs to the open
+    modification package.
+  - With none open, the first such change shows one simple step: title and reason, then
+    *Open package*. Nothing is changed until it is open.
+  - **No package is needed** for reading, searching, viewing, printing or exporting existing
+    documentation, running checks and reports, or changing personal workspace preferences
+    (layout of panels, zoom, recent files). These change no engineering data.
+- **Approval references the exact reviewed revision.**
+  - Approving a package records the hash of its change content and the project fingerprint
+    the person reviewed.
+  - Any later engineering change added to the package **invalidates the approval.** The
+    package returns to *proposed*, and the change record names the change that invalidated
+    it. Non-engineering actions (viewing, printing, preferences) don't.
+  - The same rule holds for every approval and verification (11.4). Each records the content
+    hash of what it covered, and a change to that content invalidates it; approvals of
+    untouched items stay valid.
+  - Release requires a valid approval.
+- **Installed is a separate, explicit confirmation** by a person, after the work was done on
+  the machine. Approval or release never implies it, and the UI shows the two states apart.
 - **One open package per project** (D36). There is no branching, no merging, and no
   concurrent packages.
   - *Cancel:* a person discards the package's changes. It is an explicit global operation with
@@ -1217,6 +1317,8 @@ An approved modification does not mean the machine has been modified.
     crash leaves the package as last saved. On reopening the project an open package is
     restored as open.
   - *Comparison:* at any time against the package's original as-built baseline (12.5).
+- **Kept simple.** A package has one approver step, one release step and one installation
+  confirmation. There are no multi-level sign-off chains, roles or routing.
 
 ## 13. Performance requirements
 
@@ -1251,25 +1353,37 @@ or other complexity is introduced.
   baseline, compare, archive, restore, export, checks on large projects.
   - Cancelling leaves the project as it was. These operations prepare a change set or staged
     files and commit only at the end.
-- **Repeatable regression measurements, under controlled conditions:**
-  - **Deterministic counts on every PR:** instructions executed and bytes allocated for each
-    benchmark, measured under an instruction-counting harness (Valgrind-based). They don't
-    depend on the runner's load, so a change beyond a set percentage is a real regression,
-    reported on the PR.
-  - **Wall-clock and peak memory on a controlled machine:** a dedicated machine (or a
-    dedicated self-hosted runner), with fixed power settings, nothing else running, several
-    repetitions, and median and spread recorded against the previous result. Cold
-    measurements drop the file cache first.
+- **Repeatable regression measurements, under controlled conditions** (D41):
+  - **The controlled platform is the existing Legion development machine**: AMD Ryzen 7 5800H,
+    32 GB RAM, NVIDIA RTX 3070 (8 GB), SSD. No additional hardware or persistent runner is
+    needed.
+    - It is a repeatable reference, **not the minimum supported hardware.**
+  - **Conditions:**
+    - runs only on an otherwise idle machine: no builds, emulators or local AI inference at
+      the same time;
+    - each run records the operating system, the program version and commit, the power
+      configuration, and anything else relevant (governor, on mains, display attached);
+    - several repetitions, with median and spread compared with the previous result;
+    - cold runs drop the file cache first.
+  - **Measured there:** cold and warm times, peak memory, and the representative graphical
+    workloads (rendering, export and layout pages with real assets).
+  - **On every PR in CI:** correctness tests as today, performance smoke tests (the
+    benchmarks run once, on small data, to catch gross regressions and crashes), and
+    deterministic counts (instructions and allocations, under an instruction-counting
+    harness) that don't depend on runner load.
   - **Shared CI runners report wall-clock only as information, never as an unconditional
     merge blocker** (D34). A deterministic-count regression beyond threshold, or a confirmed
-    regression on the controlled machine, needs an explanation in the PR before merging.
+    regression on the Legion, needs an explanation in the PR before merging.
+- **Native Windows application responsiveness** (input latency, redraw while panning and
+  zooming, no stalls during saves or long operations) is a separate acceptance requirement,
+  checked on Windows, not by these benchmarks.
 
 ## 14. Where the approved decisions meet the current code
 
 The review asked for decisions that conflict with implementation evidence to be challenged.
 None needs reversing. These need the stated adjustment, or a decision of their own:
 
-1. **D18 versus MCP `--write` and the CLI** (resolved by D31 and D32).
+1. **D18 versus MCP `--write` and the CLI** (resolved by D31, D32 and D42).
    - **What exists:**
      - `ecad-mcp --write` is a session-wide write permission for whatever client connects.
      - The `ecad` commands (`import-tia`, `import-dxf`, `library add`...) edit projects
@@ -1278,8 +1392,10 @@ None needs reversing. These need the stated adjustment, or a decision of their o
      - `--write` is removed. MCP clients query, prepare and preview; a person approves the
        exact transaction in the app. This breaks today's MCP workflow (docs/MCP.md) on
        purpose.
-     - CLI editing commands become dry runs unless given `--apply` in a project that allows
-       automation, and are recorded as CLI automation (11.8).
+     - CLI use splits into read-only, scoped trusted automation and AI/MCP proposal-only
+       (D42). Editing commands are dry runs unless given `--apply` within the project's
+       automation scope. Consequential changes go through `ecad apply <change-set> --expect
+       <fingerprint>`. All of it is recorded as CLI automation, with scope and results (11.8).
      - No terminal prompt is offered as human approval.
    - **The limit** (11.8): an agent with the user's own privileges is outside the trust
      boundary. Its changes are detected where possible, not attributed or prevented.
@@ -1374,7 +1490,7 @@ conflicting before this revision.
 
 | Requirement | Covered in | Before this revision |
 | --- | --- | --- |
-| Manufacturer-independent canonical product definitions | 5.1 (1) | **Ambiguous:** read as one neutral schema for all sources, with generic products allowed; to confirm (D39) |
+| Manufacturer-independent canonical product definitions | 3, 5.1 (1) | Was ambiguous; **resolved by D39:** one neutral schema; generic, commercial and custom kinds; placeholders; select later without recreating identities |
 | Stable identities for manufacturers, products, revisions, installed devices | 4.1, 5.1 (2) | Covered (manufacturer ids added in the last revision) |
 | Electrical and purely mechanical components | 5.1 (3) | Covered |
 | Typed specifications with units and provenance | 5.1 (4), 11.4 | Covered |
@@ -1419,13 +1535,64 @@ conflicting before this revision.
 | Connectivity independent of geometry; graphics never silently alter semantics | 4.5, 8 | **Implied;** now explicit rules |
 | Full 3D outside initial scope | 8 | Covered |
 
-No conflict remains between the restated requirements and D1–D36, apart from D39's reading of
-"manufacturer-independent".
+No conflict remains between the restated requirements and D1–D43.
+
+## 16. Decided now, and left to the milestones
+
+The review asked for a clear line between architectural decisions that must be settled before
+implementation and details that can be settled within their milestones.
+
+**Settled now (D1–D43).** These shape identities, files, trust and the stability guarantees,
+so changing them later would mean migrating projects or breaking promises:
+
+- the six-layer canonical model and the five product-related distinctions;
+- persistent ids for every entity, including terminals, nodes, products and manufacturers;
+- connectivity independent of drawings;
+- format 2's file set, transactional storage with the content manifest, and the object store;
+- immutable revisions, pinned project copies and three-way updates;
+- the minimal-impact invariant and numbering rules;
+- baselines, engineering states and modification packages;
+- one operation registry and change sets;
+- approval in the app bound to the exact revision;
+- the trust boundary and the CLI classes;
+- provenance separate from verification;
+- template-based, deterministic, incremental generation;
+- model-owned CAD geometry with CADCraft behind the adapter;
+- the importer obligations;
+- the performance method;
+- no Git requirement, with native archive and restore.
+
+**Left to the milestones.** Each is decided in its milestone's PR and reviewed there, within
+the decisions above:
+
+| Detail | Milestone |
+| --- | --- |
+| Exact JSON field names and layouts of the new files | M10 (and each milestone adding a file) |
+| Benchmark thresholds for deterministic counts; repetition counts on the Legion | M7 |
+| The instruction-counting harness and how its results are stored | M7 |
+| Node naming defaults for converted projects | M10 |
+| Default numbering formats and the default page-suffix style | S0 |
+| Which operation classes the automation setting offers; the change-set file format for `ecad apply` | AI0 |
+| Wording and layout of previews, impact reports and the approval panel | AI0, S1 |
+| Archive container details (zip layout, manifest fields); the object-cleanup grace period | S1 |
+| The baseline and package screens; the simple open-a-package step | S1 |
+| Product schema field lists; import profile format; duplicate-similarity rules; which ETIM and BMEcat versions first | M9 |
+| Order in which the requirement kinds of D12 arrive | M11 |
+| Template file format and the first template set's exact contents | M12 |
+| Placement grid rules and page-break details in generation | M13 |
+| The SVG library (against D35's criteria) | C0 |
+| Snap tolerances, grip behaviour, dimension styles | C1 |
+| Generated page layouts (cover, BOM, terminal diagrams) | M14 |
+| Clearance check details; cable route representation | M15 |
+| Ollama models and prompts; the assistant panel | AI1, AI2 |
+
+A milestone that finds one of these needs an architectural change brings it back as a new
+decision instead of settling it alone.
 
 ## Decision record
 
 Reviewed by the owner with an independent technical reviewer on 27 Nov 2026: D1–D28 at
-`ce38394` (D29 added then), D30–D38 at `867d607`.
+`ce38394` (D29 added then), D30–D38 at `867d607`, D39–D43 at `8cdd63e`.
 
 ### Approved, with conditions
 
@@ -1469,6 +1636,11 @@ Reviewed by the owner with an independent technical reviewer on 27 Nov 2026: D1�
 | D36 | Modification packages | One open per project; **cancel, reopen, recovery, comparison** with the original as-built baseline; no branching, merging or concurrent packages | 12.7 |
 | D37 | Original requirements | Restated and reconciled | 5.1, 8, 15 |
 | D38 | Storage and Git | **No Git, LFS or external VCS required;** native archive and restore with completeness and integrity checks; LFS may be recommended; `objects/` excluded only with a verified backup; safe handling of missing, damaged and unreferenced objects; cleanup never deletes referenced content | 4.7 |
+| D39 | Canonical product definitions | One neutral, extensible schema for manufacturer, generic and user-created products; **requirements, generic definitions, commercial products, custom components and installed devices kept distinct;** placeholders distinguishable from completed custom definitions; design generic and select later without recreating identities, connectivity or drawings; replacement and terminal reconciliation explicit and compatibility-checked; **unresolved selections in BOMs and release validation** | 3, 5.1 |
+| D40 | Changes after as-built | Engineering modifications belong to the open package, with a simple step to open one; one open package; **reading, searching, viewing, printing and personal preferences need none;** cancel, recovery, comparison, approval, release and installation confirmation; **approval references the exact reviewed revision and later relevant changes invalidate it;** approved never confused with installed; no needless administration | 12.7 |
+| D41 | Controlled benchmarks | **The Legion development machine** (Ryzen 7 5800H, 32 GB, RTX 3070 8 GB, SSD) as the controlled platform, no extra hardware; idle machine, conditions recorded, no concurrent builds, emulators or AI inference; cold and warm times, peak memory, graphical workloads; CI correctness and performance smoke tests kept; Windows responsiveness a separate acceptance requirement; a reference, not the minimum hardware | 13 |
+| D42 | CLI automation | Read-only, **scoped trusted automation,** and AI/MCP proposal-only kept distinct; setting and `--apply` express configuration and intent, **not a complete security boundary;** batch, import and test automation supported; **exact reviewed change sets applied against an expected revision;** actor, scope and results recorded; no AI or MCP bypass through other interfaces; unrestricted agents outside the boundary; no enterprise authentication yet | 11.8 |
+| D43 | Outside-change detection | Content manifests and hashes; added, removed and modified files and assets detected; **verified at open, preview, apply, save, baseline verification and restoration, archive and restore;** manifests updated transactionally; stale change sets rejected; no silent overwrite; controlled reconciliation and revalidation; missing, damaged and unexpected files, path safety, object integrity defined; **not actor identity, not protection against an attacker who rewrites the manifest, not authentication or tamper-proof audit** | 11.8 |
 
 Also confirmed as foundational: **minimal-impact changes** across all workspaces, generators,
 library updates and AI operations, for unreleased projects too (section 12).
@@ -1479,12 +1651,7 @@ The approved conditions of D1–D29 stand, in particular:
 - retrofit preservation;
 - explicit terminal reconciliation on replacement (12.6).
 
-### Open, raised by this revision
+### Open
 
-| # | Decision | Proposed |
-| --- | --- | --- |
-| D39 | What "manufacturer-independent canonical product definitions" means | One neutral product schema for every source, and generic products (no manufacturer) allowed as placeholders and user components |
-| D40 | Changes after an as-built baseline | Every change belongs to the open modification package; with none open, a person is asked to open one first |
-| D41 | The controlled benchmark machine | A dedicated self-hosted runner, or the owner's machine run by hand before releases; deterministic counts on every PR either way |
-| D42 | CLI automation authorisation | A project setting a person turns on in the app, plus `--apply` per run; recorded as CLI automation |
-| D43 | Outside-change detection | A saved manifest of file hashes (`.ecad/state.json`); differences reported on load, accepted or restored by a person |
+**None.** Every architectural decision raised so far (D1–D43) is resolved with conditions.
+Details left to the milestones are listed in section 16.
