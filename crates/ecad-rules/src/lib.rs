@@ -52,6 +52,11 @@ pub struct Check {
 /// Every rule, with its severity and what it looks for.
 pub const RULES: &[(&str, Severity, &str)] = &[
     ("potential-clash", Severity::Error, "Differently named potentials (L+ and M) are connected"),
+    (
+        "wire-end-missing",
+        Severity::Error,
+        "A wire ends on a connection point its symbol no longer has: the netlist is incomplete",
+    ),
     ("wire-number-shared", Severity::Error, "One wire number is used on two different potentials"),
     (
         "wire-numbers-differ",
@@ -60,6 +65,21 @@ pub const RULES: &[(&str, Severity, &str)] = &[
     ),
     ("unconnected-point", Severity::Warning, "A connection point has no wire"),
     ("junction-unused", Severity::Warning, "A junction joins fewer than three wires"),
+    (
+        "shared-designation",
+        Severity::Warning,
+        "Two drawn points of one device print the same designation (drawn twice, or numbered twice?); they are kept apart until reconciled",
+    ),
+    (
+        "junction-drawn-twice",
+        Severity::Warning,
+        "A junction device is drawn more than once; each drawing is its own junction",
+    ),
+    (
+        "mixed-logical-roles",
+        Severity::Warning,
+        "A device is drawn both as a potential point and as an interruption point",
+    ),
     ("lonely-interruption", Severity::Warning, "An interruption point has no partner with the same name"),
     ("wire-unnumbered", Severity::Warning, "A wire has no number"),
     ("missing-part", Severity::Warning, "A device has no catalogue part, so it is missing from the BOM"),
@@ -155,6 +175,65 @@ fn is_junction(project: &Project, f: FunctionId) -> bool {
         .is_ok_and(|s| s.bridged && s.connection_points.len() > 2)
 }
 
+/// What the derived connectivity couldn't decide (`ecad_model::connectivity`), at the first
+/// drawing of each point involved after the first.
+fn ambiguities(out: &mut Out) {
+    use ecad_model::connectivity::Ambiguity;
+    let c = out.project.connectivity();
+    for a in &c.ambiguities {
+        match a {
+            Ambiguity::SharedDesignation { device, designation, terminals, .. } => {
+                let tag = out.project.device(*device).map(|d| d.tag.clone()).unwrap_or_default();
+                let places: Vec<String> = terminals
+                    .iter()
+                    .filter_map(|t| c.terminals.get(t)?.drawings.first())
+                    .map(|r| out.project.function_location(r.function).unwrap_or_default())
+                    .collect();
+                let message = format!("{tag}:{designation} is drawn at {} as different points", places.join(", "));
+                let firsts: Vec<FunctionId> = terminals
+                    .iter()
+                    .skip(1)
+                    .filter_map(|t| c.terminals.get(t)?.drawings.first())
+                    .map(|r| r.function)
+                    .collect();
+                for f in firsts {
+                    out.at_function("shared-designation", f, message.clone());
+                }
+            }
+            Ambiguity::MixedLogicalRoles { device, node } => {
+                let tag = out.project.device(*device).map(|d| d.tag.clone()).unwrap_or_default();
+                let message = format!("{tag} is drawn both as a potential point and as an interruption point");
+                if let Some(r) = c.nodes.get(node).and_then(|n| n.drawings.first()) {
+                    out.at_function("mixed-logical-roles", r.function, message);
+                }
+            }
+            Ambiguity::JunctionDrawnTwice { device, nodes } => {
+                let tag = out.project.device(*device).map(|d| d.tag.clone()).unwrap_or_default();
+                let message =
+                    format!("Junction {tag} is drawn {} times; each drawing is its own junction", nodes.len());
+                for n in nodes.iter().skip(1) {
+                    if let Some(r) = c.nodes.get(n).and_then(|n| n.drawings.first()) {
+                        out.at_function("junction-drawn-twice", r.function, message.clone());
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Wires whose ends the netlist couldn't resolve.
+fn unresolved_ends(out: &mut Out) {
+    for u in out.project.netlist().unresolved {
+        let tag = out.project.function(u.end.function).ok().and_then(|f| out.project.device(f.device).ok());
+        let message = format!(
+            "A wire ends on {}:{}, which its symbol no longer has",
+            tag.map(|d| d.tag.clone()).unwrap_or_default(),
+            u.end.point
+        );
+        out.at_connection("wire-end-missing", u.wire, message);
+    }
+}
+
 /// Run every check, errors first, then by page and column.
 pub fn check(project: &Project) -> Vec<Check> {
     let mut out = Out { project, checks: Vec::new() };
@@ -162,6 +241,8 @@ pub fn check(project: &Project) -> Vec<Check> {
     wire_numbers(&mut out);
     unconnected(&mut out);
     lonely_interruptions(&mut out);
+    ambiguities(&mut out);
+    unresolved_ends(&mut out);
     for c in project.connections.values() {
         if c.wire_number.is_none() {
             let message = format!("Wire {} – {} has no number", point(project, &c.from), point(project, &c.to));
@@ -489,6 +570,10 @@ mod tests {
                 "panel-overlap",
                 "panel-off-plate",
                 "panel-no-size",
+                "shared-designation",
+                "junction-drawn-twice",
+                "mixed-logical-roles",
+                "wire-end-missing",
             ];
             if !elsewhere.contains(rule) {
                 assert!(found.contains(rule), "{rule} missing from {:#?}", rules(&checks));
@@ -603,5 +688,66 @@ mod tests {
         assert!(r.iter().any(|r| r.contains("-K1 overlaps -K2") || r.contains("-K2 overlaps -K1")), "{r:#?}");
         // The junction still joins three wires: W3, W7 and W8.
         assert!(!r.iter().any(|r| r.starts_with("junction-unused")), "{r:#?}");
+    }
+
+    #[test]
+    fn a_designation_drawn_twice_is_reported_not_merged() {
+        let mut p = sample::with_contacts().unwrap();
+        let k1 = DeviceId::from_u128(0x103);
+        let f = ecad_model::Function {
+            id: FunctionId::new(),
+            device: k1,
+            symbol: ecad_model::SymbolId::new("iec.coil"),
+            page: sample::PAGE_1,
+            position: Point::new(60.0, 90.0),
+            rotation: Default::default(),
+            mirrored: false,
+            designations: Default::default(),
+            properties: Default::default(),
+        };
+        p.place(f).unwrap();
+        let r = rules(&check(&p));
+        let shared: Vec<&String> = r.iter().filter(|r| r.starts_with("shared-designation")).collect();
+        assert_eq!(shared.len(), 2, "A1 and A2: {r:#?}");
+        assert!(shared[0].contains("-K1:A") && shared[0].contains("as different points"), "{shared:?}");
+
+        // A junction device drawn a second time.
+        let mut p = sample::with_potentials().unwrap();
+        let j = p.function(sample::JUNCTION_1).unwrap().clone();
+        p.place(ecad_model::Function { id: FunctionId::new(), position: Point::new(120.0, -8.0), ..j }).unwrap();
+        let r = rules(&check(&p));
+        assert!(r.iter().any(|r| r.starts_with("junction-drawn-twice") && r.contains("drawn 2 times")), "{r:#?}");
+    }
+    #[test]
+    fn a_wire_end_its_symbol_lost_is_an_error() {
+        let mut p = sample::start_circuit().unwrap();
+        let mut coil = p.symbol(&ecad_model::SymbolId::new("iec.coil")).unwrap().clone();
+        coil.connection_points.retain(|cp| cp.name != "A2");
+        p.add_symbol(coil);
+        let checks = check(&p);
+        let missing: Vec<&Check> = checks.iter().filter(|c| c.rule == "wire-end-missing").collect();
+        assert_eq!(missing.len(), 1, "{:#?}", rules(&checks));
+        assert_eq!(missing[0].severity, Severity::Error);
+        assert!(missing[0].message.contains("-K1:A2"), "{}", missing[0].message);
+    }
+
+    #[test]
+    fn a_device_drawn_as_potential_and_interruption_is_reported() {
+        let mut p = sample::start_circuit().unwrap();
+        let l_plus = DeviceId::from_u128(0x101);
+        let f = ecad_model::Function {
+            id: FunctionId::new(),
+            device: l_plus,
+            symbol: ecad_model::SymbolId::new("iec.interruption"),
+            page: sample::PAGE_1,
+            position: Point::new(100.0, 90.0),
+            rotation: Default::default(),
+            mirrored: false,
+            designations: Default::default(),
+            properties: Default::default(),
+        };
+        p.place(f).unwrap();
+        let r = rules(&check(&p));
+        assert!(r.iter().any(|r| r.starts_with("mixed-logical-roles") && r.contains("L+ is drawn both")), "{r:#?}");
     }
 }

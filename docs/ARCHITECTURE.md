@@ -37,7 +37,9 @@ Dependencies point downward only. The core never depends on the UI or on CADCraf
 | Contact table | Under a coil or breaker, one row per pole of each contact: `14 ⌐ 13  3/6C`, the designations around a small NO or NC contact and where it is drawn |
 | Connection point | A designated terminal (`A1`, `13`) with the direction a wire leaves in |
 | Connection | A wire between two connection points, with wire number, cross-section, colour |
-| Potential | Calculated from the wiring: points joined by wires, inside junctions, and across all drawings of a potential or interruption device. Named by its potential points (device tag `L+`, `M`); two names on one potential is flagged |
+| Potential | A net of the netlist: points joined by wires, inside junctions, and across all drawings of a potential or interruption device. Named by its potential points (device tag `L+`, `M`); two names on one potential is flagged |
+| Connectivity (derived, M7a) | `Project::connectivity()` derives, in memory and without changing the files, what format 2 will store (docs/PLATFORM-ARCHITECTURE.md 4.5): a **terminal** per physical drawn point (deterministic UUID v5 from the drawing and symbol point), with its physical group (a stable `GroupId` from the drawing, not the printed number: a numbered drawing such as a strip terminal is one group with a point per side or level; any other point is its own group), its printed designation, its point in the group and its kind (PLC channels with typed, canonical addresses); a **node** per potential or interruption device (all its drawings, one node, a potential if any drawing is one) and per junction drawing; explicit **bridges** (a bridged symbol's points, a symbol's bridge groups, so levels stay isolated); and **ambiguities**: groups of one device that print the same designation (every group and point listed, never merged on a label), a device drawn as both potential and interruption, a junction drawn twice. `Project::netlist()` joins endpoints by wires and bridges and lists wire ends it can't resolve; potentials are computed from it. `ecad report <dir> netlist` lists it, and refuses an incomplete netlist |
+| Content hash | `Project::content_hash()`: SHA-256 of the canonical JSON (sorted maps) of the project and its underlays, as `sha256:<hex>`. Stable across runs and save/load; the folder fingerprint stays the session-only change detector. Non-finite numbers are refused where they enter (`Place`, `Move`, boxes, sheet, parts, symbols) and by the hash itself, which names the first one found rather than hashing it as `null` |
 | Interruption point | An arrow; all arrows of one device (same tag) are connected, so a potential continues on another page. Each shows where its partners are |
 | Junction | A dot whose four connection points are one potential, so wiring can branch |
 | Part | Catalogue entry: part number (unique), manufacturer, description; kept in the project (`parts.json`), importable from CSV |
@@ -71,6 +73,10 @@ same list and exits with 1 when there are errors, for use in CI.
 | `wire-numbers-differ` | warning | With one number per potential: a potential whose wires carry different numbers |
 | `unconnected-point` | warning | A connection point without a wire |
 | `junction-unused` | warning | A junction joining fewer than three wires |
+| `wire-end-missing` | error | A wire ends on a connection point its symbol no longer has: the netlist is incomplete |
+| `mixed-logical-roles` | warning | A device drawn both as a potential point and as an interruption point; one node, named as a potential |
+| `shared-designation` | warning | Two drawn points of one device print the same designation (drawn twice, or numbered twice); kept apart until reconciled |
+| `junction-drawn-twice` | warning | A junction device drawn more than once; each drawing is its own junction |
 | `lonely-interruption` | warning | An interruption point without a partner of the same name |
 | `wire-unnumbered` | warning | A wire without a number |
 | `missing-part` | warning | A device without a catalogue part (missing from the BOM) |
