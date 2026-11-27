@@ -1,17 +1,37 @@
-# What is missing for a complete diagram
+# Product gap analysis
 
-A gap analysis of Electric Studio after M6, against a real 89-sheet project
-drawn in SPAC Automazione (an S7-1200 machine panel; see
-[SPAC-NOTES.md](SPAC-NOTES.md)). The question is what that project contains
-that Electric Studio cannot draw yet. Nothing from that project is copied
-here; the categories are generic.
+What Electric Studio is missing, measured two ways:
 
-The gate project ([MVP-GATE.md](MVP-GATE.md)) proved the engine: devices,
-wires, potentials, cross-references, terminals, PLC channels, cables, parts,
-checks and exports. What is missing is mostly what turns a correct netlist
-into a finished document set.
+- **Part A:** against the machine-centric workflow in
+  [PLATFORM-ARCHITECTURE.md](PLATFORM-ARCHITECTURE.md).
+- **Part B:** against a real 89-sheet project drawn in SPAC Automazione (an S7-1200 machine
+  panel; see [SPAC-NOTES.md](SPAC-NOTES.md)). Nothing from that project is copied here; the
+  categories are generic.
 
-## How the sample project is built
+Each gap names the milestone in [ROADMAP.md](ROADMAP.md) that closes it.
+
+The gate project ([MVP-GATE.md](MVP-GATE.md)) proved the schematic engine: devices, wires,
+potentials, cross-references, terminals, PLC channels, cables, parts, checks and exports.
+
+## Part A: the machine-centric workflow
+
+| Step | Needs | Today | Gap | Closed by |
+| --- | --- | --- | --- | --- |
+| 1. Machine architecture | Sections (=) and locations (+) as model entities; devices assigned to them | Structure only as text in tags; locations only as box labels on pages | No structure model at all | M8 |
+| 2. Equipment requirements | Maker-independent requirements per section, with parameters | Nothing | Whole layer missing | M11 |
+| 3. Product selection | Shared library; selection against requirements; provenance and revisions | Per-project catalogue; shared library and import in draft #32, without revisions or matching | Library not merged; no revisions, numeric data, terminal patterns or symbol mapping; no matching | M9, M11 |
+| 4. Electrical system | Devices, terminals and wires without drawings; circuit templates | Wires exist only between drawn symbols; no templates | Connectivity bound to drawings; no template library | M7, M10, M12 |
+| 5. Schematics | Deterministic generation; manual refinement kept on regeneration | Manual drawing only (strong editor) | No generator, no origin tracking | M13 |
+| 6. Layouts | Cabinet (plate and door) and machine layout on shared CAD | Plate layout with rectangles, rails, ducts, wire lengths through ducts | No door or machine layout, no real outlines, no field cable routes | M15 |
+| 7. Documentation and validation | Synchronised document set; consistency across layers | CSV reports; drawing-level checks | No generated pages; no requirement, structure or product checks | M14, with checks added in each milestone |
+| Reuse | Functional modules (machine units) | Nothing | Missing | M16 |
+
+Also needed by the workflow (from the audit in PLATFORM-ARCHITECTURE.md section 2): stable
+terminal identity, a stable content hash, and typed PLC channel data (M7).
+
+## Part B: what a delivered project contains
+
+### How the sample project is built
 
 | Sheets | Content | Electric Studio today |
 | --- | --- | --- |
@@ -23,9 +43,9 @@ into a finished document set.
 | 58–77 | Terminal-strip drawings (generated), cables between strips and junction boxes, connector pinouts | Terminal diagram as CSV only |
 | 78–89 | BOM over many pages, symbol legend, enclosure temperature-rise calculation | BOM as CSV only |
 
-## Gaps, by priority
+### Gaps, by priority
 
-### 0. Components library with manufacturer import (high, asked for)
+#### 0. Components library with manufacturer import (high, asked for; M9 and the manufacturer-data track)
 
 Today each project has its own parts catalogue (`parts.json`), typed in by
 hand: order number, manufacturer, description, company code, contact blocks
@@ -55,7 +75,7 @@ Formats manufacturers publish, in the order to support them:
 | DXF/DWG front views and footprints | Most manufacturers | Layout graphics | The underlay reader already reads these |
 | EDZ (EPLAN Data Portal) | Almost every manufacturer | Parts, macros, connection points | EPLAN's own format; read the portal and manufacturer terms before any support |
 
-### 1. Generated document pages (high)
+#### 1. Generated document pages (high; M14)
 
 Reports exist only as CSV files. A delivered project prints them as sheets in
 the same frame and title block as the schematic.
@@ -68,7 +88,7 @@ the same frame and title block as the schematic.
 - Symbol legend generated from the symbols the project uses.
 - Generated pages are derived and regenerated (architecture rule 1), never edited by hand, and appear in the page order, the PDF and the DWG export.
 
-### 2. Annotations on pages (high)
+#### 2. Annotations on pages (high; M14)
 
 There is no way to put anything on a page that is not a device, wire or box.
 
@@ -78,20 +98,20 @@ There is no way to put anything on a page that is not a device, wire or box.
 - Dimensions on layout pages.
 - Text attached to a wire: cross-section, colour and type (for example `1x2.5 BK`), filled from the wire's own data, not typed.
 
-### 3. Device data shown on the drawing (high)
+#### 3. Device data shown on the drawing (high; M14, with data from M9)
 
 - Technical data fields per device (rating, power, voltage, current, setting range), shown next to the symbol and filled from the part where possible: breaker ratings, fuse sizes, motor nameplate data.
 - A second-language description for devices, PLC channels and terminals. Pages already have a second-language subtitle; the rest of the text does not.
 - Pushbutton and lamp colours as device data, shown and used in the BOM.
 
-### 4. Black boxes and connectors (medium)
+#### 4. Black boxes and connectors (medium; symbols track)
 
 - Sections inside a black box, each with a caption (power supply, digital inputs, relay outputs, analogue, brake).
 - Two-line terminal labels: terminal name and function.
 - Network ports (RJ45, Profinet) as connection points with their own symbol.
 - Multi-pin connectors (M12, Harting-style) with a pinout table: pin number, core colour, signal.
 
-### 5. Symbol library breadth (medium)
+#### 5. Symbol library breadth (medium; symbols track)
 
 The library has about 46 IEC symbols. The sample also needs:
 
@@ -104,17 +124,17 @@ The library has about 46 IEC symbols. The sample also needs:
 - Panel fan with filter.
 - PLC rack and module graphics (CPU, I/O modules) for a hardware overview sheet.
 
-### 6. Front and machine layouts (medium)
+#### 6. Front and machine layouts (medium; M15)
 
 - Door and front layout: cut-outs and the devices seen from the front (buttons, lamps, HMI), with dimensions.
 - Device outlines from the part's real graphic instead of a rectangle.
 - Machine layout: positions of motors and sensors on the machine, cable trays.
 
-### 7. Calculations (low)
+#### 7. Calculations (low; calculations track)
 
 - Enclosure temperature rise (IEC/TR 60890), from the dissipated power of the parts in a panel. Needs a power-loss field on parts.
 
-### 8. SPAC migration (after the above)
+#### 8. SPAC migration (after M14; SPAC track)
 
 Planned for when Electric Studio can draw a complete project. First form: data
 plus underlay (see [SPAC-NOTES.md](SPAC-NOTES.md)).
@@ -124,19 +144,10 @@ plus underlay (see [SPAC-NOTES.md](SPAC-NOTES.md)).
 - Map SPAC block names to Electric Studio symbols.
 - Open question: older projects may have Access files only.
 
-## Proposed milestones
+## Milestones
 
-| Milestone | Scope |
-| --- | --- |
-| M7 Components library | Shared library outside projects, richer entries (technical data, class, symbols, connection points), default symbol per class; import from CSV/Excel, then BMEcat with ETIM, then ECLASS Advanced and AASX |
-| M8 Annotations and device data | Free text and notes, graphics, images, dimensions; wire annotations from wire data; technical data fields shown on the drawing; second-language descriptions; button and lamp colours |
-| M9 Generated pages | Cover, table of contents, BOM, terminal-strip drawings, cable and PLC I/O lists, symbol legend as regenerated pages in the frame, in PDF and DWG export |
-| M10 Symbols and black boxes | The missing symbols above; black-box sections, captions, two-line labels, network ports; connectors with pinouts |
-| M11 Front and machine layouts | Door layout with cut-outs and front graphics, device outlines, machine layout |
-| M12 SPAC migration | Data import from the SPAC databases plus per-sheet underlays |
-| Later | Temperature-rise calculation |
-
-M7 comes first because M8's technical data on the drawing and M9's BOM pages
-draw on it. M8 and M9 together make the output look like a delivered project;
-M10 widens what can be drawn. A sample project redrawn end to end with M7–M10
-would be the gate before M12.
+The milestones that close these gaps, their order and acceptance criteria are in
+[ROADMAP.md](ROADMAP.md). That replaces the M7–M12 proposal first made in this document.
+Nothing from it is dropped: the library is M9 plus the manufacturer-data track, annotations
+and generated pages are M14, symbols and black boxes are a track, layouts are M15, and SPAC
+migration is a track after M14.

@@ -90,7 +90,7 @@ Planned: `ecad-symbols`, `ecad-parts`, `ecad-mcp`. See [docs/ARCHITECTURE.md](do
 | *G5 Gate gaps* | *G5a wire tidying: drag a wire's middle run, Straighten, Tidy wires, new wires avoid clashes, wire-overlap checks · G5b changeover contacts, contact numbers from the parts' contact blocks · G5c parts per terminal type, black-box bridges, PLC wire numbers · G6 mirrored symbols, dashed PE wires* |
 | **M5 Panel layout** | M5a layout pages: mounting plate at scale, DIN rails, ducts, device footprints from part sizes, checks, cut list, reference layout L7 · M5b editing the layout: place unplaced devices, snap to rails, draw rails and ducts, layout pages in the app · M5c wire lengths through the ducts in the wire list, wire totals, cut list in the exports |
 | M6 Integrations | M6a TIA Portal PLC tag table: export, symbols and comments back by address · M6b MCP server · M6c DXF/DWG underlay to redraw over. No HMI tag exchange: HMI tags come in from TIA Portal |
-| *Proposed next* | *M7 components library with manufacturer import (CSV/Excel, BMEcat/ETIM, ECLASS Advanced) · M8 annotations and device data · M9 generated pages (cover, contents, BOM, terminal strips, legend) · M10 symbols and black-box sections · M11 front and machine layouts · M12 SPAC migration. See [docs/GAPS.md](docs/GAPS.md)* |
+| *Proposed next* | *Machine-centric platform, for review: M7 model foundations · M8 machine structure · M9 component library · M10 connectivity in the model · M11 equipment requirements · M12 circuit templates · M13 schematic generation · M14 documentation set · M15 layouts · M16 functional modules; acceptance project: a conveyor. See [docs/PLATFORM-ARCHITECTURE.md](docs/PLATFORM-ARCHITECTURE.md) and [docs/ROADMAP.md](docs/ROADMAP.md)* |
 
 ## Contributing
 
