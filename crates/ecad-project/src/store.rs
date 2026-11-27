@@ -33,8 +33,9 @@ pub const STAGED: &str = ".ecad-new";
 /// A lock older than this is left over from a crash.
 pub const STALE_LOCK: Duration = Duration::from_secs(120);
 
-/// The folders that hold project files, besides the project folder itself.
-const SUBDIRS: [&str; 3] = ["pages", "symbols", "underlays"];
+/// The folders that hold project files, besides the project folder itself; `parts` is a
+/// components library's ([`crate::library`]).
+const SUBDIRS: [&str; 4] = ["pages", "symbols", "underlays", "parts"];
 
 #[derive(Serialize, Deserialize)]
 struct Journal {

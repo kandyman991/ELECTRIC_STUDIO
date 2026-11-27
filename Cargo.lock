@@ -1228,6 +1228,7 @@ dependencies = [
  "ecad-reports",
  "ecad-rules",
  "ecad-view",
+ "rust_xlsxwriter",
  "serde_json",
  "tempfile",
 ]

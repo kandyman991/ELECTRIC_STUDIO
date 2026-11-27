@@ -550,6 +550,7 @@ mod tests {
             width: None,
             height: None,
             depth: None,
+            ..Default::default()
         }))
         .unwrap();
         p.apply(Command::SetDeviceParts { id: k1, parts: vec![ecad_model::PartRef::new("CT-1NO", 1)] }).unwrap();

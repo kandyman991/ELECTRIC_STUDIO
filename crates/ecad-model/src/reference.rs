@@ -241,6 +241,7 @@ impl Builder {
                     width: size_of(number).map(|s| s.0),
                     height: size_of(number).map(|s| s.1),
                     depth: size_of(number).map(|s| s.2),
+                    ..Default::default()
                 }))?;
             }
         }

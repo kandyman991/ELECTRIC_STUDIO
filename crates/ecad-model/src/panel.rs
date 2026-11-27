@@ -240,6 +240,7 @@ mod tests {
             width: size.map(|s| s.0),
             height: size.map(|s| s.1),
             depth: None,
+            ..Default::default()
         }
     }
 

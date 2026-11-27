@@ -188,3 +188,86 @@ fn usage_errors_exit_with_2() {
     assert!(help.status.success() && text(&help).contains("ecad export <project-dir> <out-dir>"));
     assert!(text(&ecad(&["--version"])).starts_with("ecad "));
 }
+
+#[test]
+fn a_components_library_from_a_price_list_to_a_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = dir.path().join("components");
+    let lib = lib.to_str().unwrap();
+    let o = ecad(&["library", "new", lib, "--name", "Workshop"]);
+    assert!(o.status.success(), "{}", text(&o));
+
+    // A maker's price list: title rows, Italian titles, no manufacturer column.
+    let list = dir.path().join("listino.csv");
+    std::fs::write(
+        &list,
+        "Listino 2026;;;\nCodice articolo;Descrizione;Corrente nominale;Prezzo\n\
+         EX-CT-9;Contattore 4 kW 24 V DC;9 A;20,50\nEX-CT-12;Contattore 5,5 kW;12 A;25\n;Gruppo relè;;\n",
+    )
+    .unwrap();
+    let list = list.to_str().unwrap();
+    let o = ecad(&["library", "import", lib, list, "--manufacturer", "Example", "--dry-run"]);
+    assert!(text(&o).contains("2 parts would be added"), "{}", text(&o));
+    let o = ecad(&["library", "import", lib, list, "--manufacturer", "Example", "--no-data", "--data", "x"]);
+    assert_eq!(o.status.code(), Some(2), "{}", text(&o));
+    let o = ecad(&["library", "import", lib, list, "--manufacturer", "Example"]);
+    let t = text(&o);
+    assert!(o.status.success(), "{t}");
+    assert!(
+        t.contains("header in line 2") && t.contains("Codice articolo → number") && t.contains("Prezzo → data"),
+        "{t}"
+    );
+    assert!(t.contains("left out row 5: no order number"), "{t}");
+    assert!(t.contains("2 parts added, 0 updated") && t.contains("the library has 2 parts"), "{t}");
+    assert!(dir.path().join("components/parts/example.json").is_file());
+
+    let o = ecad(&["library", "search", lib, "contattore", "9"]);
+    assert_eq!(text(&o), "EX-CT-9\tExample\tContattore 4 kW 24 V DC\n1 found\n");
+    let o = ecad(&["library", "show", lib, "ex-ct-9"]);
+    assert!(text(&o).contains("  Corrente nominale: 9 A"), "{}", text(&o));
+    let o = ecad(&["library", "show", lib, "EX-CT-9", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["data"][1]["value"], "20,50");
+
+    // Into a project, then the price changes and the project catches up.
+    let project = sample(dir.path(), "start");
+    let o = ecad(&["library", "add", &project, lib, "EX-CT-9"]);
+    assert!(text(&o).contains("added: EX-CT-9"), "{}", text(&o));
+    let catalogue = std::fs::read_to_string(Path::new(&project).join("parts.json")).unwrap();
+    assert!(catalogue.contains("Corrente nominale"), "{catalogue}");
+    let newer = dir.path().join("newer.xlsx");
+    let mut book = rust_xlsxwriter::Workbook::new();
+    let s = book.add_worksheet();
+    for (c, t) in ["Bestellnummer", "Hersteller", "Preis"].iter().enumerate() {
+        s.write(0, c as u16, *t).unwrap();
+    }
+    s.write(1, 0, "EX-CT-9").unwrap();
+    s.write(1, 1, "example").unwrap();
+    s.write(1, 2, 21.75).unwrap();
+    book.save(&newer).unwrap();
+    let o = ecad(&["library", "import", lib, newer.to_str().unwrap()]);
+    assert!(text(&o).contains("0 parts added, 1 updated"), "{}", text(&o));
+    let o = ecad(&["library", "update", &project, lib, "--dry-run"]);
+    assert!(text(&o).contains("would be updated: EX-CT-9"), "{}", text(&o));
+    let o = ecad(&["library", "update", &project, lib]);
+    assert!(text(&o).contains("updated: EX-CT-9") && text(&o).contains("not in the library: EX-"), "{}", text(&o));
+    let catalogue = std::fs::read_to_string(Path::new(&project).join("parts.json")).unwrap();
+    assert!(catalogue.contains("21.75") && catalogue.contains("Corrente nominale"), "{catalogue}");
+
+    // A list straight into a project, and arguments that are wrong.
+    let o = ecad(&["import-parts", &project, list, "--map", "number=Codice articolo", "--data", "Prezzo"]);
+    assert!(text(&o).contains("added: EX-CT-12"), "{}", text(&o));
+    for bad in [
+        vec!["library", "import", lib, list, "--map", "nothing=Codice"],
+        vec!["library", "import", lib, list, "--map", "number"],
+        vec!["library", "search", lib, "x", "--limit", "0"],
+        vec!["library", "show", lib, "NOPE"],
+        vec!["library", "add", &project, lib, "NOPE"],
+        vec!["library", "search", lib, "x", "--dry-run"],
+        vec!["library", "frobnicate", lib],
+        vec!["library", "new", &project],
+    ] {
+        let o = ecad(&bad);
+        assert_eq!(o.status.code(), Some(2), "{bad:?}: {}", text(&o));
+    }
+}

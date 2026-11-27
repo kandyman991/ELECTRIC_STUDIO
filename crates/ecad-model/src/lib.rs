@@ -11,6 +11,7 @@ pub mod library;
 pub mod naming;
 pub mod panel;
 pub mod parts;
+pub mod parts_library;
 pub mod plc_address;
 pub mod potential;
 pub mod project;
@@ -25,7 +26,8 @@ pub use history::History;
 pub use lengths::{WireLength, WireLengthSettings};
 pub use naming::{Naming, WireNumbering};
 pub use panel::{Panel, PanelItem, PanelItemKind};
-pub use parts::{Part, PartRef};
+pub use parts::{Datum, Part, PartRef};
+pub use parts_library::PartsLibrary;
 pub use potential::Potential;
 pub use project::*;
 pub use sheet::Sheet;
@@ -298,6 +300,7 @@ mod tests {
             width: None,
             height: None,
             depth: None,
+            ..Default::default()
         }))
         .unwrap();
         p.apply(Command::AddPart(Part {
@@ -309,6 +312,7 @@ mod tests {
             width: None,
             height: None,
             depth: None,
+            ..Default::default()
         }))
         .unwrap();
         // Drop the sample's two contacts so the parts decide.
@@ -430,6 +434,7 @@ mod tests {
             width: None,
             height: None,
             depth: None,
+            ..Default::default()
         };
         assert_eq!(
             p.apply(Command::AddPart(part("EX-CT-24DC"))).unwrap_err(),
