@@ -9,7 +9,7 @@ resolved. Implementation under way: M7 complete, awaiting formal acceptance.** P
 | Milestone | State |
 | --- | --- |
 | M0–M6 (foundation, editor, multi-page, parts and reports, checks and output, MVP gate, panel layout, integrations) | Merged |
-| M7 model foundations | M7a (PR #33, derived connectivity, netlist, content hash) merged; M7b (conveyor acceptance project, benchmark harness) complete; **ready for formal acceptance review** |
+| M7 model foundations | M7a (PR #33, derived connectivity, netlist, content hash) merged; M7b (conveyor acceptance project, benchmark harness) complete; **independent review found closure items; PR #35 pending validation** |
 | Components library (PR #32) | Draft, **on hold** (D13). Its compatible parts are reused in M9 |
 
 The earlier proposals in GAPS.md (library, annotations, generated pages, symbols, layouts,
@@ -274,3 +274,7 @@ Details that are settled within their milestones, not now, are listed in
 [PLATFORM-ARCHITECTURE.md section 16](PLATFORM-ARCHITECTURE.md#16-decided-now-and-left-to-the-milestones).
 A milestone that finds one of them needs an architectural change brings it back as a new
 decision.
+
+### M7 closure and performance follow-up
+
+M7 formal acceptance requires PR #35 correction evidence, exact-head green CI, allocation-count evidence, and a qualified controlled Legion baseline. The observed superlinear checks and render costs are a follow-up: establish the baseline, profile multiple sizes and remove repeated work before synchronous interactive workflows depend on it. Sandbox wall-clock figures are not a merge gate. Do not begin M10 until formal acceptance.

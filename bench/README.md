@@ -20,7 +20,7 @@ project).
 - **Counts** that are deterministic on every machine: the project's pages, devices, drawings,
   wires, terminals, nodes, nets, underlay points and content hash, and what the workload
   produced (findings, nets, primitives...).
-- **Times** of every iteration, ns. The first is the cold one (a fresh process); the rest are warm.
+- **Times** of every iteration, ns. In a normal suite the first is process-first, after fixture construction and setup; the rest are warm. A separate prepared-fixture run measures actual filesystem-cold open after eviction.
 - **Peak memory** (Linux): during setup, and during the iterations after the peak is reset
   (`/proc/self/clear_refs`), so it includes the project already in memory.
 
@@ -33,6 +33,7 @@ The `bench` job builds in release and runs:
 2. `ecad-bench instructions instructions-conveyor.json`: each workload's instruction count under
    Valgrind (cachegrind), its own setup subtracted. A move of more than 10% is a **warning**, not
    a failure: a new toolchain moves the counts too.
+3. `ecad-bench allocations bench-allocations.json`: DHAT allocation blocks per conveyor workload, setup-subtracted, retained as CI evidence. Establish the initial allocation-count reference from the first successful corrected-head CI; RSS is a separate measurement.
 
 When a change is meant to change the counts (a new rule, a changed drawing), refresh the
 baselines in the same PR and say why:
@@ -47,20 +48,34 @@ Wall clock and memory baselines come only from one machine under recorded condit
 
     bench/run-controlled.sh --label legion --repeat 3 --drop-caches [--underlay <real.dwg>]
 
-It waits for the machine to be idle, records the CPU, kernel, governor, power supply, load,
-memory and toolchain before and after, runs the full suite once right after dropping the page
-cache (cold) and then `--repeat` times (warm), and writes everything to `bench/results/`.
-A run worth keeping becomes `bench/baseline-legion.json`; later runs on the same machine compare
-times and memory against it with `ecad-bench compare` (the label and the build profile must
-match).
+It requires a clean unchanged commit, builds first, prepares all open fixtures before eviction,
+and waits for an idle machine before each measurement. Each disk-cold open follows a successful
+cache drop and reads an existing fixture without preloading it. The first sample is disk-cold;
+the remaining samples in that file are warm opens. Each process suite reports process-first
+(after setup) and warm iterations for all workloads; it is not a disk-cold suite.
+
+Fixtures are prepared on the checkout filesystem, not `/tmp`, and memory-backed filesystems are refused.
+Results in `bench/results/`: `conditions.txt`, `filesystem.txt`, `disk-cold-<project>-<n>.json`,
+`process-<n>.json`, and `COMPLETE` only after successful completion. The asset's SHA-256,
+exact revision, power, toolchain and machine conditions are recorded; no asset is committed.
+For acceptance use full size, at least three repeats, cache eviction, a representative
+non-confidential real DXF/DWG, mains power and no other work on the machine. A generated
+asset is useful for exploration but does not demonstrate the real-asset workload. A forced,
+smoke, generated-asset, no-eviction or short run is marked exploratory. Check power/load/conditions throughout
+before promoting a result. Compare same-machine process suites with `ecad-bench compare`;
+it reports warm median and range, and peak RSS. Retain the disk-cold repetitions separately
+and report their first-sample median and spread. Do not mix disk-cold and process-first samples.
 
 ## Recorded
 
 - `baseline-smoke.json`: counts for the smoke size (times from the build sandbox, informative).
 - `instructions-conveyor.json`: instructions per workload on the conveyor, rustc 1.97.0.
-- A wall-clock baseline is pending the first controlled run on the Legion.
+- A wall-clock baseline is pending the first qualified controlled run on the Legion.
+- Allocation counts: initial corrected-head DHAT artifact pending CI.
 
 First observations on the build sandbox (2 cores, release), for the full size: `check` takes
 about 8 s and `render` about 16 s on 2 000 devices and 240 pages, against 68 ms and 85 ms on
 200 devices and 24 pages; both grow faster than linearly with the project and are the first
 candidates for work once the controlled baseline exists. `netlist` stays at about 20 ms.
+
+Performance follow-up (after the baseline): profile full-project checks and page rendering at multiple sizes, identify repeated whole-project traversals, and target interactive responsiveness before any synchronous full-project checks become part of the editor. Do not change electrical semantics or drawing goldens to optimize.

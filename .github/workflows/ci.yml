@@ -87,11 +87,21 @@ jobs:
       # Instruction counts against the baseline: a warning, never a failure.
       - name: Instruction counts
         run: target/release/ecad-bench instructions bench/instructions-conveyor.json
+      - name: Allocation counts
+        run: target/release/ecad-bench allocations bench-allocations.json
+      - name: Prepared open smoke
+        run: |
+          target/release/ecad-bench prepare-open conveyor "$RUNNER_TEMP/bench-open"
+          target/release/ecad-bench measure-open conveyor "$RUNNER_TEMP/bench-open" > bench-open.json
+          bash -n bench/run-controlled.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: bench-smoke
-          path: bench-smoke.json
+          path: |
+            bench-smoke.json
+            bench-allocations.json
+            bench-open.json
 
   mcp-client:
     name: MCP server with the official client

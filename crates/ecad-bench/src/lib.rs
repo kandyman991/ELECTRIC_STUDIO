@@ -289,7 +289,7 @@ pub struct Run {
     /// The project's deterministic description, then what the workload produced.
     pub counts: BTreeMap<String, serde_json::Value>,
     pub iterations: usize,
-    /// Wall time of each iteration, ns. The first is the cold one (a fresh process).
+    /// Wall time of each iteration, ns. The first is process-first, after setup; later iterations are warm.
     pub times_ns: Vec<u64>,
     /// Peak resident memory while building the project, KiB (Linux; `null` elsewhere).
     pub setup_peak_kib: Option<u64>,
@@ -387,6 +387,47 @@ pub fn run(project_name: &str, workload: &str, size: Size, iterations: usize, un
     })
 }
 
+/// Prepare an on-disk fixture before any filesystem cache eviction.
+pub fn prepare_open(project_name: &str, size: Size, underlay: Option<&Path>, dir: &Path) -> Result<()> {
+    let p = project(project_name, size, underlay)?;
+    ecad_project::save(&p, dir).map_err(err)?;
+    Ok(())
+}
+
+/// Measure an existing fixture without reading or writing it before the first timed load.
+/// Cache eviction, when requested, must be performed by the controlled-run caller.
+pub fn measure_open(project_name: &str, size: Size, dir: &Path) -> Result<Run> {
+    if !PROJECTS.contains(&project_name) {
+        return Err(format!("unknown project {project_name}"));
+    }
+    let iterations = size.iterations();
+    let setup_peak_kib = peak_rss_kib();
+    let reset = reset_peak_rss();
+    let mut times_ns = Vec::with_capacity(iterations);
+    let mut last = None;
+    for _ in 0..iterations {
+        drop(last.take());
+        let start = Instant::now();
+        let p = ecad_project::load(dir).map_err(err)?;
+        times_ns.push(u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX));
+        last = Some(p);
+    }
+    let peak_kib = if reset { peak_rss_kib() } else { None };
+    let p = last.ok_or("no loads measured")?;
+    let mut counts = project_counts(&p)?;
+    counts.insert("loadedDevices".into(), p.devices.len().into());
+    Ok(Run {
+        project: project_name.to_owned(),
+        workload: "open".into(),
+        size,
+        counts,
+        iterations,
+        times_ns,
+        setup_peak_kib,
+        peak_kib,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,6 +460,18 @@ mod tests {
         assert!(a.points() >= 5_000);
         assert!(a.is_valid());
         assert_eq!(a, generated_underlay(5_000));
+    }
+
+    #[test]
+    fn prepared_open_matches_regular_open_counts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("project");
+        assert!(measure_open("conveyor", Size::Smoke, &dir).is_err());
+        prepare_open("conveyor", Size::Smoke, None, &dir).unwrap();
+        let measured = measure_open("conveyor", Size::Smoke, &dir).unwrap();
+        let regular = run("conveyor", "open", Size::Smoke, 1, None).unwrap();
+        assert_eq!(measured.counts, regular.counts);
+        assert_eq!(measured.times_ns.len(), Size::Smoke.iterations());
     }
 
     #[test]

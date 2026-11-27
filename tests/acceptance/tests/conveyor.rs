@@ -421,3 +421,28 @@ fn an_edit_changes_the_hash_and_undoing_it_restores_it() {
     p.apply(undo).unwrap();
     assert_eq!(p.content_hash().unwrap(), hash);
 }
+
+#[test]
+fn multi_level_terminal_reports_include_every_wired_point() {
+    let p = conveyor().unwrap();
+    let rows = ecad_reports::terminal_diagram(&p);
+    for (number, sensor) in [("1", "-B1"), ("3", "-B2")] {
+        let levels: Vec<_> = rows.iter().filter(|r| r.strip == "-X3" && r.terminal == number).collect();
+        assert_eq!(levels.len(), 2);
+        for (row, potential, a, b, core) in [(levels[0], "L+", "1", "2", "BN"), (levels[1], "M", "3", "4", "BU")] {
+            assert_eq!(row.potential, potential);
+            assert_eq!((row.inside_point.as_str(), row.outside_point.as_str()), (a, b));
+            assert_eq!(row.bridge_points, format!("{a}|{b}"));
+            assert_eq!(row.outside, format!("{sensor}:{core}"));
+            assert!(!row.inside.is_empty());
+        }
+    }
+    let wires = ecad_reports::wire_list(&p).unwrap();
+    for (number, sensor) in [("1", "-B1"), ("3", "-B2")] {
+        let brown = wires.iter().find(|w| w.from_tag == "-X3" && w.to_tag == sensor && w.core == "BN").unwrap();
+        let blue = wires.iter().find(|w| w.from_tag == sensor && w.to_tag == "-X3" && w.core == "BU").unwrap();
+        assert_eq!((brown.from_point.as_str(), brown.from_terminal_point.as_str()), (number, "2"));
+        assert_eq!((blue.to_point.as_str(), blue.to_terminal_point.as_str()), (number, "4"));
+        assert_eq!((brown.potential.as_str(), blue.potential.as_str()), ("L+", "M"));
+    }
+}

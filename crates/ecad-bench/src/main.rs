@@ -17,6 +17,12 @@ usage:
                    [--out <file>]
       Run every workload on every project, each in a process of its own, and write the
       results with the machine's conditions as JSON (to stdout without --out).
+  ecad-bench prepare-open <project> <dir> [--size smoke|full] [--underlay <file>]
+      Prepare a fixture before filesystem cache eviction.
+  ecad-bench measure-open <project> <dir> [--size smoke|full]
+      Time loads of an existing fixture; does not evict caches itself.
+  ecad-bench allocations <out.json>
+      Record setup-subtracted heap allocation counts under Valgrind DHAT.
   ecad-bench compare <results.json> <baseline.json>
       Fail if any deterministic count differs from the baseline; report times and peak memory
       against it when both runs come from the same machine.
@@ -70,6 +76,22 @@ fn dispatch(args: &[String]) -> Result<ExitCode, String> {
             println!("{}", serde_json::to_string(&r).map_err(|e| e.to_string())?);
             Ok(ExitCode::SUCCESS)
         }
+        Some("prepare-open" | "measure-open") => {
+            let (Some(project), Some(dir)) = (args.get(1), args.get(2)) else {
+                return Err("prepare-open/measure-open require project and directory".into());
+            };
+            let size = size(args)?;
+            let dir = Path::new(dir);
+            if args[0] == "prepare-open" {
+                ecad_bench::prepare_open(project, size, option(args, "--underlay").map(Path::new), dir)?;
+            } else {
+                let r = ecad_bench::measure_open(project, size, dir)?;
+                let doc = json!({ "size": size, "machine": machine(), "results": [r] });
+                println!("{}", serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Some("allocations") => allocations(args),
         Some("suite") => suite(args),
         Some("compare") => {
             let (Some(results), Some(baseline)) = (args.get(1), args.get(2)) else {
@@ -127,6 +149,8 @@ fn machine() -> Value {
         "commit": std::env::var("GITHUB_SHA").ok().or_else(|| first_line("git", &["rev-parse", "HEAD"])),
         "profile": if cfg!(debug_assertions) { "debug" } else { "release" },
         "label": std::env::var("ECAD_BENCH_MACHINE").ok(),
+        "assetSha256": std::env::var("ECAD_BENCH_ASSET_SHA256").ok(),
+        "controlled": std::env::var("ECAD_BENCH_CONTROLLED").ok(),
     })
 }
 
@@ -150,9 +174,9 @@ fn suite(args: &[String]) -> Result<ExitCode, String> {
             let r: Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("{project} {workload}: {e}"))?;
             let times: Vec<u64> = r["timesNs"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect();
             eprintln!(
-                "{project:>10} {workload:<8} first {:>9.2} ms  median {:>9.2} ms  peak {:>8} KiB",
+                "{project:>10} {workload:<8} first {:>9.2} ms  warm median {:>9.2} ms  peak {:>8} KiB",
                 times.first().copied().unwrap_or(0) as f64 / 1e6,
-                median(&times) as f64 / 1e6,
+                median(times.get(1..).unwrap_or_default()) as f64 / 1e6,
                 r["peakKib"].as_u64().map_or("-".into(), |k| k.to_string()),
             );
             results.push(r);
@@ -177,44 +201,122 @@ fn key(r: &Value) -> String {
     format!("{} {}", r["project"].as_str().unwrap_or("?"), r["workload"].as_str().unwrap_or("?"))
 }
 
-fn compare(results: &Value, baseline: &Value) -> Result<ExitCode, String> {
-    let empty = Vec::new();
-    let base: std::collections::BTreeMap<String, &Value> =
-        baseline["results"].as_array().unwrap_or(&empty).iter().map(|r| (key(r), r)).collect();
-    let same_machine = baseline["machine"]["label"].is_string()
-        && baseline["machine"]["label"] == results["machine"]["label"]
-        && baseline["machine"]["profile"] == results["machine"]["profile"];
-    let mut mismatches = 0;
-    for r in results["results"].as_array().unwrap_or(&empty) {
-        let k = key(r);
-        let Some(b) = base.get(&k) else {
-            println!("{k}: not in the baseline");
-            continue;
-        };
-        if r["size"] != b["size"] {
-            return Err(format!("{k}: size {} against a {} baseline", r["size"], b["size"]));
+/// Validate the complete result set before comparing any measurements. A partial suite must
+/// never satisfy a full baseline, and malformed or duplicate rows must never disappear in a map.
+fn validated_rows(doc: &Value) -> Result<std::collections::BTreeMap<String, &Value>, String> {
+    let size = Size::parse(doc["size"].as_str().ok_or("missing suite size")?)?;
+    let rows = doc["results"].as_array().filter(|r| !r.is_empty()).ok_or("missing or empty results")?;
+    if !doc["machine"].is_object() {
+        return Err("missing machine metadata".into());
+    }
+    let mut indexed = std::collections::BTreeMap::new();
+    for r in rows {
+        let project = r["project"].as_str().ok_or("missing project")?;
+        let workload = r["workload"].as_str().ok_or("missing workload")?;
+        if !PROJECTS.contains(&project) || !WORKLOADS.contains(&workload) {
+            return Err(format!("unknown benchmark {project} {workload}"));
         }
+        let k = key(r);
+        if r["size"] != doc["size"] || r["iterations"].as_u64() != Some(size.iterations() as u64) {
+            return Err(format!("{k}: wrong size or iteration count"));
+        }
+        let times = r["timesNs"].as_array().ok_or_else(|| format!("{k}: missing timings"))?;
+        if times.len() != size.iterations() || times.iter().any(|t| t.as_u64().is_none()) {
+            return Err(format!("{k}: incomplete or invalid timings"));
+        }
+        for field in ["setupPeakKib", "peakKib"] {
+            if r.get(field).is_none_or(|v| !v.is_null() && v.as_u64().is_none()) {
+                return Err(format!("{k}: invalid {field}"));
+            }
+        }
+        let counts = r["counts"].as_object().ok_or_else(|| format!("{k}: missing counts"))?;
+        let mut numeric = vec!["pages", "devices", "drawings", "wires", "terminals", "nodes", "nets", "underlayPoints"];
+        match workload {
+            "open" => numeric.push("loadedDevices"),
+            "edit" => numeric.push("findings"),
+            "check" => numeric.extend(["findings", "errors"]),
+            "netlist" => numeric.push("unresolved"),
+            "render" => numeric.push("primitives"),
+            _ => {}
+        }
+        for field in numeric.iter().copied() {
+            if counts.get(field).and_then(Value::as_u64).is_none() {
+                return Err(format!("{k}: missing or invalid count {field}"));
+            }
+        }
+        let hash_ok = |field: &str| {
+            counts.get(field).and_then(Value::as_str).is_some_and(|s| {
+                s.strip_prefix("sha256:").is_some_and(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+            })
+        };
+        let valid_extra = match workload {
+            "save" => counts.get("saved").and_then(Value::as_bool) == Some(true),
+            "pdf" => counts.get("pdfNonEmpty").and_then(Value::as_bool) == Some(true),
+            "hash" => hash_ok("hash"),
+            _ => true,
+        };
+        let extra = usize::from(matches!(workload, "save" | "pdf" | "hash"));
+        if !hash_ok("contentHash") || !valid_extra || counts.len() != numeric.len() + 1 + extra {
+            return Err(format!("{k}: invalid count schema"));
+        }
+        if indexed.insert(k.clone(), r).is_some() {
+            return Err(format!("duplicate benchmark {k}"));
+        }
+    }
+    Ok(indexed)
+}
+
+fn compare(results: &Value, baseline: &Value) -> Result<ExitCode, String> {
+    let base = validated_rows(baseline)?;
+    let actual = validated_rows(results)?;
+    if baseline["size"] != results["size"] || base.keys().ne(actual.keys()) {
+        return Err("benchmark suite size or workload set differs from baseline".into());
+    }
+    let same_machine = baseline["machine"]["label"].is_string()
+        && [
+            "label",
+            "profile",
+            "os",
+            "arch",
+            "cpu",
+            "cores",
+            "kernel",
+            "governor",
+            "onAc",
+            "rustc",
+            "assetSha256",
+            "controlled",
+        ]
+        .iter()
+        .all(|field| baseline["machine"][*field] == results["machine"][*field]);
+    let mut mismatches = 0;
+    for (k, r) in actual {
+        let b = base.get(&k).ok_or_else(|| format!("{k}: missing baseline"))?;
         if r["counts"] != b["counts"] {
             mismatches += 1;
             println!("{k}: counts differ\n  got  {}\n  want {}", r["counts"], b["counts"]);
         }
-        if same_machine {
-            let t = |v: &Value| {
-                median(&v["timesNs"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect::<Vec<_>>())
-            };
-            let (now, then) = (t(r), t(b));
+        if same_machine && r["counts"] == b["counts"] {
+            let t =
+                |v: &Value| v["timesNs"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect::<Vec<_>>();
+            let (current, previous) = (t(r), t(b));
+            let warm = current.get(1..).unwrap_or_default();
+            let now = median(warm);
+            let then = median(previous.get(1..).unwrap_or_default());
             let mem = |v: &Value| v["peakKib"].as_u64();
             println!(
-                "{k}: median {:.2} ms ({:+.1}%), peak {} KiB (baseline {})",
+                "{k}: warm median {:.2} ms ({:+.1}%), range {:.2}–{:.2} ms, peak {} KiB (baseline {})",
                 now as f64 / 1e6,
                 if then > 0 { (now as f64 / then as f64 - 1.0) * 100.0 } else { 0.0 },
+                warm.iter().min().copied().unwrap_or(0) as f64 / 1e6,
+                warm.iter().max().copied().unwrap_or(0) as f64 / 1e6,
                 mem(r).map_or("-".into(), |m| m.to_string()),
                 mem(b).map_or("-".into(), |m| m.to_string()),
             );
         }
     }
     if !same_machine {
-        println!("(times and memory not compared: the baseline comes from another machine or profile)");
+        println!("(times and memory not compared: machine conditions or toolchain differ)");
     }
     if mismatches > 0 {
         println!("{mismatches} workload(s) with different counts");
@@ -222,6 +324,42 @@ fn compare(results: &Value, baseline: &Value) -> Result<ExitCode, String> {
     }
     println!("counts match the baseline");
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod compare_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    #[test]
+    fn comparison_rejects_missing_extra_duplicate_and_malformed_results() {
+        let baseline: Value = serde_json::from_str(include_str!("../../../bench/baseline-smoke.json")).unwrap();
+        assert_eq!(compare(&baseline, &baseline).unwrap(), ExitCode::SUCCESS);
+        let mut empty = baseline.clone();
+        empty["results"] = json!([]);
+        assert!(compare(&empty, &baseline).is_err());
+        let mut missing = baseline.clone();
+        let _ = missing["results"].as_array_mut().unwrap().pop();
+        assert!(compare(&missing, &baseline).is_err());
+        let mut duplicate = baseline.clone();
+        let row = duplicate["results"][0].clone();
+        duplicate["results"].as_array_mut().unwrap().push(row);
+        assert!(compare(&duplicate, &baseline).is_err());
+        let mut unknown = baseline.clone();
+        unknown["results"][0]["workload"] = json!("unknown");
+        assert!(compare(&unknown, &baseline).is_err());
+        assert!(compare(&baseline, &missing).is_err());
+        let mut malformed = baseline.clone();
+        malformed["results"][0]["timesNs"] = json!([1]);
+        assert!(compare(&malformed, &baseline).is_err());
+        malformed = baseline.clone();
+        malformed["results"][0]["counts"] = json!({});
+        assert!(compare(&malformed, &baseline).is_err());
+        let mut changed = baseline.clone();
+        changed["results"][0]["counts"]["devices"] = json!(999);
+        assert_eq!(compare(&changed, &baseline).unwrap(), ExitCode::FAILURE);
+    }
 }
 
 /// Instructions executed by `run <project> <workload> --iterations <n>` under cachegrind.
@@ -286,4 +424,63 @@ fn instructions(args: &[String]) -> Result<ExitCode, String> {
         println!("{moved} workload(s) moved more than {tolerance}% (a warning, not a failure)");
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// DHAT prints total heap bytes and allocation blocks. Parse its summary strictly: a missing
+/// or changed summary must fail the benchmark job rather than record a fictitious zero.
+fn allocation_blocks(stderr: &str) -> Result<u64, String> {
+    let line = stderr.lines().find_map(|l| l.split_once("Total:").map(|(_, tail)| tail));
+    let fields: Vec<&str> = line.ok_or("DHAT did not report Total")?.split_whitespace().collect();
+    if fields.len() != 5 || fields[1] != "bytes" || fields[2] != "in" || fields[4] != "blocks" {
+        return Err("invalid DHAT Total summary".into());
+    }
+    fields[3].replace(',', "").parse().map_err(|_| "invalid DHAT allocation count".into())
+}
+
+fn allocations_of(workload: &str, iterations: usize) -> Result<u64, String> {
+    let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let output = tmp.path().join("dhat.json");
+    let exe = exe()?;
+    let out = Command::new("valgrind")
+        .args(["--tool=dhat", "--mode=heap"])
+        .arg(format!("--dhat-out-file={}", output.display()))
+        .arg(exe)
+        .args(["run", "conveyor", workload, "--size", "smoke", "--iterations", &iterations.to_string()])
+        .output()
+        .map_err(|e| format!("valgrind DHAT: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("{workload}: {}", String::from_utf8_lossy(&out.stderr)));
+    }
+    allocation_blocks(&String::from_utf8_lossy(&out.stderr))
+}
+
+fn allocations(args: &[String]) -> Result<ExitCode, String> {
+    let path = args.get(1).ok_or("allocations needs an output file")?;
+    let mut counts = serde_json::Map::new();
+    for workload in WORKLOADS {
+        let setup = allocations_of(workload, 0)?;
+        let total = allocations_of(workload, 1)?;
+        let own = total.checked_sub(setup).ok_or_else(|| format!("{workload}: allocation total below setup"))?;
+        println!("conveyor {workload:<8} {own:>14} allocation blocks");
+        counts.insert(workload.into(), json!({ "setup": setup, "total": total, "net": own }));
+    }
+    let doc = json!({ "project": "conveyor", "machine": machine(), "workloads": counts });
+    std::fs::write(path, serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())? + "\n")
+        .map_err(|e| e.to_string())?;
+    Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod allocation_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    #[test]
+    fn dhat_summary_is_required_and_parsed() {
+        assert_eq!(allocation_blocks("==123== Total: 1,234 bytes in 56 blocks").unwrap(), 56);
+        assert!(allocation_blocks("no summary").is_err());
+        assert!(allocation_blocks("Total: 1 bytes in invalid blocks").is_err());
+        assert!(allocation_blocks("Total: 1 bytes in 2 pages").is_err());
+    }
 }

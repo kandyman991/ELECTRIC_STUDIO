@@ -41,3 +41,5 @@ Only on purpose, and say why in the PR:
     ECAD_UPDATE_GOLDEN=1 cargo test -p ecad-acceptance --test conveyor
 
 Upgrading CADCraft changes `pages/` here as it does `crates/ecad-view/tests/golden/`.
+
+Multi-point strip terminal report rows keep the physical designation and identify the actual symbol points and explicit bridge component; wire-list endpoint columns identify multi-point strip terminals without changing their printed designation. The expected CSV changes are intentional; page goldens are unchanged. Independent assertions cover both L+ and M for -X3:1 and -X3:3.
