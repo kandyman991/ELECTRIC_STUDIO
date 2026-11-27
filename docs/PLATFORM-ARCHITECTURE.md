@@ -32,6 +32,9 @@ Principles:
 - One source of truth per fact; everything else is derived and regenerated.
 - No speculative abstraction: each concept enters when a milestone needs it, and the
   conveyor acceptance project exercises it.
+- **AI-ready, AI-independent.** All engineering works without AI. An optional assistant
+  (local first, external providers later) uses the same typed queries and validated
+  operations as every workspace, and can't bypass them (section 11).
 
 ## 2. Audit of the current implementation
 
@@ -56,6 +59,7 @@ At `main` (06b34fb, after M6) the workspace is about 22 000 lines of Rust in ten
 | Storage | Folder of JSON; transactional save with journal, lock, fingerprint; loads replay through commands | **Retain;** format 2 adds files (section 4.6) |
 | Views | `ecad-view`, the only CADCraft user: render, PDF, DXF, DWG, underlays | **Retain** as the shared CAD layer |
 | Editing | `ecad-editor` (Editor, Session, Frame); egui shell; CLI; MCP | **Retain;** new workspaces are new Frames over the same Session |
+| AI access | MCP server: typed read tools, editing tools through the editor's script API and undo history, read-only unless `--write`, schema-checked arguments | **Retain** as the first AI interface. Missing: proposals with preview, a record of who made a change, provenance of AI-suggested data, safety approval rules (section 11) |
 
 ### Technical debt this direction exposes
 
@@ -70,7 +74,12 @@ At `main` (06b34fb, after M6) the workspace is about 22 000 lines of Rust in ten
    designation of its first point; its two sides are the symbol's points `1` and `2`.
 6. **Library items are copied without provenance.** Nothing records where a project's part or
    symbol came from, or at which version.
-7. **No stable content hash.** The fingerprint uses `DefaultHasher`, which is fine within a
+7. **Operations are defined three times.** The editor (UI events), the script API (CLI, MCP)
+   and the MCP tool table each describe editing operations their own way. An assistant needs
+   one typed catalogue (section 11.2).
+8. **History doesn't record who made a change.** An edit by an MCP client and an edit by hand
+   look the same afterwards.
+9. **No stable content hash.** The fingerprint uses `DefaultHasher`, which is fine within a
    run but not stable across Rust versions. Revisions and generation need a stable hash.
 
 ## 3. Canonical engineering model
@@ -168,6 +177,8 @@ Rules:
   - Fields both changed are listed as conflicts and decided by the user.
 - This replaces #32's simpler "newer fills in" rule for library-to-project updates. The fill-in
   rule stays for importing manufacturer lists into a library.
+- Where a value came from an assistant or an import is the separate *provenance* of section
+  11.4.
 - Project files themselves are versioned by the user's tools (git, backups). The project
   keeps no revision history beyond undo, and the title block's revision list stays
   documentation.
@@ -346,14 +357,15 @@ there now, and what would be generated now.
 | Cabinet layout | Plates and doors (today's layout pages, extended) |
 | Machine layout | Field locations on a machine drawing; cable lengths |
 | Documentation | Generated pages, exports, validation |
+| Assistant (optional, later) | Conversation, and the change sets it proposes, for review and acceptance |
 
 - One `Session` per open project holds the project, history and selection. Every workspace
   is a `Frame` over it and edits only through commands.
 - Selection is shared: picking a device in the structure tree shows it in the schematic and
   the layout.
 - Undo is one history across workspaces.
-- CLI and MCP reach the same commands; each milestone adds its CLI commands and MCP tools
-  with its model work.
+- CLI and MCP reach the same operations through one registry (section 11.2). Each milestone
+  adds its operations there, and with them its CLI commands and MCP tools.
 - Libraries are opened alongside the project. Edits to a library are commands on the
   library, saved by its own store. The project only takes copies.
 
@@ -408,9 +420,158 @@ editing geometry in CAD), they need adding here (decision D11).
 | PR #32 was built before this proposal | Reconcile in M9: keep its core, add revision/source, review its merge rule (section 4.4) |
 | Performance on large projects | Derived data cached per Session; measured on the reference and conveyor projects |
 | Functional safety is out of scope | Safety circuits are documented, not validated; stated in the docs and the UI |
+| An assistant edits around the rules | No AI-only path; every operation goes through `apply` and the checks; proposals with new errors can't be applied; safety-related changes need a person |
+| AI-suggested data passes as verified | Provenance on facts; the `unverified-data` check; release export refuses unverified safety-related data |
+| Confidential data leaves the machine | Local provider by default; external only by project setting; excluded fields; audit log |
+| AI infrastructure grows ahead of need | Only the registry, change sets and provenance are built before inference. Each also serves people, CLI or generation |
 
 Dependencies: M7 comes before M10; M8 before M11; M9 before M11 and M12; M10 before M12; M12 before
 M13; M13 before M16. Details are in [ROADMAP.md](ROADMAP.md).
+
+## 11. AI readiness
+
+An optional AI engineering assistant is a foundational requirement, but **inference is not
+built yet**. What is built now are the prerequisites that the model and command interfaces
+need anyway. They also serve people, the CLI and generation, so none of it is AI-only
+infrastructure.
+
+### 11.1 Principles
+
+1. **The core never depends on AI.** No AI crate is a dependency of `ecad-model`,
+   `ecad-rules`, `ecad-reports`, `ecad-project`, `ecad-view` or `ecad-editor`. Every
+   engineering function, including generation, works with AI absent, disabled or offline.
+2. **An assistant is a client like any other.** It uses the same queries and operations as
+   the graphical workspaces, the CLI and MCP. There is no AI-only path into the model.
+3. **Validation can't be bypassed.**
+   - Model invariants are enforced by `Project::apply` for every actor, as today.
+   - Checks run on every proposal before it can be applied.
+   - An assistant's proposal that adds check errors can't be applied as it is.
+4. **AI proposes, people decide.** An assistant reads, and it prepares change sets. Applying
+   one needs a person's explicit acceptance, unless the person has started a session that
+   allows the assistant to apply (as MCP's `--write` does today). Even then, the change is
+   recorded as the assistant's.
+5. **No AI approval of safety-critical design.** No operation lets an assistant mark
+   anything safety-related as approved or verified. Changes that touch safety-related items
+   always need a person's separate confirmation.
+6. **Offline and confidential by default.** The default provider is local. Nothing leaves
+   the machine unless the project allows an external provider, and what was sent is logged.
+
+### 11.2 Typed engineering interface
+
+One catalogue of **queries** (read) and **operations** (change), each with a name, typed
+arguments and result, a JSON schema, and an effect class (read, change, safety-related
+change). It grows from what exists:
+
+- **Operations lower to `Command`s.** `Command` stays the low-level, invertible unit. An
+  operation is a named, validated engineering step built from commands, like today's
+  `script_place` or `import_parts`. Examples: "assign a device to a section", "select a
+  product for a requirement", "instantiate a template", "regenerate a page".
+- **One registry.** The editor's UI events, the CLI and MCP call the same operation
+  functions. MCP's tool list and argument schemas are generated from the registry, not
+  written by hand. Each milestone adds its operations to the registry and nowhere else.
+- **Queries are bounded and paged**: overview, find by tag, section or class, netlist of a
+  device, check results, BOM rows... An assistant gets what it asks for, never the whole
+  project, which matters for context size and confidentiality.
+- **Ids in, ids out.** Results carry stable ids (section 4.1) alongside tags, so a proposal
+  built from a query still points at the same things after a rename.
+
+### 11.3 Change sets: propose, preview, apply, undo
+
+A **change set** is a proposed modification that isn't applied yet:
+
+```text
+ChangeSet {
+  id, actor, title, rationale,          // why, in the proposer's words
+  base: Fingerprint,                    // the project it was made against
+  operations: [Operation],              // or the commands they lower to
+  sources: [Source],                    // datasheet pages, library items, requirements used
+}
+```
+
+- **Preview.** Apply it to a copy of the project and report:
+  - entities added, changed and removed, by tag and id;
+  - check results before and after: new errors and warnings, ones that went away;
+  - pages whose drawing changes, with a rendering;
+  - safety-related items touched.
+- **Apply.** One `Batch`, so one undo step, labelled with the change set's title and actor.
+  It is refused if the base fingerprint no longer matches; it is then previewed again
+  against the current project.
+- **Reject** or **edit** before applying. A person can drop single operations.
+- **Not only for AI.** The same mechanism is the dry run of a library update (M9), the
+  preview of regeneration (M13) and an import's `--dry-run`. It is built once, for those.
+
+### 11.4 Actors and provenance
+
+- **Actors.** Every history entry and every applied change set records who made it:
+  - a person;
+  - a generator (template instance, regeneration);
+  - an import (file and format);
+  - an assistant (provider, model, session).
+  The record is kept in memory for undo; the project's files persist only provenance.
+- **Provenance of facts.** Values that can come from outside a person's own entry carry an
+  optional provenance: requirement parameters, sections and locations, product selections,
+  technical data (per line), descriptions and translations.
+
+  ```text
+  Provenance { by: Actor, status: Suggested | Verified { by: person, on: date }, sources }
+  ```
+
+  Data entered by hand has no provenance and counts as verified. Data an assistant proposed
+  is **Suggested** until a person verifies it. Verifying is a separate, explicit operation
+  that only a person can carry out.
+- **Checks.**
+  - `unverified-data` (warning) lists every suggested value still in the project.
+  - In a release export (`ecad export --release`), unverified data in safety-related items
+    is an error.
+- **Generated is not suggested.** Deterministic generation output (section 6) has an
+  *origin*, not a suggestion status. It is derived from verified inputs and regenerated, so
+  it needs no verification of its own.
+
+### 11.5 Safety-related items
+
+An item is safety-related when it is in a section marked safety-related (`=SAF` in the
+conveyor), when its product's class is a safety component (safety relay, emergency stop,
+safety sensor), or when a person marks it.
+
+- Change sets that touch safety-related items are flagged in the preview and need a separate
+  confirmation by a person.
+- An assistant can't verify, approve or release them, and can't change the marking.
+- Electric Studio documents safety circuits; it doesn't validate them (ISO 13849 and IEC
+  62061 evaluation is out of scope). The UI and reports say so.
+
+### 11.6 Providers (later)
+
+- **An adapter crate** (`ecad-assist`, not built yet) holds a small provider interface:
+  - send a conversation with the tool catalogue;
+  - receive text and tool calls.
+- **Providers.** Ollama on localhost comes first; external providers are added later behind
+  the same interface. The assistant's tools are the registry's queries and the change-set
+  operations: query, propose, preview, never apply directly.
+- **Data policy, per project, in `project.json`.**
+  - Assistant on or off (default off); provider local only (default) or external allowed.
+  - Fields never sent: customer, plant and confidential notes are excluded by default.
+  - Content an assistant reads that comes from licensed sources (ECLASS data) follows the
+    licence.
+- **Audit log.** A local log of what was sent to an external provider and what came back,
+  outside the project folder by default.
+- **Offline.** With no provider, everything else works; with a local provider, nothing needs
+  a network.
+
+### 11.7 Future assistant capabilities
+
+They use the layers above and need nothing new in the core:
+
+| Capability | What the assistant does | Deterministic part that stays in the core | Needs |
+| --- | --- | --- | --- |
+| Machine architecture | Proposes sections, locations and requirements from a description | Structure validation, naming | M8, M11 |
+| Component selection | Ranks and explains library parts for a requirement | Filtering by class and data constraints; the selection check | M9, M11 |
+| Datasheet extraction | Reads a PDF data sheet and proposes technical data, terminal patterns and sizes, citing the page | Data validation (units, names, limits) | M9; PDF text extraction |
+| Template selection | Proposes templates and options for requirements | Instantiation, port binding, connectivity checks | M12 |
+| Documentation | Drafts descriptions, notes and second-language texts | Generated pages, layout, BOM | M14 |
+| Review | Explains check results and suggests fixes as change sets | The checks themselves | Any |
+
+All of them produce change sets with suggested provenance. None writes to the model
+directly.
 
 ## Decisions to make
 
@@ -433,3 +594,9 @@ Each has a proposed default, used unless the review decides otherwise.
 | D13 | PR #32 | **Keep as draft;** after approval rebase it as M9's base, adding revision/source |
 | D14 | Requirement parameters: free or aligned with ETIM features | **A small fixed set per kind, mapped to ETIM features where one exists** |
 | D15 | Concurrency | **One writer per folder (the lock), as today;** no live multi-user editing |
+| D16 | The typed interface | **One registry of queries and operations** in `ecad-editor`, from which MCP's tools and schemas are generated; `Command` stays the low-level unit |
+| D17 | Provenance granularity | **Per entity, and per line of technical data;** no provenance on manual data |
+| D18 | Assistant apply policy | **Propose and preview only;** a person accepts. A session started with explicit write permission (MCP `--write`) may apply, recorded as the assistant's, with data still Suggested |
+| D19 | What is safety-related | **Safety-marked sections, safety product classes, and items a person marks** |
+| D20 | External providers | **Off by default,** per-project opt-in, with excluded fields and an audit log |
+| D21 | Where assistant conversations are kept | **Outside the project folder** (user data), never in git with the project unless exported on purpose |

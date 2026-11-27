@@ -39,6 +39,22 @@ M11 layouts, M12 SPAC) are folded into the sequence below. Nothing from them is 
 | **M15** | Layouts on shared CAD | Cabinet layout: footprints and front views from library DXF, door layout with cut-outs; machine layout: field locations over a machine drawing, cable routes and lengths; layout checks against locations | No | M8, M9 |
 | **M16** | Functional modules | Module library (sections, requirements, templates, parameters); instantiate; the conveyor zone as the first module | No | M13 |
 
+### AI track
+
+The prerequisites are built into the engineering milestones; inference comes after them. See
+PLATFORM-ARCHITECTURE.md section 11.
+
+| # | Milestone | Scope | Inference? | Needs |
+| --- | --- | --- | --- | --- |
+| **AI0** | Engineering interface | One registry of typed queries and operations shared by editor, CLI and MCP. MCP tools and schemas generated from it. Actor recorded on every history entry. Change sets: propose, preview (diff, check delta, pages affected, safety items), apply as one undo step, base check. MCP gains `propose`, `preview` and `apply` | No | M7 |
+| *(in M8, M9, M11, M12, M14)* | Provenance as each layer arrives | Suggested or Verified on sections and locations (M8), technical data lines and selections (M9, M11), requirement parameters (M11), template choices (M12), descriptions and translations (M14); the `verify` operation (people only); the `unverified-data` check | No | AI0 |
+| *(in M8, M11)* | Safety-related items | Safety marking on sections (M8) and product classes (M11); separate confirmation for change sets that touch them; release export refuses unverified safety data | No | AI0 |
+| **AI1** | Local assistant, read-only | `ecad-assist` adapter crate with the provider interface and an Ollama provider; assistant off by default; per-project data policy; queries only: explain checks, find devices, summarise the BOM; works offline | Yes, local | AI0, M11 |
+| **AI2** | Proposals | The assistant produces change sets: machine structure and requirements from a description, component ranking with explanations; assistant panel with preview and accept or reject | Yes, local | AI1, M11 |
+| **AI3** | Datasheet extraction | PDF data sheet text into suggested technical data, terminal patterns and sizes, with page citations | Yes, local | AI2, M9 |
+| **AI4** | Templates and documentation | Template and option proposals for requirements; descriptions, notes and second-language texts | Yes, local | AI2, M12, M14 |
+| **AI5** | External providers | Opt-in per project, excluded fields, audit log of what was sent | Yes, external | AI1 |
+
 ### Parallel tracks (independent of the sequence above)
 
 | Track | Scope | Can start after |
@@ -57,9 +73,11 @@ M7 ──► M10 ──► M12 ──► M13 ──► M14
  └──► M9 ───────┤        └──► M16
 M8 ──► M11 ◄── M9
 M8, M9 ──► M15
+M7 ──► AI0 ──► AI1 (needs M11) ──► AI2 ──► AI3, AI4;  AI1 ──► AI5
 ```
 
-M7 and M8 can run in parallel, and M9 follows M7. M10 is the one format change and comes
+M7 and M8 can run in parallel, and M9 follows M7. AI0 follows M7 and comes before M9, so the
+library update preview (M9) and regeneration preview (M13) are built as change sets. M10 is the one format change and comes
 early, so later milestones build on the final connectivity.
 
 ## Acceptance project: the conveyor
@@ -128,10 +146,11 @@ It is started and stopped from the cabinet door and stopped by an emergency stop
 | After | The CI test proves |
 | --- | --- |
 | M7 | The conveyor drawn schematic-first (a script of today's commands) resolves every wire end to (device, designation); designations unique; renaming a terminal keeps every wire; netlist stable across save and load |
+| AI0 | Every step of the M7 conveyor script runs through the operation registry; the same build run as a change set by an "assistant" actor previews the expected additions with no check errors, applies as one undo step, and undo restores the project byte for byte; a change set made against an older fingerprint is refused; MCP's tool list matches the registry |
 | M8 | Sections and locations as above; every device assigned; full designations (`=CONV.DRV+CAB.P-K1`) in reports; location boxes linked; proposing structure from tag prefixes on the schematic-first version gives the same tree |
-| M9 | The test library imports from CSV and Excel; every device's part is taken from it; changing a price in the library and updating shows one field changed; a local contact-block edit survives; a conflicting edit is reported, not overwritten |
+| M9 | Technical data lines entered by the assistant actor are Suggested, the `unverified-data` check lists them, and a person's `verify` clears them. The test library imports from CSV and Excel; every device's part is taken from it; changing a price in the library and updating shows one field changed; a local contact-block edit survives; a conflicting edit is reported, not overwritten |
 | M10 | The project saves as format 2 and reads back identical; the M7 schematic-first conveyor, saved as format 1 and read again, gives the same netlist and byte-identical drawings (golden); a wire added without drawing appears in the wire list as not drawn |
-| M11 | R1–R10 entered; products selected for each; R5's selection fails the check when the motor becomes 1.1 kW (2.6 A outside the protector range) and passes after reselecting |
+| M11 | `=SAF` and the safety relay are safety-related; an assistant change set touching `-K3` is flagged and can't be applied without the separate confirmation; the assistant actor can't verify it; a release export with unverified safety data fails. R1–R10 entered; products selected for each; R5's selection fails the check when the motor becomes 1.1 kW (2.6 A outside the protector range) and passes after reselecting |
 | M12 | The electrical design above built from templates (supply, reversing DOL, 24 V, PLC channels, sensors, buttons, lamps, safety relay) with ports bound; the netlist equals the schematic-first conveyor's netlist (same terminals, same potentials) |
 | M13 | Pages generated from the model; **generating twice gives byte-identical files;** after moving `-K1` and renumbering one wire by hand, then changing R4 to 0.75 kW and reselecting the motor and protector, regenerating keeps the move and the number, updates the device data shown, and lists exactly the expected conflicts; check: 0 errors |
 | M14 | Cover, contents, BOM, terminal strips, cable list and PLC I/O pages generated in the frame; BOM quantities equal the devices' parts; TIA tag table matches the PLC channels; PDF and DWG export with golden files |
@@ -139,6 +158,9 @@ It is started and stopped from the cabinet door and stopped by an emergency stop
 | M16 | The conveyor rebuilt from one "conveyor zone" module plus supply and control; same netlist as M12 |
 
 Always, from M7 on:
+
+- the conveyor builds and checks with no AI provider present (AI1 onwards: and with the
+  assistant switched off);
 
 - the reference project and the samples still load;
 - golden drawings unchanged unless a PR says why;
@@ -157,5 +179,6 @@ Always, from M7 on:
 
 ## Outstanding architectural decisions
 
-See [Decisions to make](PLATFORM-ARCHITECTURE.md#decisions-to-make) (D1–D15). The ones that
-block M7 and M10 are **D1, D2 and D13**; D11 (shared CAD scope) blocks M15.
+See [Decisions to make](PLATFORM-ARCHITECTURE.md#decisions-to-make) (D1–D21). The ones that
+block M7 and M10 are **D1, D2 and D13**; D11 (shared CAD scope) blocks M15; **D16 and D18**
+block AI0; D20 and D21 block AI1 and AI5.
