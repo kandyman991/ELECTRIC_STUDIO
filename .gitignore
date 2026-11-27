@@ -4,3 +4,4 @@
 *.ecad-new
 .ecad-save.json*
 .ecad-lock
+/bench/results

@@ -1270,6 +1270,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ecad-bench"
+version = "0.0.1"
+dependencies = [
+ "ecad-model",
+ "ecad-project",
+ "ecad-rules",
+ "ecad-view",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
 name = "ecad-cli"
 version = "0.0.1"
 dependencies = [

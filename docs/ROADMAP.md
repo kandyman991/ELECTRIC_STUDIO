@@ -1,15 +1,16 @@
 # Roadmap: machine-centric platform
 
-**Status: all architectural decisions D1–D43 resolved with conditions (27 Nov 2026); final
-revision for independent architecture review.** Pairs with [PLATFORM-ARCHITECTURE.md](PLATFORM-ARCHITECTURE.md). Nothing starts until
-this revision is approved.
+**Status: architecture approved and merged (PR #31, 27 Nov 2026), all decisions D1–D43
+resolved. Implementation under way: M7 complete, awaiting formal acceptance.** Pairs with
+[PLATFORM-ARCHITECTURE.md](PLATFORM-ARCHITECTURE.md).
 
 ## Where things stand
 
 | Milestone | State |
 | --- | --- |
 | M0–M6 (foundation, editor, multi-page, parts and reports, checks and output, MVP gate, panel layout, integrations) | Merged |
-| M7a components library (PR #32) | Draft, **on hold** (D13). Its compatible parts are reused in M9 |
+| M7 model foundations | M7a (PR #33, derived connectivity, netlist, content hash) merged; M7b (conveyor acceptance project, benchmark harness) complete; **ready for formal acceptance review** |
+| Components library (PR #32) | Draft, **on hold** (D13). Its compatible parts are reused in M9 |
 
 The earlier proposals in GAPS.md (library, annotations, generated pages, symbols, layouts,
 SPAC) are all folded into the plan below. Nothing from them is dropped.
@@ -59,7 +60,9 @@ SPAC) are all folded into the plan below. Nothing from them is dropped.
 
 Each milestone needs only what is listed:
 
-- **M7** first, then **M10**.
+- **M7** first, then **M10**. M7 is implemented and awaits formal acceptance: the conveyor is
+  `crates/ecad-model/src/conveyor.rs`, its acceptance tests `tests/acceptance/`, the benchmark
+  harness `crates/ecad-bench` with `bench/` (baselines, the controlled-run script).
 - After M10: **S0**, **AI0**, **C0**.
 - After AI0 and S0: **M8**, **M9**. After S0, AI0 and M9: **S1**.
 - After M8, M9 and S1: **M11**. After M9, M10 and S0: **M12**.

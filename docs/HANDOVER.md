@@ -12,10 +12,11 @@ merged PR.
   review happens when a milestone is ready for formal acceptance, or when a significant
   architectural issue needs a decision.
 - **Current milestone:** M7, model foundations.
-  - M7a (PR #33): derived connectivity, netlist, checks, typed PLC data, content hash. Its four
-    review findings are corrected; merged once CI is green.
-  - M7b: the conveyor acceptance project (schematic-first) and the benchmark harness. In
-    progress.
+  - M7a (PR #33, merged): derived connectivity, netlist, checks, typed PLC data, content hash.
+  - M7b (PR #34): the conveyor acceptance project (schematic-first), its acceptance tests and
+    the benchmark harness.
+  - **Next:** independent review for formal M7 acceptance, and the first controlled benchmark
+    run on the Legion (`bench/run-controlled.sh`), which records the wall-clock baseline. Then M10.
 - **On hold:** PR #32 (component library, draft), reused in M9 after reconciliation (D13).
 
 ## How to build and test
@@ -27,8 +28,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-- CI runs fmt, clippy, tests on Ubuntu and Windows, a Windows build, and the MCP server against
-  the official client.
+- CI runs fmt, clippy, tests on Ubuntu and Windows (the conveyor acceptance tests included), the
+  benchmark job (smoke suite, counts against the baseline, instruction counts), a Windows build,
+  and the MCP server against the official client.
+- Expected results: `ECAD_UPDATE_GOLDEN=1 cargo test -p ecad-acceptance --test conveyor` (and
+  `-p ecad-view --test golden`); benchmark baselines as in bench/README.md. Any change to the
+  conveyor or a rule refreshes them in the same PR, with the reason.
+- `ecad-bench` is slow in debug: build it with `--release` (about 10 minutes cold on 2 cores).
 - CI's toolchain is newer than some local ones, so newer clippy lints can appear there first.
 
 ## Conventions
@@ -52,3 +58,11 @@ cargo test --workspace
   - junctions drawn twice.
 - **The oracle:** `Project::potentials_legacy` (test-only) is the pre-M7a potential computation.
   The netlist must keep matching it on every sample and the reference project.
+- **The conveyor** (`crates/ecad-model/src/conveyor.rs`) is built with the shared `Builder`
+  (`builder.rs`, also used by the reference project) and has ids from `0xC0_0000`; its ids,
+  tags and drawing are pinned by the acceptance tests, so a change there is deliberate. It
+  checks with 0 errors and 0 warnings; keep it that way (CI runs `ecad check --strict` on it).
+- **Benchmarks:** the synthetic project replicates the conveyor through commands (tags
+  `=M<k>`, pages `<k>.<page>`, PLC addresses moved up two bytes per copy). First observation:
+  at the full size (2 000 devices, 240 pages) `check` (~8 s) and `render` (~16 s) grow faster
+  than linearly; candidates for work once the Legion baseline exists.

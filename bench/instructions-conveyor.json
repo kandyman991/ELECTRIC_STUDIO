@@ -1,0 +1,15 @@
+{
+  "note": "Instructions per workload under cachegrind, setup subtracted, release build. Informative: a new toolchain moves them too.",
+  "project": "conveyor",
+  "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+  "workloads": {
+    "check": 42213525,
+    "edit": 42216564,
+    "hash": 18283391,
+    "netlist": 2842617,
+    "open": 9102268,
+    "pdf": 649755390,
+    "render": 70919596,
+    "save": 9764178
+  }
+}
