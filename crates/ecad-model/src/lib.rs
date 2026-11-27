@@ -3,8 +3,10 @@
 //! Drawings, reports and exports are all derived from this model. This crate must never depend
 //! on CADCraft or on any UI crate (see AGENTS.md).
 
+mod builder;
 pub mod connectivity;
 pub mod content_hash;
+pub mod conveyor;
 pub mod finite;
 pub mod geometry;
 pub mod history;

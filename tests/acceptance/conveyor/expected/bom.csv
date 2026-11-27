@@ -1,0 +1,20 @@
+part_number,manufacturer,description,quantity,devices,code,pages
+EX-CT-4KW-24DC,Example,"Contactor 4 kW AC-3, 24 V DC coil, 1 NO + 1 NC",2,-K1 -K2,,1 4 5
+EX-ES-2NC,Example,"Emergency stop mushroom, twist release, 2 NC",1,-S0,,3
+EX-FH-10x38,Example,Fuse holder 1P 10x38 with fuse 4 A gG,1,-F3,,2
+EX-LAMP-24-G,Example,"Pilot lamp 24 V DC, green",1,-H1,,4
+EX-LAMP-24-R,Example,"Pilot lamp 24 V DC, red",1,-H2,,4
+EX-MOT-0.55-4P,Example,Three-phase motor 0.55 kW 400 V 4 pole IE3,1,-M1,,1
+EX-MPCB-1.6,Example,"Motor protection circuit breaker 1.1-1.6 A, 1 NO",1,-Q1,,1 5
+EX-MS-16,Example,"Main switch 3P 16 A, lockable handle",1,-Q0,,1
+EX-PB-BLACK,Example,Pushbutton black,1,-S3,,5
+EX-PB-GREEN,Example,Pushbutton green,1,-S1,,5
+EX-PB-RED,Example,Pushbutton red,1,-S2,,5
+EX-PE-PNP-M12,Example,"Photoelectric sensor PNP NO 24 V DC, M12",2,-B1 -B2,,5
+EX-PLC-14-10,Example,"Compact PLC 24 V DC, 14 DI / 10 DO, Ethernet",1,-A1,,4 5
+EX-PS-24-5,Example,"Power supply 24 V DC 5 A, DIN rail",1,-T1,,2
+EX-RCBO-C6,Example,RCBO 1P+N C6 30 mA,1,-F2,,1
+EX-SR-2CH,Example,"Safety relay 24 V DC, 2 channels, 2 NO + 1 NO aux",1,-K3,,3
+EX-TB-2.5,Example,"Terminal 2.5 mm², grey",5,-X2 -X3,,1 5
+EX-TB-2.5-PE,Example,"Terminal 2.5 mm², green-yellow, PE",1,-X2,,1
+EX-TB2L-2.5,Example,Two-level terminal 2.5 mm²,2,-X3,,5

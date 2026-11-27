@@ -60,11 +60,38 @@ jobs:
           cargo run -p ecad-cli --locked -- demo out
           cargo run -p ecad-cli --locked -- new-sample out/sample-project
           cargo run -p ecad-cli --locked -- check out/sample-project
+          cargo run -p ecad-cli --locked -- new-sample out/conveyor conveyor
+          cargo run -p ecad-cli --locked -- check out/conveyor --strict
       - uses: actions/upload-artifact@v4
         if: runner.os == 'Linux'
         with:
           name: demo-output
           path: out/
+
+  bench:
+    name: benchmarks (counts, smoke, instructions)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+      - run: sudo apt-get update && sudo apt-get install -y valgrind
+      - run: cargo build --release --locked -p ecad-bench
+      # Deterministic counts must match the baseline (fails); times are printed only.
+      - name: Smoke suite and counts
+        run: |
+          target/release/ecad-bench suite --size smoke --out bench-smoke.json
+          target/release/ecad-bench compare bench-smoke.json bench/baseline-smoke.json
+      # Instruction counts against the baseline: a warning, never a failure.
+      - name: Instruction counts
+        run: target/release/ecad-bench instructions bench/instructions-conveyor.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-smoke
+          path: bench-smoke.json
 
   mcp-client:
     name: MCP server with the official client

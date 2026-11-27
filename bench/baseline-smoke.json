@@ -1,0 +1,622 @@
+{
+  "machine": {
+    "arch": "x86_64",
+    "commit": "1745d64b091d3633abdf5427fa5e57001b267965",
+    "cores": 2,
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "governor": null,
+    "kernel": "6.18.44-fc-v880",
+    "label": "sandbox",
+    "loadavg": "1.77 1.75 1.09 1/104 23385",
+    "onAc": false,
+    "os": "linux",
+    "profile": "release",
+    "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)"
+  },
+  "results": [
+    {
+      "counts": {
+        "contentHash": "sha256:14babe894f07ca66b9164683b372046a238ef1c29e5a9b640cd60d7d42beab7c",
+        "devices": 50,
+        "drawings": 91,
+        "loadedDevices": 50,
+        "nets": 40,
+        "nodes": 30,
+        "pages": 6,
+        "terminals": 117,
+        "underlayPoints": 0,
+        "wires": 97
+      },
+      "iterations": 3,
+      "peakKib": 8956,
+      "project": "conveyor",
+      "setupPeakKib": 8760,
+      "size": "smoke",
+      "timesNs": [
+        2594138,
+        2618987,
+        1688326
+      ],
+      "workload": "open"
+    },
+    {
+      "counts": {
+        "contentHash": "sha256:14babe894f07ca66b9164683b372046a238ef1c29e5a9b640cd60d7d42beab7c",
+        "devices": 50,
+        "drawings": 91,
+        "nets": 40,
+        "nodes": 30,
+        "pages": 6,
+        "saved": true,
+        "terminals": 117,
+        "underlayPoints": 0,
+        "wires": 97
+      },
+      "iterations": 3,
+      "peakKib": 8572,
+      "project": "conveyor",
+      "setupPeakKib": 8252,
+      "size": "smoke",
+      "timesNs": [
+        18292872,
+        1366144,
+        1250046
+      ],
+      "workload": "save"
+    },
+    {
+      "counts": {
+        "contentHash": "sha256:14babe894f07ca66b9164683b372046a238ef1c29e5a9b640cd60d7d42beab7c",
+        "devices": 50,
+        "drawings": 91,
+        "findings": 0,
+        "nets": 40,
+        "nodes": 30,
+        "pages": 6,
+        "terminals": 117,
+        "underlayPoints": 0,
+        "wires": 97
+      },
+      "iterations": 3,
+      "peakKib": 8612,
+      "project": "conveyor",
+      "setupPeakKib": 8436,
+      "size": "smoke",
+      "timesNs": [
+        5517290,
+        5343507,
+        5520007
+      ],
+      "workload": "edit"
+    },
+    {
+      "counts": {
+        "contentHash": "sha256:14babe894f07ca66b9164683b372046a238ef1c29e5a9b640cd60d7d42beab7c",
+        "devices": 50,
+        "drawings": 91,
+        "errors": 0,
+        "findings": 0,
+        "nets": 40,
+        "nodes": 30,
+        "pages": 6,
+        "terminals": 117,
+        "underlayPoints": 0,
+        "wires": 97
+      },
+      "iterations": 3,
+      "peakKib": 8440,
+      "project": "conveyor",
+      "setupPeakKib": 8312,
+      "size": "smoke",
+      "timesNs": [
+        5540511,
+        5424773,
+        5385791
+      ],
+      "workload": "check"
+    },
+    {
+      "counts": {
+        "contentHash": "sha256:14babe894f07ca66b9164683b372046a238ef1c29e5a9b640cd60d7d42beab7c",
+        "devices": 50,
+        "drawings": 91,
+        "nets": 40,
+        "nodes": 30,
+        "pages": 6,
+        "terminals": 117,
+        "underlayPoints": 0,
+        "unresolved": 0,
+        "wires": 97
+      },
+      "iterations": 3,
+      "peakKib": 8296,
+      "project": "conveyor",
+      "setupPeakKib": 8296,
+      "size": "smoke",
+      "timesNs": [
+        392751,
+        339668,
+        356330
+      ],
+      "workload": "netlist"
+    },
+    {
+      "counts": {
+        "contentHash": "sha256:14babe894f07ca66b9164683b372046a238ef1c29e5a9b640cd60d7d42beab7c",
+        "devices": 50,
+        "drawings": 91,
+        "hash": "sha256:14babe894f07ca66b9164683b372046a238ef1c29e5a9b640cd60d7d42beab7c",
+        "nets": 40,
+        "nodes": 30,
+        "pages": 6,
+        "terminals": 117,
+        "underlayPoints": 0,
+        "wires": 97
+      },
+      "iterations": 3,
+      "peakKib": 8540,
+      "project": "conveyor",
+      "setupPeakKib": 8540,
+      "size": "smoke",
+      "timesNs": [
+        1342074,
+        1413341,
+        1230186
+      ],
+      "workload": "hash"
+    },
+    {
+      "counts": {
+        "contentHash": "sha256:14babe894f07ca66b9164683b372046a238ef1c29e5a9b640cd60d7d42beab7c",
+        "devices": 50,
+        "drawings": 91,
+        "nets": 40,
+        "nodes": 30,
+        "pages": 6,
+        "primitives": 5521,
+        "terminals": 117,
+        "underlayPoints": 0,
+        "wires": 97
+      },
+      "iterations": 3,
+      "peakKib": 10452,
+      "project": "conveyor",
+      "setupPeakKib": 8452,
+      "size": "smoke",
+      "timesNs": [
+        8655941,
+        8460733,
+        8709670
+      ],
+      "workload": "render"
+    },
+    {
+      "counts": {
+        "contentHash": "sha256:14babe894f07ca66b9164683b372046a238ef1c29e5a9b640cd60d7d42beab7c",
+        "devices": 50,
+        "drawings": 91,
+        "nets": 40,
+        "nodes": 30,
+        "pages": 6,
+        "pdfNonEmpty": true,
+        "terminals": 117,
+        "underlayPoints": 0,
+        "wires": 97
+      },
+      "iterations": 3,
+      "peakKib": 15704,
+      "project": "conveyor",
+      "setupPeakKib": 8420,
+      "size": "smoke",
+      "timesNs": [
+        79835386,
+        80916420,
+        81123401
+      ],
+      "workload": "pdf"
+    },
+    {
+      "counts": {
+        "contentHash": "sha256:618c03a4b81def042d752f318e73644ff77cb1a02c9dd1f03f71ffab531dc1f3",
+        "devices": 169,
+        "drawings": 279,
+        "loadedDevices": 169,
+        "nets": 96,
+        "nodes": 101,
+        "pages": 11,
+        "terminals": 358,
+        "underlayPoints": 0,
+        "wires": 297
+      },
+      "iterations": 3,
+      "peakKib": 11056,
+      "project": "reference",
+      "setupPeakKib": 10864,
+      "size": "smoke",
+      "timesNs": [
+        2866672,
+        2759165,
+        2756800
+      ],
+      "workload": "open"
+    },
+    {
+      "counts": {
+        "contentHash": "sha256:618c03a4b81def042d752f318e73644ff77cb1a02c9dd1f03f71ffab531dc1f3",
+        "devices": 169,
+        "drawings": 279,
+        "nets": 96,
+        "nodes": 101,
+        "pages": 11,
+        "saved": true,
+        "terminals": 358,
+        "underlayPoints": 0,
+        "wires": 297
+      },
+      "iterations": 3,
+      "peakKib": 10872,
+      "project": "reference",
+      "setupPeakKib": 10560,
+      "size": "smoke",
+      "timesNs": [
+        24142937,
+        2242948,
+        2142016
+      ],
+      "workload": "save"
+    },
+    {
+      "counts": {
+        "contentHash": "sha256:618c03a4b81def042d752f318e73644ff77cb1a02c9dd1f03f71ffab531dc1f3",
+        "devices": 169,
+        "drawings": 279,
+        "findings": 63,
+        "nets": 96,
+        "nodes": 101,
+        "pages": 11,
+        "terminals": 358,
+        "underlayPoints": 0,
+        "wires": 297
+      },
+      "iterations": 3,
+      "peakKib": 10740,
+      "project": "reference",
+      "setupPeakKib": 10564,
+      "size": "smoke",
+      "timesNs": [
+        30387596,
+        29329924,
+        28949635
+      ],
+      "workload": "edit"
+    },
+    {
+      "counts": {
+        "contentHash": "sha256:618c03a4b81def042d752f318e73644ff77cb1a02c9dd1f03f71ffab531dc1f3",
+        "devices": 169,
+        "drawings": 279,
+        "errors": 0,
+        "findings": 63,
+        "nets": 96,
+        "nodes": 101,
+        "pages": 11,
+        "terminals": 358,
+        "underlayPoints": 0,
+        "wires": 297
+      },
+      "iterations": 3,
+      "peakKib": 10772,
+      "project": "reference",
+      "setupPeakKib": 10612,
+      "size": "smoke",
+      "timesNs": [
+        34662302,
+        30923481,
+        30624409
+      ],
+      "workload": "check"
+    },
+    {
+      "counts": {
+        "contentHash": "sha256:618c03a4b81def042d752f318e73644ff77cb1a02c9dd1f03f71ffab531dc1f3",
+        "devices": 169,
+        "drawings": 279,
+        "nets": 96,
+        "nodes": 101,
+        "pages": 11,
+        "terminals": 358,
+        "underlayPoints": 0,
+        "unresolved": 0,
+        "wires": 297
+      },
+      "iterations": 3,
+      "peakKib": 10496,
+      "project": "reference",
+      "setupPeakKib": 10496,
+      "size": "smoke",
+      "timesNs": [
+        1111743,
+        1101488,
+        1353113
+      ],
+      "workload": "netlist"
+    },
+    {
+      "counts": {
+        "contentHash": "sha256:618c03a4b81def042d752f318e73644ff77cb1a02c9dd1f03f71ffab531dc1f3",
+        "devices": 169,
+        "drawings": 279,
+        "hash": "sha256:618c03a4b81def042d752f318e73644ff77cb1a02c9dd1f03f71ffab531dc1f3",
+        "nets": 96,
+        "nodes": 101,
+        "pages": 11,
+        "terminals": 358,
+        "underlayPoints": 0,
+        "wires": 297
+      },
+      "iterations": 3,
+      "peakKib": 10536,
+      "project": "reference",
+      "setupPeakKib": 10536,
+      "size": "smoke",
+      "timesNs": [
+        2660475,
+        2597745,
+        2317871
+      ],
+      "workload": "hash"
+    },
+    {
+      "counts": {
+        "contentHash": "sha256:618c03a4b81def042d752f318e73644ff77cb1a02c9dd1f03f71ffab531dc1f3",
+        "devices": 169,
+        "drawings": 279,
+        "nets": 96,
+        "nodes": 101,
+        "pages": 11,
+        "primitives": 14139,
+        "terminals": 358,
+        "underlayPoints": 0,
+        "wires": 297
+      },
+      "iterations": 3,
+      "peakKib": 13420,
+      "project": "reference",
+      "setupPeakKib": 10508,
+      "size": "smoke",
+      "timesNs": [
+        35415802,
+        35794089,
+        36137841
+      ],
+      "workload": "render"
+    },
+    {
+      "counts": {
+        "contentHash": "sha256:618c03a4b81def042d752f318e73644ff77cb1a02c9dd1f03f71ffab531dc1f3",
+        "devices": 169,
+        "drawings": 279,
+        "nets": 96,
+        "nodes": 101,
+        "pages": 11,
+        "pdfNonEmpty": true,
+        "terminals": 358,
+        "underlayPoints": 0,
+        "wires": 297
+      },
+      "iterations": 3,
+      "peakKib": 26912,
+      "project": "reference",
+      "setupPeakKib": 10324,
+      "size": "smoke",
+      "timesNs": [
+        396469214,
+        494105894,
+        377962252
+      ],
+      "workload": "pdf"
+    },
+    {
+      "counts": {
+        "contentHash": "sha256:e67dcd75ef74306a381cbc62adbe368ebbec688ec97ddb1979e29c25d3c6e493",
+        "devices": 200,
+        "drawings": 364,
+        "loadedDevices": 200,
+        "nets": 160,
+        "nodes": 120,
+        "pages": 24,
+        "terminals": 468,
+        "underlayPoints": 20009,
+        "wires": 388
+      },
+      "iterations": 3,
+      "peakKib": 23324,
+      "project": "synthetic",
+      "setupPeakKib": 23132,
+      "size": "smoke",
+      "timesNs": [
+        7890387,
+        7795287,
+        7746649
+      ],
+      "workload": "open"
+    },
+    {
+      "counts": {
+        "contentHash": "sha256:e67dcd75ef74306a381cbc62adbe368ebbec688ec97ddb1979e29c25d3c6e493",
+        "devices": 200,
+        "drawings": 364,
+        "nets": 160,
+        "nodes": 120,
+        "pages": 24,
+        "saved": true,
+        "terminals": 468,
+        "underlayPoints": 20009,
+        "wires": 388
+      },
+      "iterations": 3,
+      "peakKib": 23268,
+      "project": "synthetic",
+      "setupPeakKib": 22948,
+      "size": "smoke",
+      "timesNs": [
+        24671732,
+        3995042,
+        4119742
+      ],
+      "workload": "save"
+    },
+    {
+      "counts": {
+        "contentHash": "sha256:e67dcd75ef74306a381cbc62adbe368ebbec688ec97ddb1979e29c25d3c6e493",
+        "devices": 200,
+        "drawings": 364,
+        "findings": 0,
+        "nets": 160,
+        "nodes": 120,
+        "pages": 24,
+        "terminals": 468,
+        "underlayPoints": 20009,
+        "wires": 388
+      },
+      "iterations": 3,
+      "peakKib": 23192,
+      "project": "synthetic",
+      "setupPeakKib": 23032,
+      "size": "smoke",
+      "timesNs": [
+        80852404,
+        71750735,
+        69375702
+      ],
+      "workload": "edit"
+    },
+    {
+      "counts": {
+        "contentHash": "sha256:e67dcd75ef74306a381cbc62adbe368ebbec688ec97ddb1979e29c25d3c6e493",
+        "devices": 200,
+        "drawings": 364,
+        "errors": 0,
+        "findings": 0,
+        "nets": 160,
+        "nodes": 120,
+        "pages": 24,
+        "terminals": 468,
+        "underlayPoints": 20009,
+        "wires": 388
+      },
+      "iterations": 3,
+      "peakKib": 23144,
+      "project": "synthetic",
+      "setupPeakKib": 22968,
+      "size": "smoke",
+      "timesNs": [
+        68162556,
+        81851836,
+        68371363
+      ],
+      "workload": "check"
+    },
+    {
+      "counts": {
+        "contentHash": "sha256:e67dcd75ef74306a381cbc62adbe368ebbec688ec97ddb1979e29c25d3c6e493",
+        "devices": 200,
+        "drawings": 364,
+        "nets": 160,
+        "nodes": 120,
+        "pages": 24,
+        "terminals": 468,
+        "underlayPoints": 20009,
+        "unresolved": 0,
+        "wires": 388
+      },
+      "iterations": 3,
+      "peakKib": 23020,
+      "project": "synthetic",
+      "setupPeakKib": 23020,
+      "size": "smoke",
+      "timesNs": [
+        1589381,
+        1532367,
+        1399410
+      ],
+      "workload": "netlist"
+    },
+    {
+      "counts": {
+        "contentHash": "sha256:e67dcd75ef74306a381cbc62adbe368ebbec688ec97ddb1979e29c25d3c6e493",
+        "devices": 200,
+        "drawings": 364,
+        "hash": "sha256:e67dcd75ef74306a381cbc62adbe368ebbec688ec97ddb1979e29c25d3c6e493",
+        "nets": 160,
+        "nodes": 120,
+        "pages": 24,
+        "terminals": 468,
+        "underlayPoints": 20009,
+        "wires": 388
+      },
+      "iterations": 3,
+      "peakKib": 22680,
+      "project": "synthetic",
+      "setupPeakKib": 22680,
+      "size": "smoke",
+      "timesNs": [
+        10946845,
+        10384089,
+        9882344
+      ],
+      "workload": "hash"
+    },
+    {
+      "counts": {
+        "contentHash": "sha256:e67dcd75ef74306a381cbc62adbe368ebbec688ec97ddb1979e29c25d3c6e493",
+        "devices": 200,
+        "drawings": 364,
+        "nets": 160,
+        "nodes": 120,
+        "pages": 24,
+        "primitives": 28312,
+        "terminals": 468,
+        "underlayPoints": 20009,
+        "wires": 388
+      },
+      "iterations": 3,
+      "peakKib": 25172,
+      "project": "synthetic",
+      "setupPeakKib": 22948,
+      "size": "smoke",
+      "timesNs": [
+        85116973,
+        81403625,
+        84384008
+      ],
+      "workload": "render"
+    },
+    {
+      "counts": {
+        "contentHash": "sha256:e67dcd75ef74306a381cbc62adbe368ebbec688ec97ddb1979e29c25d3c6e493",
+        "devices": 200,
+        "drawings": 364,
+        "nets": 160,
+        "nodes": 120,
+        "pages": 24,
+        "pdfNonEmpty": true,
+        "terminals": 468,
+        "underlayPoints": 20009,
+        "wires": 388
+      },
+      "iterations": 3,
+      "peakKib": 55912,
+      "project": "synthetic",
+      "setupPeakKib": 22772,
+      "size": "smoke",
+      "timesNs": [
+        1481215437,
+        1455843585,
+        1463894403
+      ],
+      "workload": "pdf"
+    }
+  ],
+  "size": "smoke"
+}

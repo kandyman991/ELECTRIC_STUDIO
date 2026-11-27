@@ -1,0 +1,14 @@
+card,channel,kind,address,symbol,comment,wired_to,location
+-A1,0,DO,Q0.0,Q-FWD,,Q-FWD:1,4/0A
+-A1,1,DO,Q0.1,Q-REV,,Q-REV:1,4/2A
+-A1,2,DO,Q0.2,Running,,-H1:X1,4/3A
+-A1,3,DO,Q0.3,Fault,,-H2:X1,4/4A
+-A1,4,DI,I0.0,Start,,-S1:14,5/0E
+-A1,5,DI,I0.1,Stop,,-S2:12,5/1E
+-A1,6,DI,I0.2,Jog_Reverse,,-S3:14,5/2E
+-A1,7,DI,I0.3,Infeed,,-X3:2,5/3B
+-A1,8,DI,I0.4,Outfeed,,-X3:4,5/4B
+-A1,9,DI,I0.5,Protector_OK,,-Q1:14,5/5E
+-A1,10,DI,I0.6,Safety_OK,,SAFE-OK:1,5/6E
+-A1,11,DI,I0.7,Forward_On,,-K1:14,5/6E
+-A1,12,DI,I1.0,Reverse_On,,-K2:14,5/7E

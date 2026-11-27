@@ -1245,6 +1245,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
+name = "ecad-acceptance"
+version = "0.0.1"
+dependencies = [
+ "ecad-model",
+ "ecad-project",
+ "ecad-reports",
+ "ecad-rules",
+ "ecad-view",
+ "png",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "ecad-app"
 version = "0.0.1"
 dependencies = [
@@ -1253,6 +1267,20 @@ dependencies = [
  "ecad-view",
  "eframe",
  "rfd",
+]
+
+[[package]]
+name = "ecad-bench"
+version = "0.0.1"
+dependencies = [
+ "ecad-model",
+ "ecad-project",
+ "ecad-rules",
+ "ecad-view",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
 ]
 
 [[package]]
