@@ -1,7 +1,7 @@
 # Machine-centric platform: architecture proposal
 
-**Status: revised after the owner's review of D1–D28 (27 Nov 2026), for a second independent
-review.** Nothing here is implemented. No implementation work (including the component library
+**Status: revised after the owner's reviews of D1–D29 and D30–D38 (27 Nov 2026), for the next
+independent review.** Nothing here is implemented. No implementation work (including the component library
 in draft PR #32) starts until this revision is approved. The decision record, with each
 decision's approved conditions, is at the end: [Decision record](#decision-record). Where an
 approved decision conflicts with what the code does today, section 14 says so.
@@ -39,7 +39,7 @@ Principles:
   invariant).
 - **AI-ready, AI-independent.** All engineering works without AI. An optional assistant
   (local first, external providers later) uses the same typed queries and validated
-  operations as every workspace. Each of its change sets needs a person's acceptance
+  operations as every workspace. Each of its change sets needs a person's approval in the app
   (section 11).
 - **Designed is not installed.** The approved design, a released design and the machine as
   built are distinct states (section 12.7).
@@ -258,6 +258,12 @@ WireGraphics { wire, page, bend, from_drawing, to_drawing }    // how one wire i
   - a named potential (`L+`, `M`, `L1`), drawn by potential points on any number of pages;
   - an interruption pair, continuing a potential on another page.
   Their drawings are representations only, and the netlist resolves through nodes.
+- **Node names are scoped explicitly** (D33):
+  - a named potential's name is unique in the project, among potentials;
+  - an interruption's name is unique in the project, among interruptions, and all its
+    drawings are one node;
+  - a junction has no name, only its id.
+  Lookups by name say which kind they look for.
 - **On disk,** connectivity leaves the page files: `terminals.json`, `nodes.json` and
   `wires.json` at project level. Page files keep functions (with their point-to-terminal
   map), node drawings and wire graphics. Format 1 projects are read and converted
@@ -283,6 +289,7 @@ my-machine/
   modifications.json  modification packages and their states (section 12.7)     new
   baselines/<id>.json baseline manifests: name, kind, state, format, file hashes   new
   objects/<sha256>    immutable content: baseline files, library revisions, assets, issued exports   new
+  .ecad/state.json    hashes of the files as last saved, to detect outside changes (11.8)          new
   pages/<id>.json     functions, node drawings, wire graphics, boxes, layout items, CAD geometry
   underlays/<id>.json as today
 ```
@@ -296,6 +303,40 @@ my-machine/
 - Everything stays pretty-printed and sorted, so it diffs in git. Files appear only when
   used, so a schematic-first project looks almost as it does today.
 
+### 4.7 Archives, restore and objects (D38)
+
+**No Git, Git LFS or other version control is required** for anything: saving, revisions,
+baselines, recovery or portability are all native. Companies that keep projects in Git may
+use Git LFS for `objects/`. Excluding `objects/` from version control is safe only when a
+separate, verified backup keeps them, and the documentation says so.
+
+- **Project archive and restore:**
+  - `ecad archive <project> <file>` writes one file (a zip) with every project file, every
+    object reachable from it (baselines, issued documents, library revisions, assets), and
+    a manifest of SHA-256 hashes;
+  - `ecad restore <file> <dir>` unpacks it into a new folder and verifies completeness (every
+    referenced object present) and integrity (every hash matches) before reporting success;
+  - the app offers both;
+  - an archive is also how a project travels with its libraries' revisions to another
+    machine.
+- **Missing objects.** An object referenced but not present is reported with what needs it
+  (a baseline, an issued document, a library revision). The referencing baseline or document
+  is marked incomplete, and nothing that depends on it is guessed. It can be restored from an
+  archive or backup that has it; restore checks the hash.
+- **Damaged objects.** An object whose content doesn't match its hash is moved to
+  `objects/damaged/`, never overwritten or deleted, and reported like a missing one.
+- **Unreferenced objects** (left by an interrupted import, or by a library revision a person
+  deleted) are listed, not deleted.
+  - Cleanup is an explicit operation with a preview. It marks everything reachable from the
+    roots, then offers to delete only objects reached by none of them and older than a grace
+    period.
+  - The roots: the current project files, every baseline manifest, every change record, every
+    issued document, every pinned library copy and every library revision the project
+    references.
+  - **Content referenced by project snapshots, library revisions, baselines or issued
+    documentation is never deleted.**
+- **Libraries** follow the same rules for their own `objects/`.
+
 ## 5. Libraries
 
 All four kinds are folders saved by the same store, with immutable revisions in `objects/`.
@@ -308,52 +349,120 @@ The project keeps copies of what it uses (section 4.2).
 | **Circuit templates** | Reusable circuits: devices with roles, terminals, nodes, internal wires, ports, drawing | New |
 | **Functional modules** | Machine units: sections, requirements, chosen templates, parameters | New, after templates are proven |
 
-### 5.1 Components (integrating the agreed component library)
+### 5.1 Components (the agreed component library, D37)
 
 What #32 built stays the base: a shared library, technical data, imports that never wipe
-data, and take/refresh into projects. Reconciled with the approved decisions:
+data, and take/refresh into projects. Reconciled with D7 and D37:
 
-1. **Canonical product ids and manufacturers** (D7). #32 keys products by (manufacturer,
-   number) in lowercase. That changes to a UUID per product and a manufacturer entity with
-   aliases. Imports match an incoming row to an existing product by manufacturer (through
-   its aliases) and order number, or by a recorded alias of the number. A match keeps the id;
-   no match creates one. Two makers' identical numbers are two products. A renumbered
-   product keeps its id, with the old number recorded as an alias.
-2. **Revision and source,** with immutable contents (section 4.4).
-3. **Mechanical components:** enclosures, mounting plates, DIN rails, ducts, cable glands,
-   brackets, end stops, labels, fixings. They are products with a kind and dimensions, used in
-   the BOM and by the layouts (rails and ducts already carry a part number), with no electrical
-   terminals.
-4. **Terminal pattern:** a product's physical terminals and what each is (coil A1/A2, NO
-   13-14, main 1-2...), from which a device's terminals are created (section 4.5).
-5. **Symbol mapping:** which symbols represent the product (a contactor is a coil, three main
-   contacts and its auxiliaries), with a default per class.
-6. **2D geometry:** footprint, front view, cut-out and drilling outlines as CAD geometry
-   (section 8). It is imported from manufacturer DXF or SVG, or drawn in the native editor.
-7. **Typed technical data with units,** so selection can compare a requirement's 0.55 kW with
-   a product's data. Values that can't be parsed stay text and are flagged.
+**Product model**
 
-**Formats, by track:**
-- CSV and Excel (in #32);
-- BMEcat with ETIM features;
-- **ETIM xChange** (ETIM's JSON format);
-- ECLASS Advanced (licence checked first) and AASX;
-- DXF, DWG and SVG for geometry.
+1. **One canonical product definition, independent of any manufacturer or source format.** Every
+   product has the same schema, whoever made it and whichever file it came from. A source
+   format maps into the schema and never shapes it.
+   - **Generic products** (no manufacturer: "contactor 9 A, 24 V DC coil") are allowed as
+     placeholders before a selection, and as user-created components (D39).
+2. **Stable identities** (D7):
+   - a UUID per product, given when it is first created;
+   - a UUID per manufacturer, with name aliases (`ABB`, `ABB S.p.A.`);
+   - the content hash of each revision (4.4);
+   - installed devices keep their own ids (4.1).
+   Order numbers, old numbers and source keys are aliases, matched on import, never the
+   identity. Two makers' identical numbers are two products, and a renumbered product keeps
+   its id.
+3. **Electrical and purely mechanical components.** Mechanical items (enclosures, plates, DIN
+   rails, ducts, glands, brackets, end stops, labels, fixings) are products with a kind,
+   dimensions and no terminals. They appear in the BOM and the layouts.
+4. **Typed technical specifications** with value, unit and provenance per line (11.4). A value
+   that can't be parsed stays as the source wrote it and is flagged. Nothing is defaulted or
+   invented.
+5. **Electrical functions, terminals and symbol mappings.**
+   - *Functions:* what each part of the product does (coil, NO or NC contact, main contact
+     pole, protection function, PLC DI or DO channel, supply input). They map to the symbol
+     roles the drawings use.
+   - *Terminal pattern:* the physical terminals of each function (A1/A2, 13-14, 1-2...), from
+     which a device's terminals are created (4.5).
+   - *Symbol mapping:* which symbols draw which functions.
+6. **Mechanical geometry, dimensions, mounting and clearances:**
+   - footprint, front view, cut-out and drilling outlines as CAD geometry (section 8);
+   - width, height and depth;
+   - mounting (DIN rail 35 mm, screw, door cut-out, its orientation);
+   - minimum clearances on each side (for heat, arcing, wiring).
+   Layout checks use the clearances as well as the outline.
+7. **Relations:**
+   - accessories (an auxiliary block for a contactor, a marker for a terminal);
+   - compatible products (fits with, replaces);
+   - variants of one family (coil voltages, sizes), each variant its own product.
+   Relations are links by product id. Replacement (12.6) offers compatible products first.
+8. **User-created components and custom libraries.** A person creates and edits products in
+   the app, with the same schema and the geometry editors (C2).
+   - Several libraries can be open, each with its own id, in an order of preference: company
+     library, then manufacturer libraries.
+   - Edits are revisions like imports.
+9. **Self-contained project snapshots** with source and revision (4.4), **immutable revision
+   contents and dependent assets** (4.4), **controlled three-way updates** (4.4).
+10. **Offline:** libraries are folders on disk or a share. Nothing in the library needs a
+    network, and nothing is fetched during import.
 
-**Import security.** A manufacturer file is untrusted input:
-- reads are bounded in file size, unpacked size, rows and columns, as #32 already does;
-- XML is parsed with external entities and DTD fetching disabled;
-- archive entries are checked against path traversal and zip bombs;
-- nothing is downloaded, and no macro or script runs;
-- complex binary parsers run in the isolated worker process used for DWG;
-- every imported item passes the model's validation, and its provenance records the file
-  and its hash.
+**Importers**
 
-**Portable library packages.** A package is one file (a zip): a manifest with library id,
-content list and SHA-256 hashes, plus the items and their objects, for a whole library or a
-selection. Importing one is a library import like any other: validated, hash-checked,
-creating revisions, never overwriting. Signing packages is left for later. A project can be
-exported the same way, with the library items it uses.
+| Priority | Formats |
+| --- | --- |
+| First | CSV and Excel with **reusable column mappings** (saved import profiles, per source); BMEcat with ETIM; **ETIM xChange** (JSON); DXF and SVG for product geometry |
+| Later, on demonstrated need and licensing | ECLASS Advanced, AASX |
+| Later, on feasibility | DWG product geometry (the DWG reader already exists for underlays); STEP (3D; would need a reader and a 2D projection, outside the initial scope) |
+| Only after verifying usage and licensing rights | EDZ |
+
+Every importer must provide:
+
+- **Defensive parsing and bounded resources:**
+  - limits on file size, unpacked size, rows, columns, nesting and entity count;
+  - XML with external entities and DTD fetching disabled;
+  - complex binary parsers in the isolated worker process.
+- **Archive safety:** path traversal, absolute paths, links and zip bombs refused; nothing
+  extracted outside a temporary folder.
+- **Transactional application and rollback.** An import is a change set (11.3). It is
+  previewed, applied all or nothing as one undo step, and recorded as a change record. A
+  failure part way changes nothing.
+- **Duplicate detection:**
+  - within the file (the same product twice);
+  - against the library (same manufacturer through its aliases and the same number or
+    alias);
+  - likely duplicates (the same number after normalising spaces, dashes and case) are listed
+    for a person to decide, never merged silently.
+- **Conflict resolution.** Each source's last imported revision is the base of a three-way
+  comparison:
+  - fields the new file changed are updated;
+  - fields a person edited in the library since are kept;
+  - fields both changed are conflicts, decided by a person.
+  This replaces #32's simpler rule, under which a non-empty incoming value always replaces
+  the library's (section 14, item 11).
+- **Import reports:**
+  - rows read, products added, updated, unchanged and rejected (with why);
+  - duplicates, conflicts, unparsed values;
+  - the file's name and hash.
+  Each report is kept with the change record.
+- **Unknown technical properties are kept** under their source names (as #32 does for unmapped
+  columns), never dropped.
+- **Missing manufacturer data is never fabricated.**
+- **Automatic assignments are suggestions.** Symbols, functions and terminal mappings assigned
+  by class defaults or by matching are **Suggested and unverified** unless the source file
+  carries them as authoritative manufacturer data (ECLASS Advanced or EDZ connection points).
+  A person verifies them (11.4).
+
+**Testing.**
+- Synthetic fixtures (in the repository) for deterministic CI, including hostile files.
+- Representative real manufacturer files for interoperability acceptance, subject to their
+  licences. Where a licence forbids redistribution, they are kept outside the public
+  repository and run locally, as the SPAC and LibreDWG samples are today.
+
+**Portable library packages** are Electric Studio's native exchange format.
+- A package is one file (a zip): a manifest with library id, the content list and SHA-256
+  hashes, plus the products and all their objects (geometry, symbols, data sheets kept).
+- It holds a whole library or a selection.
+- Importing one is a library import like any other: validated, hash-checked, creating
+  revisions, never overwriting.
+- Signing packages is left for later.
+- A project can be exported the same way, with the library items it uses (section 4.7).
 
 ### 5.2 Circuit templates
 
@@ -482,52 +591,83 @@ mirror, bend) and content (symbol, terminals shown, texts) are handled separatel
 
 ## 8. Shared native 2D CAD
 
-Approved scope (D11), shared by every graphical workspace:
+CAD is **a shared capability across Electric Studio, not a separate general-purpose CAD
+application** (D37). Approved scope (D11, D37):
 
 | Capability | Used by |
 | --- | --- |
-| Drawing primitives: line, polyline, arc, circle, rectangle, text, hatch, image | Annotations on pages, symbols, product geometry, layouts |
-| Dimensions (linear, aligned, radius, angle) | Cabinet and door layouts, cut-outs, machine layout |
+| Lines, polylines, arcs, circles, rectangles, text, dimensions (linear, aligned, radius, angle); hatches and images | Annotations on pages, symbols, product geometry, layouts |
 | Layers (visibility, colour, linetype, print) | Every drawing |
-| Snapping (grid, end, mid, centre, intersection, perpendicular, connection points) and alignment (align, distribute, offset) | Every editor |
+| Snapping (grid, end, mid, centre, intersection, perpendicular, connection points), alignment and distribution, rotation, scaling | Every editor |
 | Reusable graphical blocks with attributes | Title blocks, logos, door devices, repeated details |
-| Electrical symbol editing: geometry, connection points, text fields, role | Symbol library |
-| Component geometry creation and editing: footprint, front view, cut-out, drilling | Component library |
-| Cabinet mounting plates and doors, cut-outs | Cabinet layout |
-| Machine layouts and cable routes | Machine layout |
+| Electrical symbol and connection-point editing | Symbol library |
+| Component geometry creation and modification; importing and adapting manufacturer geometry | Component library |
+| Cabinet mounting plates, doors and cut-outs | Cabinet layout |
+| Machine layout creation and editing; equipment positioning; cable routing | Machine layout |
 | Import: DXF, DWG (as today, in the worker), SVG. Export: PDF, DXF, DWG (as today), SVG | All |
 
-How it is built, from what exists:
+**Ownership (D30):**
 
-- **The model owns the geometry.** CAD geometry is model data (`ecad-model`), edited through
-  commands with undo, like everything else. Today's `Graphic` (line, dashed, circle, text) in
-  symbols is the start of this type; it gains the primitives, layers and blocks above.
-  Geometry stays model data because CADCraft's document model treats the drawing as the source
-  of truth, which this design rejects (ARCHITECTURE.md, *Editing*).
-- **The editor owns the tools.** Snapping, alignment, the drawing tools and grips are
-  `ecad-editor` behaviour, testable without a UI. Today's select, move, rotate and grid snap
-  are the start.
-- **CADCraft stays where it fits:**
-  - rendering, PDF, DXF and DWG output, and DXF/DWG reading, all in `ecad-view`;
-  - its geometry algorithms where they help (intersections and offsets for snapping, hatch
-    filling), behind `ecad-view`'s API or a thin geometry adapter (D30).
-  - The rule "only `ecad-view` depends on CADCraft" stays unless D30 decides otherwise.
-- **SVG:** export of any page or drawing; import into CAD geometry (paths become polylines
-  and arcs, within the same bounds and limits as DXF import). The crate is chosen for licence
-  and safety (D35).
-- **Layout editing follows section 12.** New devices arrive in the "not placed yet" list, and
-  are placed by a person or into free space on request. Existing positions and routes never
-  move to make room; lack of space is a check, not a rearrangement.
-- **A machine drawing** from mechanical CAD is an underlay on a machine-layout page; field
-  devices and cable routes are drawn over it.
-- **3D modelling is outside the initial scope.**
+- **The engineering model owns geometry and electrical semantics.** CAD geometry is model
+  data in `ecad-model`, edited through commands with undo, like everything else.
+  - Today's `Graphic` (line, dashed, circle, text) in symbols is the start of this type. It
+    gains the primitives, layers and blocks above.
+  - `ecad-model` doesn't depend on rendering or UI crates.
+- **The editor owns the tools.** Drawing tools, grips, snapping, alignment, rotation and
+  scaling are `ecad-editor` behaviour, testable without a UI. Today's select, move, rotate and
+  grid snap are the start.
+- **CADCraft is kept behind an adapter** (`ecad-view`), as today:
+  - rendering, PDF, DXF and DWG output, and DXF/DWG reading;
+  - CADCraft's editing engine is not used, because it treats the drawing as the source of
+    truth.
+- **Geometry algorithms.** If native CAD operations need algorithms independent of rendering
+  (intersections and offsets for snapping, hatch filling, polygon clearance tests), the first
+  choice is small functions in the model on its own geometry types. A **dedicated geometry
+  adapter** (for example over CADCraft's geometry crate) is evaluated only when
+  implementation shows those functions aren't enough. No abstraction is introduced ahead of
+  that evidence.
+
+**Electrical semantics stay independent of geometry** (D37):
+
+- connectivity lives in terminals, nodes and wires (4.5), never in where lines touch;
+- moving, rotating or scaling a symbol, or drawing a line over a connection point, never
+  connects or disconnects anything;
+- a wire is made only by the wire operation, and a terminal only by the device, product or
+  symbol operations;
+- editing a symbol's connection points, when the symbol is in use, is an operation of its
+  own. Its preview lists every drawing and terminal mapping affected. It is never a side
+  effect of editing the symbol's lines.
+- deleting geometry never deletes a terminal, node or wire.
+
+**SVG (D35).** The library is chosen during C0 against:
+
+- maintenance, licence and the geometry it supports;
+- numerical correctness, tested against reference files;
+- resource limits.
+
+On import:
+
+- scripts, external resources (images, fonts, stylesheets by URL), network access and file
+  access outside the imported file are all disabled;
+- paths become polylines and arcs within the same bounds and limits as DXF import;
+- unsupported entities (filters, masks, embedded fonts...) and lossy conversions (curves
+  approximated, gradients flattened) are listed in the import report.
+
+**Layout editing follows section 12.** New devices arrive in the "not placed yet" list, and are
+placed by a person or into free space on request. Existing positions and routes never move to
+make room; lack of space or clearance is a check, not a rearrangement.
+
+A machine drawing from mechanical CAD is an underlay on a machine-layout page, with field
+devices and cable routes drawn over it.
+
+**Full 3D modelling is outside the initial scope.**
 
 ## 9. Migration
 
 | Change | Migration | Breaking? |
 | --- | --- | --- |
 | Terminals as entities (`terminals.json`) | Format 1 reader creates one terminal per physical drawing point, with a UUID v5 from (function, point), so converting twice gives the same ids; designations move from drawings to terminals | File format yes, behaviour no |
-| Nodes (`nodes.json`) | Junction, potential and interruption devices become nodes; their tags become node names; their drawings become node drawings (D33) | File format yes; scripts that treat `L+` as a device find it as a node by name |
+| Nodes (`nodes.json`) | Junction, potential and interruption devices become nodes; their tags become node names in their kind's scope; their drawings become node drawings; electrical connectivity, names, drawings and cross-references are preserved and checked equal after conversion (D33). **Ambiguous mappings are detected, never merged or reconnected silently:** an interruption whose drawings join differently named potentials, a potential and an interruption sharing a name, a junction device drawn more than once. The conversion then keeps the nodes apart, reports each case with its pages, and nothing is saved until a person resolves them or saves knowingly | File format yes; scripts that treat `L+` as a device find it as a node by name |
 | Wires (`wires.json`) | Each end's function and point become its `TerminalId` or `NodeId`; bends become wire graphics in the page file | File format yes, behaviour no |
 | `Reassign` | Becomes "show another device's terminals"; wires move to that device's terminals and it is reported as rewiring (section 14, item 2) | Behaviour yes, reported |
 | Designations unique per device | Checked on load; a format 1 project that breaks it loads, and a check reports it with a fix command | No |
@@ -541,7 +681,9 @@ How it is built, from what exists:
 | Page order | Sparse keys; format 1's dense order is converted on read | File format yes |
 | Numbering | New `numbering.json`; default **sequential** (D22): after deleting `-K2`, the next device is `-K4`, not `-K2` | **Behaviour yes,** on purpose |
 | Per-potential wire numbers on joining | No longer renumbers existing wires; reports `wire-numbers-differ` instead | **Behaviour yes,** on purpose (section 12.2) |
-| MCP `--write` | Removed; MCP becomes propose-and-preview, acceptance in the app or an interactive terminal (D32) | **Behaviour yes,** on purpose |
+| MCP `--write` | Removed; MCP clients query, prepare and preview; a person approves the exact transaction in the app (D32) | **Behaviour yes,** on purpose |
+| CLI editing commands | Dry run unless `--apply` and the project allows automation; recorded as CLI automation (11.8) | **Behaviour yes,** on purpose |
+| Library imports | Three-way against each source's last import instead of "a non-empty value replaces" (5.1) | Behaviour yes, for #32's draft only |
 | Verification | Existing data is unverified (D17); only the configured kinds must be verified before release (section 14, item 5) | No |
 | Baselines, change records, modifications, `objects/` | New; a project starts with none | No |
 
@@ -557,7 +699,7 @@ How it is built, from what exists:
 | The connectivity change touches routing, naming, checks, reports, view, editor and MCP | First terminals and nodes derived in memory with no format change (M7). Then the one storage switch (M10) behind the existing tests and golden files |
 | Terminal identity: drawings, contact numbering and reassignment all touch terminals | Persistent `TerminalId` (D2) means a renumber writes one field; deterministic ids on conversion; property tests over random renames and reassignments |
 | Native CAD is a large new scope | Its own track (C0–C3), model-owned geometry, editor-owned tools; CADCraft for rendering, IO and algorithms; no 3D |
-| AI approval can't be enforced against an agent with the user's own permissions | Full enforcement for actors Electric Studio runs; CLI and file edits recorded as such; documented need for OS-level separation (D31) |
+| AI approval can't be enforced against an agent with the user's own permissions | Enforcement inside the trust boundary (built-in assistant, MCP); outside changes detected, not claimed attributable; documented need for OS-level isolation (D31) |
 | Manufacturer files are hostile input | Bounded reads, no external entities, archive checks, worker isolation for complex parsers, validation, provenance with file hash |
 | Verification noise makes releases impractical | Verification required only for configured kinds (default: safety-related, suggested, imported) |
 | Two truths (requirement versus selection, template versus edited drawing) | Never synchronised silently: validation and regeneration report differences |
@@ -576,7 +718,7 @@ How it is built, from what exists:
 | Baselines grow the project folder | Content-addressed and shared between baselines; underlays by hash; a baseline only adds changed files |
 | Sparse page order and page-name insertion confuse old tools | Format 2 only; the format 1 reader converts dense order |
 | Retirement makes numbering feel stuck | Policy per kind; explicit reuse (approved after release); explicit renumbering always available with a preview |
-| `objects/` grows git repositories | Git LFS or `objects/` outside git (D38); baselines don't need git |
+| `objects/` grows Git repositories | Git never required; native archive and restore; Git LFS may be recommended; `objects/` excluded only with a verified backup (D38) |
 | AI infrastructure grows ahead of need | Only the registry, change sets and provenance are built before inference. Each also serves people, CLI or generation |
 
 Dependencies: M7, then M10 (the one format break), then S0, AI0 and C0; M8 and M9 after
@@ -609,9 +751,14 @@ infrastructure.
    - **Trusted application code assigns actor identities and permissions,** never the
      client: the MCP server labels everything it receives as the connected assistant's, and
      the in-app assistant runs as an assistant actor.
-   - Acceptance happens in a trusted interface: the app's review panel, or an interactive
-     confirmation in a terminal that shows the change set's hash. It is never an argument an
-     assistant can pass. Section 14 states the limit of this.
+   - **Approval happens only in a trusted, application-controlled interface: the app's
+     review panel** (D32). A terminal prompt isn't one, because an agent may control the
+     terminal. Approval is never an argument, a flag or a message an assistant can send.
+   - **A person approves the exact transaction** they reviewed: the change set's content hash
+     and the project state it was previewed against.
+     - A substantial proposal (a whole new conveyor section) is approved as one transaction.
+       Its operations are reviewed together, not command by command.
+   - This is enforced within Electric Studio's trust boundary (section 11.8).
 5. **No AI approval of safety-related design** (D19). No operation lets an assistant:
    - verify, approve or release anything safety-related;
    - remove or weaken a safety classification.
@@ -657,13 +804,14 @@ ChangeSet {
   - check results before and after: new errors and warnings, ones that went away;
   - pages whose drawing changes, with a rendering;
   - safety-related items touched.
-- **Accept and apply.** One `Batch`, so one undo step, labelled with the change set's title and
-  actor.
-  - It is refused if the base fingerprint no longer matches; it is then previewed again
-    against the current project.
-  - An assistant's change set is applied only after a person accepts that change set
-    (principle 4).
-  - Applying writes an engineering change record (section 11.4).
+- **Approve and apply.** One `Batch`, so one undo step, labelled with the change set's title
+  and actor.
+  - **Approval binds to the exact proposal:** the SHA-256 of the change set's canonical
+    content, and the base fingerprint it was previewed against.
+  - Applying checks both. A proposal modified after approval, or a project changed since the
+    preview, is refused, and the person previews and approves it again (D32).
+  - An assistant's change set is applied only after a person approves it in the app.
+  - Applying writes an engineering change record (section 11.4), with the approval.
 - **Reject** or **edit** before applying. A person can drop single operations.
 - **Not only for AI.** The same mechanism is the dry run of a library update (M9), the
   preview of regeneration (M13), an import's `--dry-run`, and every global operation of
@@ -679,10 +827,13 @@ Provenance and verification are tracked separately (D17).
 
 - **Actors.** Every history entry and every applied change set records who made it. The
   application assigns the actor; a client never names itself.
-  - a person (the signed-in user of the app or terminal);
+  - a person (the user of the app);
+  - **CLI automation:** the operating-system user, host, command line and time. The CLI acts
+    only with explicit authorisation (section 11.8);
   - a generator (template instance, regeneration);
   - an import (file, format and hash);
-  - an assistant (provider, model, session).
+  - an assistant (provider, model, session; the MCP client as it identified itself, recorded
+    as a claim).
 - **Provenance: where a value came from.** It is kept for values that come from anywhere but
   a person's own entry, and for values a person entered where the source matters:
   requirement parameters, sections and locations, product selections, technical data (per
@@ -778,6 +929,46 @@ They use the layers above and need nothing new in the core:
 
 All of them produce change sets with suggested provenance. None writes to the model
 directly.
+
+### 11.8 Trust boundary
+
+Approved distinction (D31): AI that the application runs, versus agents that the application
+doesn't control.
+
+| Inside the boundary: enforced | Outside the boundary: detected where possible |
+| --- | --- |
+| The built-in assistant (AI1 onwards) | An agent with the user's own account privileges: a coding agent with a shell, a desktop-control tool, a script |
+| MCP clients, through `ecad-mcp` | Direct edits of project files by any program |
+| The app's review and approval panel | A terminal that an agent may be controlling |
+| Trusted CLI automation, authorised explicitly (below) | — |
+
+- **Inside:** actors are assigned by Electric Studio. Assistants and MCP clients can only
+  query, prepare and preview. Approval is a person's act in the app, bound to the exact
+  transaction (11.3).
+- **Outside:** an agent running with the user's own privileges can do whatever the user can:
+  run the CLI, edit files, operate the app's window.
+  - **Electric Studio doesn't claim to attribute those changes to an actor.**
+  - Stronger enforcement needs OS-level isolation: the agent runs under a separate account
+    with no write access to the project folder, and a person approves in the app under
+    their own account.
+  - This is stated in the documentation and in the MCP setup guide.
+- **Trusted CLI automation stays supported** (scripts, CI). An editing CLI command applies only
+  with explicit authorisation:
+  - the project allows automation (a setting a person turns on in the app);
+  - the command is given `--apply`; without it, every editing command is a dry run.
+  - The change record names the actor `CLI automation` with OS user, host and command line.
+    The data it writes has provenance `Imported` or `Entered` by automation, and stays
+    unverified until a person verifies it.
+  - The setting is a policy for trusted pipelines, not protection against an agent that can
+    change it. That agent is outside the boundary.
+- **Detecting outside changes.** Every save writes a manifest of each file's SHA-256 to
+  `.ecad/state.json`.
+  - On load, files that differ from it, or that are missing or new, are reported as **modified
+    outside Electric Studio**, with an impact report against the last saved state.
+  - The report lists what changed, not who changed it. A person can accept the changes (a
+    change record with actor *external, unknown*) or restore from the last baseline.
+  - This detects changes. It can't prevent them, and a tool that rewrites the manifest too
+    goes undetected.
 
 ## 12. Incremental engineering and as-built preservation
 
@@ -963,13 +1154,19 @@ Removal and replacement are different operations (D23) and are reported differen
   - Bounded resources it used (PLC channels, strip terminals) become free slots for
     resource-aware allocation, unless reserved.
   - The change report lists removal and rewiring.
-- **Replacing equipment** keeps the device and its identity: same id, tag, terminals (matched by
-  designation to the new product's terminal pattern), drawings, wires and layout position.
-  - Its product changes.
-  - The impact analysis reports what physically changes: terminals the new product doesn't
-    have (with the wires on them), new terminals, a larger footprint than the space, a
-    different rating against its requirement.
-  - The change report lists *replace*, not *remove* and *add*.
+- **Replacing equipment** keeps the device and its identity: same id, tag, drawings, wires
+  and layout position. Its product changes. **Terminal reconciliation is explicit:**
+  - the operation proposes a mapping from each existing terminal to a terminal of the new
+    product's pattern, matched by function and designation. The mapping is a suggestion;
+  - the preview shows it, with every terminal that has no match: its wires, drawings and PLC
+    assignment, and new terminals the drawings don't show yet;
+  - a person confirms or edits the mapping. Nothing is dropped or reconnected without that.
+    Mapped terminals keep their `TerminalId`, and so their wires.
+  - Unmatched terminals with wires can't be deleted by the replacement. They stay, flagged,
+    until a person rewires or removes them explicitly.
+  - The impact analysis also reports a larger footprint or clearance than the space, a
+    different rating against the requirement, and compatible alternatives (5.1).
+  - The change report lists *replace*, with the terminal mapping, not *remove* and *add*.
 - **Remove, then add a new device** is a removal followed by a new device with a new
   identifier. Doing that instead of a replacement is a choice the person makes, and the
   report shows it as two changes.
@@ -1005,62 +1202,87 @@ An approved modification does not mean the machine has been modified.
 - **Physical status per object follows from it.** An object absent from the latest as-built
   baseline is *not installed yet*. One changed since it is *installed, modification pending*.
   The UI and reports can mark both without storing anything new.
-- **One open modification at a time** initially, as a single project line. Several
-  concurrent modifications on one machine would need branches, which is out of scope (D36).
+- **Working on an as-built machine.** Once an as-built baseline exists, every change belongs
+  to the open modification package. A first change with none open asks a person to open one,
+  and nothing is changed until they do (D40).
+- **One open package per project** (D36). There is no branching, no merging, and no
+  concurrent packages.
+  - *Cancel:* a person discards the package's changes. It is an explicit global operation with
+    a preview: the working project returns to the package's as-built baseline. The package and
+    its change records are kept, marked cancelled.
+  - *Reopen:* a cancelled package, or a released one not yet installed, can be reopened. Its
+    changes are reapplied as one change set against the current as-built baseline; the
+    preview reports any conflict with what happened since.
+  - *Recovery:* the package's state and records are saved through the store's journal, so a
+    crash leaves the package as last saved. On reopening the project an open package is
+    restored as open.
+  - *Comparison:* at any time against the package's original as-built baseline (12.5).
 
 ## 13. Performance requirements
 
-Storage stays transactional JSON (D5). Rather than a catalogue size that triggers a database,
-these are the targets. A benchmark in CI measures them on generated data:
+Storage stays transactional JSON (D5). The targets below are **initial engineering objectives,
+not verified capabilities** (D34). Bottlenecks are profiled before any index, cache, database
+or other complexity is introduced.
 
-- reports every PR, so trends show;
-- fails at twice the target, so CI noise doesn't block.
+**Representative projects,** generated or kept in the repository:
+- the conveyor;
+- the reference project;
+- a large synthetic project (2 000 devices, 20 000 wires, 300 pages) that carries real
+  graphical assets: underlays from the DWG test set, product geometry, a full documentation
+  set;
+- a library of 200 000 products from 50 manufacturers, with geometry for a part of them.
 
-The reference machine is a mid-range laptop (4 cores, 16 GB, SSD), recorded with each result.
+| Operation | Project | Time target | Peak memory target |
+| --- | --- | --- | --- |
+| Open a project, cold (first open after boot or cache drop) / warm | large | < 4 s / < 2 s | < 1.5 GB |
+| Save after a one-page change | large | < 1 s | — |
+| Apply an interactive edit, with its checks | large | < 50 ms | — |
+| Run all checks | large | < 1 s | — |
+| Render a page | large | < 50 ms | — |
+| Preview a change set of up to 200 operations | large | < 1 s | < +300 MB |
+| Incremental generation of one template instance | large | < 1 s | — |
+| Make a baseline / compare a baseline with now | large | < 5 s / < 2 s | < +500 MB |
+| Archive / restore with verification | large | < 30 s each | streaming, < 500 MB |
+| Open a component library, cold / warm | library | < 6 s / < 3 s | < 2 GB |
+| Search the library | library | < 100 ms (95th percentile) | — |
+| Import a manufacturer list | 50 000 rows | < 30 s | < 1 GB |
 
-| Operation | Data | Target |
-| --- | --- | --- |
-| Open a project | 2 000 devices, 20 000 wires, 300 pages | < 2 s |
-| Save after a one-page change | same | < 1 s |
-| Apply an interactive edit, with its checks | same | < 50 ms |
-| Run all checks | same | < 1 s |
-| Render a page | same | < 50 ms |
-| Preview a change set of up to 200 operations | same | < 1 s |
-| Incremental generation of one template instance | same | < 1 s |
-| Make a baseline / compare a baseline with now | same | < 5 s / < 2 s |
-| Open a component library | 200 000 products, 50 manufacturers | < 3 s |
-| Search the library | same | < 100 ms (95th percentile) |
-| Import a manufacturer list | 50 000 rows | < 30 s |
-
-When a target fails on the benchmark and profiling shows that loading or searching JSON is
-the cause, the first remedy is a **derived index**: in memory, or as a cache file that can be
-rebuilt and is never the source of truth. A database (SQLite) is considered only if that isn't
-enough, and is itself a decision.
+- **Long-running operations** report progress and can be cancelled: import, generation,
+  baseline, compare, archive, restore, export, checks on large projects.
+  - Cancelling leaves the project as it was. These operations prepare a change set or staged
+    files and commit only at the end.
+- **Repeatable regression measurements, under controlled conditions:**
+  - **Deterministic counts on every PR:** instructions executed and bytes allocated for each
+    benchmark, measured under an instruction-counting harness (Valgrind-based). They don't
+    depend on the runner's load, so a change beyond a set percentage is a real regression,
+    reported on the PR.
+  - **Wall-clock and peak memory on a controlled machine:** a dedicated machine (or a
+    dedicated self-hosted runner), with fixed power settings, nothing else running, several
+    repetitions, and median and spread recorded against the previous result. Cold
+    measurements drop the file cache first.
+  - **Shared CI runners report wall-clock only as information, never as an unconditional
+    merge blocker** (D34). A deterministic-count regression beyond threshold, or a confirmed
+    regression on the controlled machine, needs an explanation in the PR before merging.
 
 ## 14. Where the approved decisions meet the current code
 
 The review asked for decisions that conflict with implementation evidence to be challenged.
 None needs reversing. These need the stated adjustment, or a decision of their own:
 
-1. **D18 versus MCP `--write` and the CLI.**
+1. **D18 versus MCP `--write` and the CLI** (resolved by D31 and D32).
    - **What exists:**
      - `ecad-mcp --write` is a session-wide write permission for whatever client connects.
      - The `ecad` commands (`import-tia`, `import-dxf`, `library add`...) edit projects
        without confirmation, by design, for scripts and CI.
    - **What follows:**
-     - `--write` must go. The MCP server becomes propose-and-preview only, with acceptance in
-       the app or an interactive terminal confirmation. This breaks today's MCP workflow
-       (docs/MCP.md) on purpose (D32).
-     - CLI edits are recorded with the actor `command line`, and their data is unverified.
-   - **The limit:**
-     - An AI agent that operates the user's own account (a coding agent with shell access, a
-       desktop-control tool) can run the CLI, edit the files, or answer a terminal prompt.
-       No software check can prove a person is at the keyboard.
-     - Enforcement is complete only for actors Electric Studio itself runs (the in-app
-       assistant and the MCP server). For an agent with the user's own permissions it is
-       recorded, not prevented.
-     - Real separation needs the agent to run without write access to the project folder.
-       The documentation should say so plainly (D31).
+     - `--write` is removed. MCP clients query, prepare and preview; a person approves the
+       exact transaction in the app. This breaks today's MCP workflow (docs/MCP.md) on
+       purpose.
+     - CLI editing commands become dry runs unless given `--apply` in a project that allows
+       automation, and are recorded as CLI automation (11.8).
+     - No terminal prompt is offered as human approval.
+   - **The limit** (11.8): an agent with the user's own privileges is outside the trust
+     boundary. Its changes are detected where possible, not attributed or prevented.
 2. **D2 TerminalId.**
    - **What exists:** terminals are implicit symbol points.
      - Contact numbers from the part's contact blocks (G5b) and terminal renumbering
@@ -1105,12 +1327,16 @@ None needs reversing. These need the stated adjustment, or a decision of their o
      geometry editor.
    - **The constraint:** CADCraft's editing engine can't be used, because it makes the
      drawing the source of truth.
-   - **What follows:** this is a substantial new track (C0–C3 in the roadmap), not a detail
-     of the layout milestone. Using CADCraft's geometry algorithms outside `ecad-view` is a
-     decision (D30).
-8. **D26 baselines inside the project, and git.** Underlays, product geometry and issued PDFs
-   in `objects/` are binary and grow a git repository with every baseline. The recommendation
-   is to keep `objects/` in git LFS or outside git, since baselines need no git (D38).
+   - **What follows:** this is a substantial new track (C0–C2 in the roadmap), not a detail
+     of the layout milestone. Geometry algorithms start as small model functions; a dedicated
+     geometry adapter comes only on evidence (D30).
+8. **D26 baselines inside the project, and git** (resolved by D38). Underlays, product
+   geometry and issued PDFs in `objects/` are binary and grow a Git repository with every
+   baseline.
+   - Git is never required; native archive and restore (4.7) carry everything.
+   - Git LFS may be recommended to companies that use Git.
+   - Excluding `objects/` from Git is documented as safe only with a separate, verified
+     backup.
 9. **D10 stored generated values.** Keeping the last generated values (not just hashes) roughly
    doubles the size of generated content in page files. That is accepted, because it is what
    makes field-level merging possible.
@@ -1118,10 +1344,88 @@ None needs reversing. These need the stated adjustment, or a decision of their o
     revision, so it can't safely drop old revisions for them. Because projects keep the
     revisions they use in their own `objects/`, a library may prune old revisions without
     harming any project.
+11. **#32's import rule versus D37's conflict resolution.**
+    - **What exists:** #32's library import lays a list over the library: a non-empty incoming
+      value always replaces the library's. A field a person corrected in the library is
+      overwritten silently by the next import of the same price list.
+    - **What follows:** imports compare three ways against that source's last import (5.1),
+      and the import is a change set with a report. #32's merge is reused only for the
+      "unchanged since last import" case.
+12. **#32's column mapping versus D37's reusable mappings.** #32 takes `--map` per run. Saved,
+    named import profiles per source are added in M9, so a monthly price list imports the same
+    way each time.
+13. **Class-default symbol mapping versus D37's "assignments are suggestions".** Section 5.1
+    originally proposed a default symbol per class to draw a selected product. That stays, but
+    what it produces is marked Suggested and unverified unless the product's data is
+    authoritative.
+14. **Interactive terminal confirmation** (proposed in the first revision of 11.1) is
+    withdrawn by D32. Approval is only in the app.
+15. **The GUI is also reachable by desktop-control agents.** An agent driving the screen can
+    click Approve. That is the same boundary as item 1: the app's panel is the trusted
+    interface within Electric Studio's control, not a proof of a human. The documentation
+    says so (11.8).
+
+## 15. Reconciliation of the original component-library and CAD requirements (D37)
+
+Each restated requirement, where this architecture covers it, and what was missing or
+conflicting before this revision.
+
+**Component library**
+
+| Requirement | Covered in | Before this revision |
+| --- | --- | --- |
+| Manufacturer-independent canonical product definitions | 5.1 (1) | **Ambiguous:** read as one neutral schema for all sources, with generic products allowed; to confirm (D39) |
+| Stable identities for manufacturers, products, revisions, installed devices | 4.1, 5.1 (2) | Covered (manufacturer ids added in the last revision) |
+| Electrical and purely mechanical components | 5.1 (3) | Covered |
+| Typed specifications with units and provenance | 5.1 (4), 11.4 | Covered |
+| Electrical functions, terminals, symbol mappings | 5.1 (5) | **Functions were implicit** in the terminal pattern; now explicit |
+| Mechanical geometry, dimensions, mounting, clearances | 5.1 (6), 8 | **Mounting information and clearances were missing;** added, and used by layout checks |
+| Accessories, compatible products, variants | 5.1 (7) | **Compatible products and variants were missing;** added as relations |
+| User-created components and custom libraries | 5.1 (8) | **Implicit;** now explicit, with several libraries in order of preference |
+| Native portable exchange packages | 5.1 | Covered |
+| Self-contained project snapshots | 4.2, 4.4 | Covered |
+| Immutable revision contents and dependent assets | 4.4 | Covered |
+| Controlled three-way updates and conflict resolution | 4.4, 5.1 | Covered for library to project; **conflicts on import into the library were not** (item 11 of section 14); now covered |
+| Offline operation | 5.1 (10), 11.1 | Covered |
+
+**Manufacturer imports**
+
+| Requirement | Covered in | Before this revision |
+| --- | --- | --- |
+| CSV and Excel with reusable column mappings | 5.1, M9 | **Mappings were per run** (#32); import profiles added |
+| BMEcat with ETIM; ETIM xChange; DXF and SVG assets | 5.1, C2, manufacturer-data track | **DXF and SVG product geometry** were in C2 but not listed as first-priority imports; now listed |
+| ECLASS Advanced, AASX on need and licensing; STEP and DWG on feasibility; EDZ after rights are verified | 5.1 | **STEP and DWG product geometry weren't mentioned;** added (STEP deferred with 3D) |
+| Defensive parsing, bounded resources, archive safety | 5.1 | Covered |
+| Transactional application and rollback | 5.1, 11.3 | **Not stated for imports;** now every import is a change set |
+| Duplicate detection | 5.1 | Within-file only (#32); **against the library and likely duplicates added** |
+| Conflict resolution; import reports | 5.1 | **Missing** (#32 had a summary only); added |
+| Preserve unknown properties; never fabricate missing data | 5.1 (4) | Unknown columns kept (#32); **"never fabricate" now explicit** |
+| Automatic symbols, functions and terminal mappings stay unverified unless authoritative | 5.1, 11.4 | **Conflicted** with the class-default mapping (section 14, item 13); resolved |
+| Synthetic fixtures in CI; real manufacturer files for interoperability, subject to licence | 5.1, ROADMAP | **Real-file acceptance was missing;** added |
+
+**Native shared 2D CAD**
+
+| Requirement | Covered in | Before this revision |
+| --- | --- | --- |
+| Component geometry creation and modification | 8, C2 | Covered |
+| Symbol and connection-point editing | 8, C2 | Covered; **in-use connection-point edits now an explicit operation** |
+| Plates, doors, cut-outs | 8, M15 | Covered |
+| Machine layout creation and editing; equipment positioning; cable routing | 8, M15 | Covered |
+| Lines, polylines, arcs, circles, rectangles, text, dimensions | 8, C0 | Covered |
+| Layers, snapping, alignment, **rotation and scaling** | 8, C1 | **Rotation and scaling of geometry weren't listed;** added |
+| Reusable blocks | 8, C0 | Covered |
+| Importing and adapting manufacturer geometry | 8, C2 | Covered; adaptation (editing an imported outline) made explicit |
+| A shared capability, not a general-purpose CAD application | 8 | **Not stated;** now stated |
+| Connectivity independent of geometry; graphics never silently alter semantics | 4.5, 8 | **Implied;** now explicit rules |
+| Full 3D outside initial scope | 8 | Covered |
+
+No conflict remains between the restated requirements and D1–D36, apart from D39's reading of
+"manufacturer-independent".
 
 ## Decision record
 
-Reviewed by the owner with an independent technical reviewer on 27 Nov 2026.
+Reviewed by the owner with an independent technical reviewer on 27 Nov 2026: D1–D28 at
+`ce38394` (D29 added then), D30–D38 at `867d607`.
 
 ### Approved, with conditions
 
@@ -1156,20 +1460,31 @@ Reviewed by the owner with an independent technical reviewer on 27 Nov 2026.
 | D27 | Baseline content | Complete: assets, settings, pinned library revisions, format and version; **excludes** baseline storage, temporary files and caches; **issued exports preserved** where exact reproduction is needed | 12.4 |
 | D28 | Derived updates | Derived cross-references and documents may update; unrelated canonical objects and stored drawings unchanged; **affected issued documentation listed** | 12.5 |
 | D29 | Engineering states | **Designed, released, as-built and proposed modification kept distinct;** an approved modification isn't an installed one; built on baselines, no parallel models or PLM | 12.7 |
+| D30 | CADCraft | Kept behind an adapter; **the model owns geometry and semantics,** with no dependency on rendering or UI crates; a dedicated geometry adapter only on implementation evidence; no premature abstraction | 8 |
+| D31 | AI enforcement boundary | Application-controlled AI versus unrestricted agents; **enforced in the built-in assistant and MCP;** agents with user-account privileges are outside the boundary (OS isolation for more); **outside changes detected and reported where possible, not claimed attributable;** trusted CLI automation with explicit authorisation and provenance | 11.8 |
+| D32 | MCP write | `--write` removed; MCP clients query, prepare, preview; **a person approves the exact transaction in a trusted application interface,** a substantial proposal as one transaction; **no terminal confirmation as human authorisation;** stale or modified proposals refused | 11.1, 11.3 |
+| D33 | Logical nodes | Junctions, potentials, interruptions become nodes; connectivity, names, drawings and cross-references preserved; stable ids and explicit name scoping; **ambiguous mappings detected, never merged or reconnected silently** | 4.5, 9 |
+| D34 | Performance | Targets are **initial objectives, not verified capabilities;** peak memory, cold and warm, representative projects with real assets, cancellation and progress, repeatable measurements under controlled conditions; shared-runner wall clock never an unconditional blocker; profile first | 13 |
+| D35 | SVG | Library chosen in C0 on maintenance, licence, geometry, numerical correctness and limits; scripts, external resources, network and outside file access disabled; unsupported and lossy conversions reported | 8 |
+| D36 | Modification packages | One open per project; **cancel, reopen, recovery, comparison** with the original as-built baseline; no branching, merging or concurrent packages | 12.7 |
+| D37 | Original requirements | Restated and reconciled | 5.1, 8, 15 |
+| D38 | Storage and Git | **No Git, LFS or external VCS required;** native archive and restore with completeness and integrity checks; LFS may be recommended; `objects/` excluded only with a verified backup; safe handling of missing, damaged and unreferenced objects; cleanup never deletes referenced content | 4.7 |
 
 Also confirmed as foundational: **minimal-impact changes** across all workspaces, generators,
 library updates and AI operations, for unreleased projects too (section 12).
+
+The approved conditions of D1–D29 stand, in particular:
+- stable identities;
+- minimal-impact changes;
+- retrofit preservation;
+- explicit terminal reconciliation on replacement (12.6).
 
 ### Open, raised by this revision
 
 | # | Decision | Proposed |
 | --- | --- | --- |
-| D30 | CADCraft geometry algorithms outside `ecad-view` | Keep the rule; reach them through a thin adapter in `ecad-view` until a measured need says otherwise |
-| D31 | The limit of AI approval enforcement (section 14, item 1) | Enforce fully for the in-app assistant and MCP; record CLI and file edits as such; document that an agent with the user's own permissions needs OS-level separation |
-| D32 | MCP `--write` | Remove it; MCP is propose-and-preview only, with acceptance in the app or an interactive terminal |
-| D33 | Junction, potential and interruption devices | Convert to nodes on reading format 1; tags become node names; lookups by name keep working |
-| D34 | Performance targets and reference machine | As in section 13 |
-| D35 | SVG library | Chosen at C0 for licence (MIT or Apache) and bounded parsing |
-| D36 | Concurrent modification packages | One open at a time initially |
-| D37 | The earlier review requirements (manufacturer import security, portable library packages, mechanical components, ETIM xChange, SVG support, native CAD editing) | Covered in sections 5.1 and 8 from their names only. **The original review document isn't in the repository or this session; please attach it** so its details can be checked against this text |
-| D38 | `objects/` and git | Recommend git LFS or keeping `objects/` out of git |
+| D39 | What "manufacturer-independent canonical product definitions" means | One neutral product schema for every source, and generic products (no manufacturer) allowed as placeholders and user components |
+| D40 | Changes after an as-built baseline | Every change belongs to the open modification package; with none open, a person is asked to open one first |
+| D41 | The controlled benchmark machine | A dedicated self-hosted runner, or the owner's machine run by hand before releases; deterministic counts on every PR either way |
+| D42 | CLI automation authorisation | A project setting a person turns on in the app, plus `--apply` per run; recorded as CLI automation |
+| D43 | Outside-change detection | A saved manifest of file hashes (`.ecad/state.json`); differences reported on load, accepted or restored by a person |
