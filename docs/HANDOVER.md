@@ -15,7 +15,7 @@ merged PR.
   - M7a (PR #33, merged): derived connectivity, netlist, checks, typed PLC data, content hash.
   - M7b (PR #34): the conveyor acceptance project (schematic-first), its acceptance tests and
     the benchmark harness.
-  - **Next:** independent review for formal M7 acceptance, and the first controlled benchmark
+  - **Next:** close the independent review findings on PR #35, verify exact-head CI, and complete the first controlled benchmark
     run on the Legion (`bench/run-controlled.sh`), which records the wall-clock baseline. Then M10.
 - **On hold:** PR #32 (component library, draft), reused in M9 after reconciliation (D13).
 
@@ -66,3 +66,7 @@ cargo test --workspace
   `=M<k>`, pages `<k>.<page>`, PLC addresses moved up two bytes per copy). First observation:
   at the full size (2 000 devices, 240 pages) `check` (~8 s) and `render` (~16 s) grow faster
   than linearly; candidates for work once the Legion baseline exists.
+
+## M7 acceptance closure (PR #35)
+
+Formal acceptance remains pending. Corrective work covers multi-level terminal report identity and completeness, strict benchmark comparison, prepared-fixture disk-cold open, allocation counting with DHAT, and controlled benchmark provenance. The first corrected-head CI allocation artifact and qualified Legion baseline must be retained. No M10 work until M7 is accepted. Track check/render scaling as a dedicated profiling follow-up, not a sandbox-timing acceptance gate.

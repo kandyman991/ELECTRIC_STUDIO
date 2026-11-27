@@ -17,6 +17,12 @@ usage:
                    [--out <file>]
       Run every workload on every project, each in a process of its own, and write the
       results with the machine's conditions as JSON (to stdout without --out).
+  ecad-bench prepare-open <project> <dir> [--size smoke|full] [--underlay <file>]
+      Prepare a fixture before filesystem cache eviction.
+  ecad-bench measure-open <project> <dir> [--size smoke|full]
+      Time loads of an existing fixture; does not evict caches itself.
+  ecad-bench allocations <out.json>
+      Record setup-subtracted heap allocation counts under Valgrind DHAT.
   ecad-bench compare <results.json> <baseline.json>
       Fail if any deterministic count differs from the baseline; report times and peak memory
       against it when both runs come from the same machine.
@@ -70,6 +76,22 @@ fn dispatch(args: &[String]) -> Result<ExitCode, String> {
             println!("{}", serde_json::to_string(&r).map_err(|e| e.to_string())?);
             Ok(ExitCode::SUCCESS)
         }
+        Some("prepare-open" | "measure-open") => {
+            let (Some(project), Some(dir)) = (args.get(1), args.get(2)) else {
+                return Err("prepare-open/measure-open require project and directory".into());
+            };
+            let size = size(args)?;
+            let dir = Path::new(dir);
+            if args[0] == "prepare-open" {
+                ecad_bench::prepare_open(project, size, option(args, "--underlay").map(Path::new), dir)?;
+            } else {
+                let r = ecad_bench::measure_open(project, size, dir)?;
+                let doc = json!({ "size": size, "machine": machine(), "results": [r] });
+                println!("{}", serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Some("allocations") => allocations(args),
         Some("suite") => suite(args),
         Some("compare") => {
             let (Some(results), Some(baseline)) = (args.get(1), args.get(2)) else {
@@ -127,6 +149,8 @@ fn machine() -> Value {
         "commit": std::env::var("GITHUB_SHA").ok().or_else(|| first_line("git", &["rev-parse", "HEAD"])),
         "profile": if cfg!(debug_assertions) { "debug" } else { "release" },
         "label": std::env::var("ECAD_BENCH_MACHINE").ok(),
+        "assetSha256": std::env::var("ECAD_BENCH_ASSET_SHA256").ok(),
+        "controlled": std::env::var("ECAD_BENCH_CONTROLLED").ok(),
     })
 }
 
@@ -150,9 +174,9 @@ fn suite(args: &[String]) -> Result<ExitCode, String> {
             let r: Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("{project} {workload}: {e}"))?;
             let times: Vec<u64> = r["timesNs"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect();
             eprintln!(
-                "{project:>10} {workload:<8} first {:>9.2} ms  median {:>9.2} ms  peak {:>8} KiB",
+                "{project:>10} {workload:<8} first {:>9.2} ms  warm median {:>9.2} ms  peak {:>8} KiB",
                 times.first().copied().unwrap_or(0) as f64 / 1e6,
-                median(&times) as f64 / 1e6,
+                median(times.get(1..).unwrap_or_default()) as f64 / 1e6,
                 r["peakKib"].as_u64().map_or("-".into(), |k| k.to_string()),
             );
             results.push(r);
@@ -249,7 +273,10 @@ fn compare(results: &Value, baseline: &Value) -> Result<ExitCode, String> {
         return Err("benchmark suite size or workload set differs from baseline".into());
     }
     let same_machine = baseline["machine"]["label"].is_string()
-        && ["label", "profile", "os", "arch", "cpu", "cores", "kernel", "governor", "onAc", "rustc"]
+        && [
+            "label", "profile", "os", "arch", "cpu", "cores", "kernel", "governor", "onAc", "rustc", "assetSha256",
+            "controlled",
+        ]
             .iter()
             .all(|field| baseline["machine"][*field] == results["machine"][*field]);
     let mut mismatches = 0;
@@ -261,14 +288,19 @@ fn compare(results: &Value, baseline: &Value) -> Result<ExitCode, String> {
         }
         if same_machine && r["counts"] == b["counts"] {
             let t = |v: &Value| {
-                median(&v["timesNs"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect::<Vec<_>>())
+                v["timesNs"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect::<Vec<_>>()
             };
-            let (now, then) = (t(r), t(b));
+            let (current, previous) = (t(r), t(b));
+            let warm = current.get(1..).unwrap_or_default();
+            let now = median(warm);
+            let then = median(previous.get(1..).unwrap_or_default());
             let mem = |v: &Value| v["peakKib"].as_u64();
             println!(
-                "{k}: median {:.2} ms ({:+.1}%), peak {} KiB (baseline {})",
+                "{k}: warm median {:.2} ms ({:+.1}%), range {:.2}–{:.2} ms, peak {} KiB (baseline {})",
                 now as f64 / 1e6,
                 if then > 0 { (now as f64 / then as f64 - 1.0) * 100.0 } else { 0.0 },
+                warm.iter().min().copied().unwrap_or(0) as f64 / 1e6,
+                warm.iter().max().copied().unwrap_or(0) as f64 / 1e6,
                 mem(r).map_or("-".into(), |m| m.to_string()),
                 mem(b).map_or("-".into(), |m| m.to_string()),
             );
@@ -299,7 +331,7 @@ mod compare_tests {
         empty["results"] = json!([]);
         assert!(compare(&empty, &baseline).is_err());
         let mut missing = baseline.clone();
-        missing["results"].as_array_mut().unwrap().pop();
+        let _ = missing["results"].as_array_mut().unwrap().pop();
         assert!(compare(&missing, &baseline).is_err());
         let mut duplicate = baseline.clone();
         let row = duplicate["results"][0].clone();
@@ -383,4 +415,63 @@ fn instructions(args: &[String]) -> Result<ExitCode, String> {
         println!("{moved} workload(s) moved more than {tolerance}% (a warning, not a failure)");
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// DHAT prints total heap bytes and allocation blocks. Parse its summary strictly: a missing
+/// or changed summary must fail the benchmark job rather than record a fictitious zero.
+fn allocation_blocks(stderr: &str) -> Result<u64, String> {
+    let line = stderr.lines().find_map(|l| l.split_once("Total:").map(|(_, tail)| tail));
+    let fields: Vec<&str> = line.ok_or("DHAT did not report Total")?.split_whitespace().collect();
+    if fields.len() != 5 || fields[1] != "bytes" || fields[2] != "in" || fields[4] != "blocks" {
+        return Err("invalid DHAT Total summary".into());
+    }
+    fields[3].replace(',', "").parse().map_err(|_| "invalid DHAT allocation count".into())
+}
+
+fn allocations_of(workload: &str, iterations: usize) -> Result<u64, String> {
+    let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let output = tmp.path().join("dhat.json");
+    let exe = exe()?;
+    let out = Command::new("valgrind")
+        .args(["--tool=dhat", "--mode=heap"])
+        .arg(format!("--dhat-out-file={}", output.display()))
+        .arg(exe)
+        .args(["run", "conveyor", workload, "--size", "smoke", "--iterations", &iterations.to_string()])
+        .output()
+        .map_err(|e| format!("valgrind DHAT: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("{workload}: {}", String::from_utf8_lossy(&out.stderr)));
+    }
+    allocation_blocks(&String::from_utf8_lossy(&out.stderr))
+}
+
+fn allocations(args: &[String]) -> Result<ExitCode, String> {
+    let path = args.get(1).ok_or("allocations needs an output file")?;
+    let mut counts = serde_json::Map::new();
+    for workload in WORKLOADS {
+        let setup = allocations_of(workload, 0)?;
+        let total = allocations_of(workload, 1)?;
+        let own = total.checked_sub(setup).ok_or_else(|| format!("{workload}: allocation total below setup"))?;
+        println!("conveyor {workload:<8} {own:>14} allocation blocks");
+        counts.insert(workload.into(), json!({ "setup": setup, "total": total, "net": own }));
+    }
+    let doc = json!({ "project": "conveyor", "machine": machine(), "workloads": counts });
+    std::fs::write(path, serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())? + "\n")
+        .map_err(|e| e.to_string())?;
+    Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod allocation_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    #[test]
+    fn dhat_summary_is_required_and_parsed() {
+        assert_eq!(allocation_blocks("==123== Total: 1,234 bytes in 56 blocks").unwrap(), 56);
+        assert!(allocation_blocks("no summary").is_err());
+        assert!(allocation_blocks("Total: 1 bytes in invalid blocks").is_err());
+        assert!(allocation_blocks("Total: 1 bytes in 2 pages").is_err());
+    }
 }

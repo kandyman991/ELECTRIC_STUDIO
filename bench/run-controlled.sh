@@ -1,18 +1,6 @@
 #!/usr/bin/env bash
-# The controlled benchmark run, for the owner's machine (the Legion): wall clock, peak memory and
-# the graphical workloads, cold and warm, under recorded idle conditions.
-#
-#   bench/run-controlled.sh [--label legion] [--repeat 3] [--size full] [--underlay drawing.dwg]
-#                           [--drop-caches] [--force]
-#
-# Writes bench/results/<date>-<commit>/ (not committed unless it is to become a baseline):
-#   conditions.txt   machine, kernel, governor, power, load, toolchain, before and after
-#   cold.json        one suite run right after dropping the page cache (with --drop-caches)
-#   warm-<n>.json    the repeated suite runs
-# Compare a run with a baseline: target/release/ecad-bench compare warm-1.json <baseline>.
-#
-# --underlay puts a real drawing behind the synthetic project's first page; it is read locally
-# and never committed. --force runs even when the machine is not idle.
+# Controlled Legion reference measurements. Disk-cold open is measured separately from
+# process-first and warm operations; never label a just-created fixture as disk-cold.
 set -euo pipefail
 
 label=legion repeat=3 size=full underlay= drop=0 force=0
@@ -21,24 +9,42 @@ while [ $# -gt 0 ]; do
     --label) label=$2; shift 2 ;;
     --repeat) repeat=$2; shift 2 ;;
     --size) size=$2; shift 2 ;;
-    --underlay) underlay=$2; shift 2 ;;
+    --underlay) underlay=$(realpath -- "$2"); shift 2 ;;
     --drop-caches) drop=1; shift ;;
     --force) force=1; shift ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
 done
+[[ "$repeat" =~ ^[1-9][0-9]*$ ]] || { echo "invalid repeat count" >&2; exit 2; }
+[[ "$size" = full || "$size" = smoke ]] || { echo "invalid size" >&2; exit 2; }
 
 cd "$(dirname "$0")/.."
+commit=$(git rev-parse HEAD)
+require_clean() {
+  if [ "$(git rev-parse HEAD)" != "$commit" ] || [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
+    echo "benchmark requires the same clean committed revision throughout" >&2
+    exit 1
+  fi
+}
+require_clean
 cargo build --release --locked -p ecad-bench
 bench=${CARGO_TARGET_DIR:-target}/release/ecad-bench
-commit=$(git rev-parse --short HEAD)
-out=bench/results/$(date -u +%Y%m%dT%H%M%SZ)-$commit
+out=bench/results/$(date -u +%Y%m%dT%H%M%SZ)-${commit:0:12}
 mkdir -p "$out"
 export ECAD_BENCH_MACHINE=$label
+export ECAD_BENCH_CONTROLLED=qualified
+if [ "$force" = 1 ] || [ "$drop" != 1 ] || [ "$size" != full ] || [ "$repeat" -lt 3 ]; then
+  export ECAD_BENCH_CONTROLLED=exploratory
+fi
+if [ -n "$underlay" ]; then
+  export ECAD_BENCH_ASSET_SHA256=$(sha256sum -- "$underlay" | cut -d' ' -f1)
+else
+  export ECAD_BENCH_ASSET_SHA256=generated
+fi
 
 conditions() {
   echo "== $1 $(date -u +%FT%TZ)"
-  echo "commit:   $(git rev-parse HEAD)$(git diff --quiet || echo ' (uncommitted changes)')"
+  echo "commit:   $commit"
   echo "rustc:    $(rustc --version)"
   echo "kernel:   $(uname -srm)"
   grep -m1 'model name' /proc/cpuinfo || true
@@ -48,31 +54,54 @@ conditions() {
   done
   echo "load:     $(cat /proc/loadavg)"
   echo "memory:   $(grep -E 'MemTotal|MemAvailable' /proc/meminfo | xargs)"
-  echo "top:"; ps -eo pcpu,pmem,comm --sort=-pcpu | head -6
+  echo "asset:    $ECAD_BENCH_ASSET_SHA256"
+  echo "qualification: $ECAD_BENCH_CONTROLLED"
+  echo "display:  ${DISPLAY:-none} / ${WAYLAND_DISPLAY:-none}"
+  echo "top:"; ps -eo pcpu,pmem,comm --sort=-pcpu | sed -n '1,6p'
 }
 
-# Idle: the 1-minute load average under 0.5, waited for up to five minutes.
-for _ in $(seq 30); do
-  load=$(cut -d' ' -f1 /proc/loadavg)
-  if awk -v l="$load" 'BEGIN { exit !(l < 0.5) }'; then idle=1; break; fi
-  idle=0; sleep 10
+wait_idle() {
+  for _ in $(seq 30); do
+    load=$(cut -d' ' -f1 /proc/loadavg)
+    if awk -v l="$load" 'BEGIN { exit !(l < 0.5) }'; then return; fi
+    if [ "$force" = 1 ]; then return; fi
+    sleep 10
+  done
+  echo "machine not idle; stop concurrent builds, emulators and inference" >&2
+  exit 1
+}
+args=(--size "$size")
+[ -z "$underlay" ] || args+=(--underlay "$underlay")
+fixtures=$(mktemp -d)
+trap 'rm -rf -- "$fixtures"' EXIT
+
+# All disk fixtures exist before eviction. Do not copy, hash, load or rewrite the
+# fixture between eviction and the first timed read.
+for p in conveyor reference synthetic; do
+  "$bench" prepare-open "$p" "$fixtures/$p" "${args[@]}"
 done
-if [ "${idle:-0}" != 1 ] && [ "$force" != 1 ]; then
-  echo "the machine is not idle (load $(cat /proc/loadavg)); close other programs or pass --force" >&2
+require_clean
+wait_idle
+conditions before > "$out/conditions.txt"
+for n in $(seq "$repeat"); do
+  if [ "$drop" = 1 ]; then
+    for p in conveyor reference synthetic; do
+      wait_idle
+      conditions "before disk-cold $p $n" >> "$out/conditions.txt"
+      sync
+      echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null
+      "$bench" measure-open "$p" "$fixtures/$p" --size "$size" > "$out/disk-cold-$p-$n.json"
+    done
+  fi
+  wait_idle
+  conditions "before process suite $n" >> "$out/conditions.txt"
+  "$bench" suite "${args[@]}" --out "$out/process-$n.json"
+done
+require_clean
+if [ -n "$underlay" ] && [ "$(sha256sum -- "$underlay" | cut -d' ' -f1)" != "$ECAD_BENCH_ASSET_SHA256" ]; then
+  echo "underlay changed during run" >&2
   exit 1
 fi
-
-conditions before > "$out/conditions.txt"
-args=(suite --size "$size")
-[ -n "$underlay" ] && args+=(--underlay "$underlay")
-
-if [ "$drop" = 1 ]; then
-  sync
-  echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null
-  "$bench" "${args[@]}" --out "$out/cold.json"
-fi
-for n in $(seq "$repeat"); do
-  "$bench" "${args[@]}" --out "$out/warm-$n.json"
-done
 conditions after >> "$out/conditions.txt"
+printf '%s\n' "$commit" > "$out/COMPLETE"
 echo "results in $out"
