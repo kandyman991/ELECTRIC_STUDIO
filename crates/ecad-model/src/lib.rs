@@ -11,6 +11,7 @@ pub mod library;
 pub mod naming;
 pub mod panel;
 pub mod parts;
+pub mod plc_address;
 pub mod potential;
 pub mod project;
 pub mod reference;

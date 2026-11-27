@@ -11,6 +11,7 @@ ecad-model = { workspace = true }
 ecad-view = { workspace = true }
 ecad-project = { workspace = true }
 ecad-reports = { workspace = true }
+ecad-exchange = { workspace = true }
 ecad-rules = { workspace = true }
 serde = { workspace = true }
 

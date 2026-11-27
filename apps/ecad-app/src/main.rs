@@ -261,7 +261,14 @@ impl App {
                         self.send(UiEvent::ExportDrawings { path });
                     }
                 }
-                let tip = "Wire list, BOM, terminal diagram and PLC I/O list as CSV";
+                let tip = "PLC symbols and comments from a TIA Portal PLC tags export (.xlsx), matched by address";
+                if ui.button("Import TIA Portal tags…").on_hover_text(tip).clicked() {
+                    ui.close();
+                    if let Some(path) = rfd::FileDialog::new().add_filter("Excel", &["xlsx"]).pick_file() {
+                        self.send(UiEvent::ImportTiaTags { path });
+                    }
+                }
+                let tip = "Wire list, BOM, terminal diagram, PLC I/O list and the rest as CSV, plus the PLC tags for TIA Portal";
                 if ui.button("Export reports…").on_hover_text(tip).clicked() {
                     ui.close();
                     if let Some(path) = pick_folder("Choose a folder for the reports") {

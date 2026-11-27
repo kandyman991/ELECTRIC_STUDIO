@@ -60,12 +60,43 @@ fn export_writes_what_only_asks_for() {
             "plc-io-list.csv",
             "table-of-contents.csv",
             "terminal-diagram.csv",
+            "tia-plc-tags.xlsx",
             "wire-list.csv"
         ]
     );
     let o = ecad(&["export", &plc, out.to_str().unwrap(), "--only", "svg"]);
     assert_eq!(o.status.code(), Some(2));
     assert!(text(&o).contains("unknown format `svg`"), "{}", text(&o));
+}
+
+#[test]
+fn tia_tags_go_out_and_renamed_symbols_come_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let plc = sample(dir.path(), "plc");
+    let out = dir.path().join("out");
+    assert!(ecad(&["export", &plc, out.to_str().unwrap(), "--only", "reports"]).status.success());
+    let bytes = std::fs::read(out.join("tia-plc-tags.xlsx")).unwrap();
+    let mut tags = ecad_exchange::tia::read_xlsx(&bytes).unwrap().tags;
+    let door = tags.iter_mut().find(|t| t.address == "%I0.0").unwrap();
+    assert_eq!(door.name, "Door_Closed");
+    door.name = "Guard_Door_Closed".into();
+    tags.push(ecad_exchange::tia::Tag { name: "Spare".into(), address: "%I7.7".into(), ..tags[0].clone() });
+    let file = dir.path().join("from-tia.xlsx");
+    std::fs::write(&file, ecad_exchange::tia::to_xlsx(&tags).unwrap()).unwrap();
+    let o = ecad(&["import-tia", &plc, file.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains("no channel at %I7.7 Spare"), "{}", text(&o));
+    assert!(text(&o).contains("updated 1 PLC channels"), "{}", text(&o));
+    let csv = String::from_utf8(ecad(&["report", &plc, "plc-io-list"]).stdout).unwrap();
+    assert!(csv.contains("-KF1,0,DI,I0.0,Guard_Door_Closed,"), "{csv}");
+    // A file that isn't a tag table fails without touching the project.
+    let o = ecad(&["import-tia", &plc, out.join("bom.csv").to_str().unwrap()]);
+    assert_eq!(o.status.code(), Some(2), "{}", text(&o));
+    // Exporting a project without PLC into the same folder removes the older table.
+    let start = sample(dir.path(), "start");
+    let o = ecad(&["export", &start, out.to_str().unwrap(), "--only", "reports"]);
+    assert!(text(&o).contains("removed the older tia-plc-tags.xlsx"), "{}", text(&o));
+    assert!(!out.join("tia-plc-tags.xlsx").exists());
 }
 
 #[test]

@@ -17,12 +17,16 @@ usage:
       --json    print the result as JSON instead
       --strict  fail on warnings too
   ecad export <project-dir> <out-dir> [--only <formats>]
-      Write drawings.pdf (all pages), a DXF, DWG and PNG per page, and the reports as CSV.
+      Write drawings.pdf (all pages), a DXF, DWG and PNG per page, the reports as CSV,
+      and the PLC channels as a TIA Portal tag table (tia-plc-tags.xlsx).
       --only    a comma-separated subset of: pdf, dxf, dwg, png, reports
   ecad report <project-dir> <report>
       Print one report as CSV: wire-list, bom, terminal-diagram, plc-io-list,
       cable-list, table-of-contents, devices-without-parts, panel-cut-list,
       wire-totals
+  ecad import-tia <project-dir> <tags.xlsx>
+      Take PLC symbols and comments from a TIA Portal PLC tags export, matched by
+      address, and save the project. Tags at other addresses are listed, not added.
   ecad new-sample <project-dir> [start|contacts|potentials|terminals|plc|power|library|reference]
       Write a sample project (default: start).
   ecad demo <out-dir>
@@ -96,6 +100,16 @@ fn export(project: &Project, out: &Path, formats: Formats, reports: bool) -> Res
     if reports {
         for (name, csv) in ecad_reports::all_csv(project).map_err(|e| e.to_string())? {
             write(name, csv.as_bytes())?;
+        }
+        let tia = ecad_exchange::tia::export_to(project, out).map_err(|e| e.to_string())?;
+        if let Some(file) = &tia.file {
+            println!("wrote {}", file.display());
+        }
+        for s in &tia.skipped {
+            println!("not in the TIA tag table: {} ({})", s.channel, s.reason);
+        }
+        if tia.removed {
+            println!("removed the older {}: the project has no PLC channels", ecad_exchange::tia::FILE_NAME);
         }
     }
     Ok(())
@@ -172,6 +186,33 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             print!("{csv}");
             Ok(ExitCode::SUCCESS)
         }
+        ["import-tia", dir, file] => {
+            flags(&[])?;
+            let mut project = load(Path::new(dir))?;
+            let bytes = std::fs::read(file).map_err(|e| format!("{file}: {e}"))?;
+            let table = ecad_exchange::tia::read_xlsx(&bytes).map_err(|e| format!("{file}: {e}"))?;
+            let import = ecad_exchange::tia::import(&project, &table.tags).map_err(|e| e.to_string())?;
+            for (list, what) in [
+                (&table.ignored, "left out"),
+                (&import.unknown, "no channel at"),
+                (&import.mismatched, "another kind of channel, not applied:"),
+                (&import.conflicts, "different names or comments for one address, not applied:"),
+                (&import.duplicates, "the same tag twice:"),
+            ] {
+                for t in list {
+                    println!("{what} {t}");
+                }
+            }
+            if let Some(command) = import.command {
+                project.apply(command).map_err(|e| e.to_string())?;
+                ecad_project::save(&project, Path::new(dir)).map_err(|e| e.to_string())?;
+            }
+            println!(
+                "updated {} PLC channels, {} already matched, {} tags not inputs or outputs",
+                import.updated, import.unchanged, import.other
+            );
+            Ok(ExitCode::SUCCESS)
+        }
         ["new-sample", dir, rest @ ..] if rest.len() <= 1 => {
             flags(&[])?;
             use ecad_model::sample;
@@ -202,7 +243,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         [] => Err(format!("no command\n\n{USAGE}")),
-        [cmd, ..] if ["check", "export", "report", "new-sample", "demo"].contains(cmd) => {
+        [cmd, ..] if ["check", "export", "report", "import-tia", "new-sample", "demo"].contains(cmd) => {
             Err(format!("wrong arguments for `{cmd}`\n\n{USAGE}"))
         }
         [cmd, ..] => Err(format!("unknown command `{cmd}`\n\n{USAGE}")),

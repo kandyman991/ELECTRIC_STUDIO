@@ -611,6 +611,19 @@ impl Editor {
         self.execute("Naming", Command::SetNaming(naming))
     }
 
+    /// Take PLC symbols and comments from a TIA Portal tag table, matched by address, as one
+    /// undoable step.
+    pub fn import_tia_tags(
+        &mut self,
+        tags: &[ecad_exchange::tia::Tag],
+    ) -> Result<ecad_exchange::tia::Import, ecad_exchange::ExchangeError> {
+        let mut import = ecad_exchange::tia::import(&self.project, tags)?;
+        if let Some(command) = import.command.take() {
+            self.execute("Import TIA Portal tags", command)?;
+        }
+        Ok(import)
+    }
+
     /// Set how wire lengths are estimated from the panel layout.
     pub fn set_wire_lengths(&mut self, settings: ecad_model::WireLengthSettings) -> Result<(), ModelError> {
         if settings == self.project.wire_length_settings {
