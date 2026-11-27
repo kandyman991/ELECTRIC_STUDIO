@@ -25,6 +25,36 @@ into a finished document set.
 
 ## Gaps, by priority
 
+### 0. Components library with manufacturer import (high, asked for)
+
+Today each project has its own parts catalogue (`parts.json`), typed in by
+hand: order number, manufacturer, description, company code, contact blocks
+and size. There is no library shared between projects and no import.
+
+- A library outside the projects (a folder per company, kept under version
+  control or on a share), searchable by manufacturer, order number, class and
+  technical data. A project keeps a copy of every part it uses, so a project
+  still opens on its own; "update from library" shows what changed.
+- A richer entry: technical data as properties with units (rated current,
+  voltage, power, setting range, cross-section), classification (ETIM or
+  ECLASS class), the symbol or symbols it is drawn with, its connection points
+  (terminal names), contact blocks, size and front view for the layout, power
+  loss, pictures and data-sheet links, accessories.
+- A default symbol per class (a contactor class brings a coil, three main
+  contacts and its auxiliary contacts), so an imported part can be placed
+  without a hand-made mapping.
+
+Formats manufacturers publish, in the order to support them:
+
+| Format | Who publishes it | What it brings | Notes |
+| --- | --- | --- | --- |
+| CSV or Excel with a column map | Everyone (price lists, own lists) | Order number, description, prices, any column | Works with any manufacturer from day one |
+| BMEcat with ETIM features (XML) | ABB, Phoenix Contact, Weidmüller, Rittal and many more, free downloads | Commercial data, ETIM class and technical features, pictures, documents | No symbols or connection points; free to use |
+| ECLASS Advanced (XML) | Phoenix Contact, Siemens, WAGO, Eaton and others, often through CADENAS | Technical data plus CAE data: connection points, functions, 2D drawings | Check the ECLASS licence terms before shipping a reader |
+| AASX (Asset Administration Shell, IDTA nameplate and technical data) | Growing (Siemens and others) | Nameplate and technical data, open specification | Newer; worth reading once BMEcat works |
+| DXF/DWG front views and footprints | Most manufacturers | Layout graphics | The underlay reader already reads these |
+| EDZ (EPLAN Data Portal) | Almost every manufacturer | Parts, macros, connection points | EPLAN's own format; read the portal and manufacturer terms before any support |
+
 ### 1. Generated document pages (high)
 
 Reports exist only as CSV files. A delivered project prints them as sheets in
@@ -98,13 +128,15 @@ plus underlay (see [SPAC-NOTES.md](SPAC-NOTES.md)).
 
 | Milestone | Scope |
 | --- | --- |
-| M7 Annotations and device data | Free text and notes, graphics, images, dimensions; wire annotations from wire data; technical data fields shown on the drawing; second-language descriptions; button and lamp colours |
-| M8 Generated pages | Cover, table of contents, BOM, terminal-strip drawings, cable and PLC I/O lists, symbol legend as regenerated pages in the frame, in PDF and DWG export |
-| M9 Symbols and black boxes | The missing symbols above; black-box sections, captions, two-line labels, network ports; connectors with pinouts |
-| M10 Front and machine layouts | Door layout with cut-outs and front graphics, device outlines, machine layout |
-| M11 SPAC migration | Data import from the SPAC databases plus per-sheet underlays |
+| M7 Components library | Shared library outside projects, richer entries (technical data, class, symbols, connection points), default symbol per class; import from CSV/Excel, then BMEcat with ETIM, then ECLASS Advanced and AASX |
+| M8 Annotations and device data | Free text and notes, graphics, images, dimensions; wire annotations from wire data; technical data fields shown on the drawing; second-language descriptions; button and lamp colours |
+| M9 Generated pages | Cover, table of contents, BOM, terminal-strip drawings, cable and PLC I/O lists, symbol legend as regenerated pages in the frame, in PDF and DWG export |
+| M10 Symbols and black boxes | The missing symbols above; black-box sections, captions, two-line labels, network ports; connectors with pinouts |
+| M11 Front and machine layouts | Door layout with cut-outs and front graphics, device outlines, machine layout |
+| M12 SPAC migration | Data import from the SPAC databases plus per-sheet underlays |
 | Later | Temperature-rise calculation |
 
-M7 and M8 together are what makes the output look like a delivered project;
-M9 widens what can be drawn. A sample project redrawn end to end with M7–M9
-would be the gate before M11.
+M7 comes first because M8's technical data on the drawing and M9's BOM pages
+draw on it. M8 and M9 together make the output look like a delivered project;
+M10 widens what can be drawn. A sample project redrawn end to end with M7–M10
+would be the gate before M12.
