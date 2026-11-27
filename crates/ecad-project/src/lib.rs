@@ -9,6 +9,7 @@
 //!   cables.json           cables, sorted by tag
 //!   symbols/<id>.json     one file per symbol used by the project
 //!   pages/<page-id>.json  the functions and connections on that page
+//!   underlays/<page-id>.json  a drawing shown behind that page, if any (compact)
 //! ```
 //!
 //! Loading replays everything through the model's commands, so a hand-edited file that breaks
@@ -45,6 +46,25 @@ pub enum ProjectError {
     Changed(PathBuf),
     #[error("{0}: another program is saving this project right now; try again")]
     Busy(PathBuf),
+    #[error("{path}: over {limit} MB, too big to read")]
+    TooBig { path: PathBuf, limit: usize },
+}
+
+/// Largest underlay file read back: a little over what [`ecad_model::underlay::MAX_POINTS`]
+/// points can take.
+pub const MAX_UNDERLAY_FILE: usize = 96 << 20;
+
+/// Read at most `limit` bytes of a file: one more and it is refused, before anything larger is
+/// held in memory (the file's stated size isn't trusted; it can grow while being read).
+pub fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).map_err(io(path))?;
+    let mut bytes = Vec::new();
+    file.take(limit as u64 + 1).read_to_end(&mut bytes).map_err(io(path))?;
+    if bytes.len() > limit {
+        return Err(ProjectError::TooBig { path: path.to_owned(), limit: limit >> 20 });
+    }
+    Ok(bytes)
 }
 
 pub type Result<T> = std::result::Result<T, ProjectError>;
@@ -91,6 +111,61 @@ struct PageFile {
     panel: Option<ecad_model::Panel>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     panel_items: Vec<ecad_model::PanelItem>,
+}
+
+/// An underlay's file: compact, as it is geometry nobody reads by hand. Points are `[x, y]`,
+/// fills six numbers per triangle.
+#[derive(Serialize, Deserialize)]
+struct UnderlayFile {
+    source: String,
+    at: [f64; 2],
+    scale: f64,
+    visible: bool,
+    width: f64,
+    height: f64,
+    #[serde(default)]
+    units: ecad_model::underlay::Units,
+    #[serde(default)]
+    units_from: ecad_model::underlay::UnitsFrom,
+    lines: Vec<Vec<[f64; 2]>>,
+    fills: Vec<[f64; 6]>,
+}
+
+impl UnderlayFile {
+    fn of(u: &ecad_model::underlay::Underlay) -> UnderlayFile {
+        let xy = |p: &Point| [p.x, p.y];
+        UnderlayFile {
+            source: u.source.clone(),
+            at: xy(&u.at),
+            scale: u.scale,
+            visible: u.visible,
+            width: u.shapes.width,
+            height: u.shapes.height,
+            units: u.units,
+            units_from: u.units_from,
+            lines: u.shapes.lines.iter().map(|l| l.iter().map(xy).collect()).collect(),
+            fills: u.shapes.fills.iter().map(|[a, b, c]| [a.x, a.y, b.x, b.y, c.x, c.y]).collect(),
+        }
+    }
+
+    fn into_underlay(self) -> ecad_model::underlay::Underlay {
+        let pt = |[x, y]: [f64; 2]| Point::new(x, y);
+        let shapes = ecad_model::underlay::UnderlayShapes {
+            lines: self.lines.into_iter().map(|l| l.into_iter().map(pt).collect()).collect(),
+            fills: self.fills.into_iter().map(|f| [pt([f[0], f[1]]), pt([f[2], f[3]]), pt([f[4], f[5]])]).collect(),
+            width: self.width,
+            height: self.height,
+        };
+        ecad_model::underlay::Underlay {
+            source: self.source,
+            shapes: std::sync::Arc::new(shapes),
+            at: pt(self.at),
+            scale: self.scale,
+            visible: self.visible,
+            units: self.units,
+            units_from: self.units_from,
+        }
+    }
 }
 
 pub(crate) fn io(path: &Path) -> impl FnOnce(std::io::Error) -> ProjectError + '_ {
@@ -161,6 +236,13 @@ fn render(project: &Project) -> Result<Vec<(String, Vec<u8>)>> {
         let bytes = render_json(Path::new(&name), &file)?;
         files.push((name, bytes));
     }
+    for (page, u) in &project.underlays {
+        let name = format!("underlays/{}.json", page.0);
+        let mut bytes = serde_json::to_vec(&UnderlayFile::of(u))
+            .map_err(|source| ProjectError::Json { path: PathBuf::from(&name), source })?;
+        bytes.push(b'\n');
+        files.push((name, bytes));
+    }
     Ok(files)
 }
 
@@ -179,7 +261,7 @@ pub fn save(project: &Project, dir: &Path) -> Result<()> {
 /// [`ProjectError::Changed`], and the folder is left alone. Returns the new fingerprint.
 pub fn save_checked(project: &Project, dir: &Path, expected: Option<Fingerprint>) -> Result<Fingerprint> {
     let files = render(project)?;
-    for d in [dir.to_owned(), dir.join("pages"), dir.join("symbols")] {
+    for d in [dir.to_owned(), dir.join("pages"), dir.join("symbols"), dir.join("underlays")] {
         std::fs::create_dir_all(&d).map_err(io(&d))?;
     }
     let _lock = store::Lock::take(dir)?;
@@ -206,9 +288,9 @@ pub fn fingerprint(dir: &Path) -> Result<Fingerprint> {
     let mut h = std::hash::DefaultHasher::new();
     for name in names {
         let path = dir.join(&name);
-        let bytes = std::fs::read(&path).map_err(io(&path))?;
         name.hash(&mut h);
-        bytes.hash(&mut h);
+        // In pieces, so a large file (an underlay) is never held whole just to be hashed.
+        store::each_chunk(&path, |chunk| chunk.hash(&mut h))?;
     }
     Ok(h.finish())
 }
@@ -300,6 +382,21 @@ pub fn load(dir: &Path) -> Result<Project> {
         for item in &file.panel_items {
             project.apply(Command::AddPanelItem(item.clone())).map_err(model(&path))?;
         }
+        // A drawing behind the page; projects saved before M6c have none.
+        let underlay = dir.join("underlays").join(format!("{}.json", id.0));
+        if underlay.exists() {
+            // Read with a limit, so a huge file is refused before it is held or decoded.
+            let bytes = read_bounded(&underlay, MAX_UNDERLAY_FILE)?;
+            let file: UnderlayFile = serde_json::from_slice(&bytes)
+                .map_err(|source| ProjectError::Json { path: underlay.clone(), source })?;
+            drop(bytes);
+            let points = file.lines.iter().map(Vec::len).sum::<usize>() + 3 * file.fills.len();
+            if points > ecad_model::underlay::MAX_POINTS {
+                return Err(model(&underlay)(ModelError::InvalidUnderlay));
+            }
+            let u = file.into_underlay();
+            project.apply(Command::SetUnderlay { page: id, underlay: Some(Box::new(u)) }).map_err(model(&underlay))?;
+        }
         pages.push((path, file.connections));
     }
     for (path, connections) in pages {
@@ -347,6 +444,24 @@ mod tests {
             }
         }
         b.apply(Command::AddDevice(ecad_model::Device::new(ecad_model::DeviceId::new(), "-K77", "added"))).unwrap();
+        // And an underlay behind the first page: its file is part of the same save.
+        let first = b.pages_in_order()[0].id;
+        let shapes = ecad_model::underlay::UnderlayShapes {
+            lines: vec![vec![Point::new(0.0, 0.0), Point::new(10.0, 10.0)]],
+            fills: Vec::new(),
+            width: 10.0,
+            height: 10.0,
+        };
+        let u = ecad_model::underlay::Underlay {
+            source: "old.dwg".into(),
+            shapes: std::sync::Arc::new(shapes),
+            at: Point::new(0.0, 0.0),
+            scale: 1.0,
+            visible: true,
+            units: Default::default(),
+            units_from: Default::default(),
+        };
+        b.apply(Command::SetUnderlay { page: first, underlay: Some(Box::new(u)) }).unwrap();
         (a, b)
     }
 
@@ -496,6 +611,61 @@ mod tests {
         head["wire_lengths"] = serde_json::json!({"spare_per_end": 0.0, "round_to": 0.0});
         std::fs::write(&path, serde_json::to_vec(&head).unwrap()).unwrap();
         assert_eq!(load(dir.path()).unwrap().wire_length_settings.round_to, 0.0);
+    }
+
+    #[test]
+    fn an_underlay_is_saved_in_its_own_file_and_goes_when_removed() {
+        use ecad_model::underlay::{Underlay, UnderlayShapes};
+        let mut p = start_circuit().unwrap();
+        let page = p.pages_in_order()[0].id;
+        let shapes = UnderlayShapes {
+            lines: vec![vec![Point::new(0.0, 0.0), Point::new(12.5, 0.25)]],
+            fills: vec![[Point::new(0.0, 0.0), Point::new(1.0, 0.0), Point::new(0.0, 1.0)]],
+            width: 12.5,
+            height: 1.0,
+        };
+        let u = Underlay {
+            source: "old.dxf".into(),
+            shapes: std::sync::Arc::new(shapes),
+            at: Point::new(5.0, 6.0),
+            scale: 2.0,
+            visible: false,
+            units: ecad_model::underlay::Units::Inches,
+            units_from: ecad_model::underlay::UnitsFrom::File,
+        };
+        p.apply(Command::SetUnderlay { page, underlay: Some(Box::new(u.clone())) }).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        save(&p, dir.path()).unwrap();
+        let file = dir.path().join("underlays").join(format!("{}.json", page.0));
+        assert!(std::fs::read_to_string(&file).unwrap().starts_with("{\"source\":\"old.dxf\""));
+        assert_eq!(load(dir.path()).unwrap().underlays.get(&page), Some(&u));
+        p.apply(Command::SetUnderlay { page, underlay: None }).unwrap();
+        save(&p, dir.path()).unwrap();
+        assert!(!file.exists());
+        assert!(load(dir.path()).unwrap().underlays.is_empty());
+        // A hand-edited file breaking the rules is refused with its name.
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let bad = r#"{"source":"x","at":[0,0],"scale":0,"visible":true,"width":1,"height":1,"lines":[],"fills":[]}"#;
+        std::fs::write(&file, bad).unwrap();
+        let e = load(dir.path()).unwrap_err().to_string();
+        assert!(e.contains("underlays") && e.contains("scale above 0"), "{e}");
+        // A file too big is refused before it is read whole (a sparse file: no disk used).
+        let f = std::fs::File::create(&file).unwrap();
+        f.set_len(MAX_UNDERLAY_FILE as u64 + 1).unwrap();
+        drop(f);
+        assert!(matches!(load(dir.path()), Err(ProjectError::TooBig { .. })));
+        // And the fingerprint reads it in pieces without trouble.
+        fingerprint(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn a_bounded_read_takes_up_to_the_limit_and_no_more() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f");
+        std::fs::write(&path, [7u8; 100]).unwrap();
+        assert_eq!(read_bounded(&path, 100).unwrap().len(), 100);
+        assert!(matches!(read_bounded(&path, 99), Err(ProjectError::TooBig { .. })));
+        assert!(matches!(read_bounded(&dir.path().join("missing"), 10), Err(ProjectError::Io { .. })));
     }
 
     #[test]

@@ -1211,6 +1211,8 @@ name = "ecad-app"
 version = "0.0.1"
 dependencies = [
  "ecad-editor",
+ "ecad-model",
+ "ecad-view",
  "eframe",
  "rfd",
 ]
@@ -1219,6 +1221,7 @@ dependencies = [
 name = "ecad-cli"
 version = "0.0.1"
 dependencies = [
+ "ecad-editor",
  "ecad-exchange",
  "ecad-model",
  "ecad-project",
@@ -1265,6 +1268,7 @@ dependencies = [
  "ecad-project",
  "ecad-reports",
  "ecad-rules",
+ "ecad-view",
  "serde_json",
  "tempfile",
 ]
@@ -1314,6 +1318,7 @@ dependencies = [
  "ecad-model",
  "png",
  "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 

@@ -18,6 +18,7 @@ pub mod reference;
 pub mod sample;
 pub mod sheet;
 pub mod symbol;
+pub mod underlay;
 
 pub use geometry::{Direction, Point, Rotation};
 pub use history::History;

@@ -37,6 +37,7 @@ ecad check my-project                      # exit 1 on errors
 ecad check my-project --strict             # exit 1 on warnings too
 ecad check my-project --json               # the findings as JSON, each with its page, location and target
 ecad export my-project out --only pdf,reports   # any of pdf, dxf, dwg, png, reports
+ecad import-dxf my-project 3 old-page-3.dwg     # an old drawing behind page 3, to redraw over
 ecad import-tia my-project tags.xlsx       # PLC symbols and comments renamed in TIA Portal, by address
 ecad report my-project bom > bom.csv       # one report on stdout: wire-list, bom, terminal-diagram,
                                            # plc-io-list, cable-list, table-of-contents,
@@ -88,7 +89,7 @@ Planned: `ecad-symbols`, `ecad-parts`, `ecad-mcp`. See [docs/ARCHITECTURE.md](do
 | *Gate check* | *One real panel drawn end to end; BOM and wire list match it; checks clean. Done: 0 errors, 28 devices match the BOM exactly; gaps listed in [docs/MVP-GATE.md](docs/MVP-GATE.md)* |
 | *G5 Gate gaps* | *G5a wire tidying: drag a wire's middle run, Straighten, Tidy wires, new wires avoid clashes, wire-overlap checks · G5b changeover contacts, contact numbers from the parts' contact blocks · G5c parts per terminal type, black-box bridges, PLC wire numbers · G6 mirrored symbols, dashed PE wires* |
 | **M5 Panel layout** | M5a layout pages: mounting plate at scale, DIN rails, ducts, device footprints from part sizes, checks, cut list, reference layout L7 · M5b editing the layout: place unplaced devices, snap to rails, draw rails and ducts, layout pages in the app · M5c wire lengths through the ducts in the wire list, wire totals, cut list in the exports |
-| M6 Integrations | M6a TIA Portal PLC tag table: export, symbols and comments back by address · M6b MCP server (this) · DXF import. No HMI tag exchange: HMI tags come in from TIA Portal |
+| M6 Integrations | M6a TIA Portal PLC tag table: export, symbols and comments back by address · M6b MCP server · M6c DXF/DWG underlay to redraw over (this). No HMI tag exchange: HMI tags come in from TIA Portal |
 
 ## Contributing
 

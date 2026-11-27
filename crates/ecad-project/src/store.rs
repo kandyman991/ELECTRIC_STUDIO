@@ -34,7 +34,7 @@ pub const STAGED: &str = ".ecad-new";
 pub const STALE_LOCK: Duration = Duration::from_secs(120);
 
 /// The folders that hold project files, besides the project folder itself.
-const SUBDIRS: [&str; 2] = ["pages", "symbols"];
+const SUBDIRS: [&str; 3] = ["pages", "symbols", "underlays"];
 
 #[derive(Serialize, Deserialize)]
 struct Journal {
@@ -102,6 +102,35 @@ fn remove(path: &Path) -> Result<()> {
     }
 }
 
+/// Read a file in 64 KB pieces, never holding it whole.
+pub(crate) fn each_chunk(path: &Path, mut f: impl FnMut(&[u8])) -> Result<()> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).map_err(io(path))?;
+    let mut buf = vec![0u8; 64 << 10];
+    loop {
+        let n = file.read(&mut buf).map_err(io(path))?;
+        if n == 0 {
+            return Ok(());
+        }
+        f(&buf[..n]);
+    }
+}
+
+/// Whether the file at `path` holds exactly `bytes`, compared in pieces.
+fn same_contents(path: &Path, bytes: &[u8]) -> bool {
+    if std::fs::metadata(path).map(|m| m.len()).ok() != Some(bytes.len() as u64) {
+        return false;
+    }
+    let mut at = 0;
+    let mut same = true;
+    let read = each_chunk(path, |chunk| {
+        let end = at + chunk.len();
+        same &= bytes.get(at..end) == Some(chunk);
+        at = end;
+    });
+    read.is_ok() && same && at == bytes.len()
+}
+
 /// The names of files in `dir` (one level), `None` if it doesn't exist.
 fn names_in(dir: &Path) -> Result<Vec<String>> {
     let entries = match std::fs::read_dir(dir) {
@@ -167,7 +196,7 @@ pub(crate) fn commit(dir: &Path, files: &[(String, Vec<u8>)]) -> Result<()> {
     let mut replace = Vec::new();
     for (name, bytes) in files {
         let target = dir.join(name);
-        if std::fs::read(&target).is_ok_and(|old| &old == bytes) {
+        if same_contents(&target, bytes) {
             continue;
         }
         write_synced(&dir.join(staged(name)), bytes)?;

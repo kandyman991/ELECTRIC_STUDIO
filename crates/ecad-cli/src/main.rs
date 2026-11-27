@@ -27,6 +27,13 @@ usage:
   ecad import-tia <project-dir> <tags.xlsx>
       Take PLC symbols and comments from a TIA Portal PLC tags export, matched by
       address, and save the project. Tags at other addresses are listed, not added.
+  ecad import-dxf <project-dir> <page> <drawing.dxf|.dwg> [--units mm|cm|m|inch|feet]
+      Put an existing drawing behind a page (its name, or #n) to redraw over: at real
+      size where it was drawn if that is on the sheet, otherwise fitted. Its units come
+      from the file (or --units; mm if neither). Replaces one already there. The file is
+      read in a separate worker process.
+  ecad remove-underlay <project-dir> <page>
+      Take a page's underlay away.
   ecad new-sample <project-dir> [start|contacts|potentials|terminals|plc|power|library|reference]
       Write a sample project (default: start).
   ecad demo <out-dir>
@@ -48,16 +55,18 @@ struct Args {
     json: bool,
     strict: bool,
     only: Option<String>,
+    units: Option<String>,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
-    let mut out = Args { positional: Vec::new(), json: false, strict: false, only: None };
+    let mut out = Args { positional: Vec::new(), json: false, strict: false, only: None, units: None };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--json" => out.json = true,
             "--strict" => out.strict = true,
             "--only" => out.only = Some(it.next().ok_or("--only needs a list, e.g. --only pdf,reports")?.clone()),
+            "--units" => out.units = Some(it.next().ok_or("--units needs a unit: mm, cm, m, inch or feet")?.clone()),
             flag if flag.starts_with("--") => return Err(format!("unknown option `{flag}`")),
             _ => out.positional.push(a.clone()),
         }
@@ -158,7 +167,9 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
     }
     let a = parse(args)?;
     let flags = |allowed: &[&str]| -> Result<(), String> {
-        for (set, name) in [(a.json, "--json"), (a.strict, "--strict"), (a.only.is_some(), "--only")] {
+        for (set, name) in
+            [(a.json, "--json"), (a.strict, "--strict"), (a.only.is_some(), "--only"), (a.units.is_some(), "--units")]
+        {
             if set && !allowed.contains(&name) {
                 return Err(format!("{name} doesn't apply to `{}`", a.positional.first().map_or("", String::as_str)));
             }
@@ -213,6 +224,33 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             );
             Ok(ExitCode::SUCCESS)
         }
+        ["import-dxf", dir, page, file] => {
+            flags(&["--units"])?;
+            let units = match a.units.as_deref() {
+                None => None,
+                Some(u) => Some(
+                    ecad_model::underlay::Units::parse(u)
+                        .ok_or_else(|| format!("unknown unit `{u}` (use mm, cm, m, inch or feet)"))?,
+                ),
+            };
+            let (project, seen) = ecad_project::load_checked(Path::new(dir)).map_err(|e| e.to_string())?;
+            let page = ecad_editor::script::find_page(&project, page)?;
+            let mut editor = ecad_editor::Editor::new(project, page).map_err(|e| e.to_string())?;
+            let message = editor.import_underlay_file(page, Path::new(file), units)?;
+            ecad_project::save_checked(editor.project(), Path::new(dir), Some(seen)).map_err(|e| e.to_string())?;
+            println!("{message}");
+            Ok(ExitCode::SUCCESS)
+        }
+        ["remove-underlay", dir, page] => {
+            flags(&[])?;
+            let (project, seen) = ecad_project::load_checked(Path::new(dir)).map_err(|e| e.to_string())?;
+            let page = ecad_editor::script::find_page(&project, page)?;
+            let mut editor = ecad_editor::Editor::new(project, page).map_err(|e| e.to_string())?;
+            editor.remove_underlay(page)?;
+            ecad_project::save_checked(editor.project(), Path::new(dir), Some(seen)).map_err(|e| e.to_string())?;
+            println!("removed the underlay");
+            Ok(ExitCode::SUCCESS)
+        }
         ["new-sample", dir, rest @ ..] if rest.len() <= 1 => {
             flags(&[])?;
             use ecad_model::sample;
@@ -243,7 +281,10 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         [] => Err(format!("no command\n\n{USAGE}")),
-        [cmd, ..] if ["check", "export", "report", "import-tia", "new-sample", "demo"].contains(cmd) => {
+        [cmd, ..]
+            if ["check", "export", "report", "import-tia", "import-dxf", "remove-underlay", "new-sample", "demo"]
+                .contains(cmd) =>
+        {
             Err(format!("wrong arguments for `{cmd}`\n\n{USAGE}"))
         }
         [cmd, ..] => Err(format!("unknown command `{cmd}`\n\n{USAGE}")),
@@ -251,6 +292,11 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
 }
 
 fn main() -> ExitCode {
+    // A copy of this program started to read an outside drawing does that and nothing else.
+    if let Some(code) = ecad_view::worker::serve_if_asked() {
+        return ExitCode::from(u8::try_from(code).unwrap_or(2));
+    }
+    ecad_view::worker::use_own_worker();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match run(&args) {
         Ok(code) => code,

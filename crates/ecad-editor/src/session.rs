@@ -158,6 +158,24 @@ pub enum UiEvent {
     WireLengths {
         settings: ecad_model::WireLengthSettings,
     },
+    /// Put a DXF or DWG drawing behind the shown page, to redraw over. `units` overrides the
+    /// file's own (or the millimetres assumed when it gives none).
+    ImportUnderlay {
+        path: PathBuf,
+        #[serde(default)]
+        units: Option<ecad_model::underlay::Units>,
+    },
+    /// Show or hide the shown page's underlay.
+    ShowUnderlay {
+        visible: bool,
+    },
+    /// Place the shown page's underlay: lower-left corner at `x`, `y` mm, `scale` mm per unit.
+    PlaceUnderlay {
+        x: f64,
+        y: f64,
+        scale: f64,
+    },
+    RemoveUnderlay,
     Naming {
         naming: ecad_model::Naming,
     },
@@ -442,6 +460,24 @@ pub struct LayoutInfo {
 }
 
 /// Everything the UI needs to paint one frame.
+/// A page's underlay as the UI shows it.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnderlayInfo {
+    /// The file it came from.
+    pub source: String,
+    pub x: f64,
+    pub y: f64,
+    pub scale: f64,
+    /// The drawing's real scale as a ratio, `1:10`, its units counted.
+    pub ratio: String,
+    /// The drawing's units: `mm`, `inch`…
+    pub units: String,
+    /// The file gave no units and millimetres were taken.
+    pub units_assumed: bool,
+    pub visible: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Frame {
@@ -476,6 +512,8 @@ pub struct Frame {
     pub info: ecad_model::ProjectInfo,
     pub naming: ecad_model::Naming,
     pub wire_lengths: ecad_model::WireLengthSettings,
+    /// The shown page's underlay, if it has one.
+    pub underlay: Option<UnderlayInfo>,
     pub sheet: SheetGrid,
     /// The project's checks, errors first; updated on every change.
     pub checks: Vec<CheckInfo>,
@@ -753,6 +791,29 @@ impl Session {
             UiEvent::CreateBlackBox { spec } => {
                 let r = self.editor.create_black_box(&spec);
                 self.report(r);
+            }
+            UiEvent::ImportUnderlay { path, units } => {
+                let page = self.editor.page();
+                let result = self.editor.import_underlay_file(page, &path, units);
+                self.message = Some(result.unwrap_or_else(|e| format!("Import failed: {e}")));
+            }
+            UiEvent::ShowUnderlay { visible } => {
+                let page = self.editor.page();
+                if let Err(e) = self.editor.show_underlay(page, visible) {
+                    self.message = Some(e);
+                }
+            }
+            UiEvent::PlaceUnderlay { x, y, scale } => {
+                let page = self.editor.page();
+                if let Err(e) = self.editor.place_underlay(page, ecad_model::geometry::Point::new(x, y), scale) {
+                    self.message = Some(e);
+                }
+            }
+            UiEvent::RemoveUnderlay => {
+                let page = self.editor.page();
+                if let Err(e) = self.editor.remove_underlay(page) {
+                    self.message = Some(e);
+                }
             }
             UiEvent::WireLengths { settings } => {
                 let r = self.editor.set_wire_lengths(settings);
@@ -1395,6 +1456,16 @@ impl Session {
             info: project.info.clone(),
             naming: project.naming.clone(),
             wire_lengths: project.wire_length_settings,
+            underlay: project.underlays.get(&self.editor.page()).map(|u| UnderlayInfo {
+                source: u.source.clone(),
+                x: u.at.x,
+                y: u.at.y,
+                scale: u.scale,
+                ratio: crate::ratio(u.real_scale()),
+                units: u.units.name().to_owned(),
+                units_assumed: u.units_from == ecad_model::underlay::UnitsFrom::Assumed,
+                visible: u.visible,
+            }),
             sheet: SheetGrid {
                 columns: project.sheet.columns,
                 first_column: project.sheet.first_column,
@@ -1495,6 +1566,41 @@ mod tests {
         s2.handle(UiEvent::Save);
         assert!(!s2.frame(None, [0, 0, 0]).dirty);
         assert!(ecad_project::load(dir2.path()).unwrap().device_by_tag("-K3").is_some());
+    }
+
+    #[test]
+    fn an_underlay_is_imported_shown_placed_removed_and_saved() {
+        let (dir, mut s) = session();
+        let p = ecad_model::reference::reference_project().unwrap();
+        let file = dir.path().join("old.dxf");
+        std::fs::write(&file, ecad_view::page_dxf(&p, p.pages_in_order()[2].id).unwrap()).unwrap();
+        s.handle(UiEvent::ImportUnderlay { path: file, units: None });
+        let f = s.frame(None, [0, 0, 0]);
+        assert!(f.status.starts_with("Underlay old.dxf"), "{}", f.status);
+        let u = f.underlay.clone().unwrap();
+        assert_eq!((u.source.as_str(), u.ratio.as_str(), u.visible), ("old.dxf", "1:1", true));
+        s.handle(UiEvent::ShowUnderlay { visible: false });
+        s.handle(UiEvent::PlaceUnderlay { x: 10.0, y: 20.0, scale: 0.5 });
+        let u = s.frame(None, [0, 0, 0]).underlay.unwrap();
+        assert_eq!((u.x, u.y, u.ratio.as_str(), u.visible), (10.0, 20.0, "1:2", false));
+        s.handle(UiEvent::Save);
+        assert_eq!(ecad_project::load(dir.path()).unwrap().underlays.len(), 1);
+        s.handle(UiEvent::RemoveUnderlay);
+        assert!(s.frame(None, [0, 0, 0]).underlay.is_none());
+        s.handle(UiEvent::ImportUnderlay { path: dir.path().join("missing.dxf"), units: None });
+        assert!(s.frame(None, [0, 0, 0]).status.starts_with("Import failed:"));
+        // A page with an underlay can still be deleted, and undeleted with it.
+        s.handle(UiEvent::Key { key: KeyName::Undo });
+        let with = s.frame(None, [0, 0, 0]).page;
+        s.handle(UiEvent::AddPage);
+        s.handle(UiEvent::ShowPage { id: with });
+        assert!(s.frame(None, [0, 0, 0]).underlay.is_some());
+        s.handle(UiEvent::DeletePage);
+        let f = s.frame(None, [0, 0, 0]);
+        assert!(f.pages.iter().all(|p| p.id != with), "{}", f.status);
+        assert!(s.editor().project().underlays.is_empty());
+        s.handle(UiEvent::Key { key: KeyName::Undo });
+        assert!(s.editor().project().underlays.contains_key(&with));
     }
 
     #[test]
