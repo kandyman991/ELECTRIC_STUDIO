@@ -1,7 +1,7 @@
 # Roadmap: machine-centric platform
 
 **Status: architecture approved and merged (PR #31, 27 Nov 2026), all decisions D1–D43
-resolved. Implementation under way: M7 complete, awaiting formal acceptance.** Pairs with
+resolved. M7 accepted with owner-approved deferred Legion validation (27 Nov 2026); M10 authorized.** Pairs with
 [PLATFORM-ARCHITECTURE.md](PLATFORM-ARCHITECTURE.md).
 
 ## Where things stand
@@ -9,7 +9,8 @@ resolved. Implementation under way: M7 complete, awaiting formal acceptance.** P
 | Milestone | State |
 | --- | --- |
 | M0–M6 (foundation, editor, multi-page, parts and reports, checks and output, MVP gate, panel layout, integrations) | Merged |
-| M7 model foundations | M7a (PR #33, derived connectivity, netlist, content hash) merged; M7b (conveyor acceptance project, benchmark harness) complete; **independent review found closure items; PR #35 pending validation** |
+| M7 model foundations | M7a (PR #33, derived connectivity, netlist, content hash) merged; M7b (conveyor acceptance project, benchmark harness) complete; PR #35 merged after all six exact-head CI jobs passed; **accepted with R5 deferred to the first production release** |
+| M10 format 2 | Authorized; implementation next |
 | Components library (PR #32) | Draft, **on hold** (D13). Its compatible parts are reused in M9 |
 
 The earlier proposals in GAPS.md (library, annotations, generated pages, symbols, layouts,
@@ -60,7 +61,7 @@ SPAC) are all folded into the plan below. Nothing from them is dropped.
 
 Each milestone needs only what is listed:
 
-- **M7** first, then **M10**. M7 is implemented and awaits formal acceptance: the conveyor is
+- **M7** is accepted with the documented R5 exception; **M10** is next. The conveyor is
   `crates/ecad-model/src/conveyor.rs`, its acceptance tests `tests/acceptance/`, the benchmark
   harness `crates/ecad-bench` with `bench/` (baselines, the controlled-run script).
 - After M10: **S0**, **AI0**, **C0**.
@@ -169,7 +170,7 @@ It is started and stopped from the cabinet door and stopped by an emergency stop
 
 | After | The CI test proves |
 | --- | --- |
-| M7 | The conveyor drawn schematic-first (a script of today's operations) resolves every wire end to a terminal or node, with the same ids on every load; physical group and point uniqueness; shared designation on both strip sides, explicit bridge and isolated levels; repeated representations do not create extra endpoints; netlist stable across save and load; benchmark baseline recorded |
+| M7 | The conveyor drawn schematic-first (a script of today's operations) resolves every wire end to a terminal or node, with the same ids on every load; physical group and point uniqueness; shared designation on both strip sides, explicit bridge and isolated levels; repeated representations do not create extra endpoints; netlist stable across save and load; deterministic smoke, instruction and allocation reference recorded; controlled Legion baseline deferred by owner decision (mandatory before first production release) |
 | M10 | Format 2 saves and reads back identical; the M7 conveyor saved as format 1 converts to the same terminals (same ids twice), nodes and netlist, with byte-identical golden drawings; renumbering a physical terminal group changes its displayed designation without changing endpoint ids or wires; independent networks with identical L+/M labels stay separate; a wire added without drawing appears as not drawn; two products with the same number from two makers coexist. **An ambiguous fixture** (an interruption joining `L+` and `M`, a potential and an interruption named alike) converts with the nodes kept apart and each case reported; nothing is merged or reconnected |
 | S0 | Stability test: adding a device, a wire, a terminal and a page changes only those. Joining two numbered potentials keeps both numbers and reports `wire-numbers-differ`. Removing `-B2` changes nothing else and retires it; the next sensor is `-B3` (sequential). A new DI for an unrelated device skips the reserved four. Allocating past the last free channel reports exhaustion and adds nothing. A page inserted after 3 is `3a`, and no other page file changes |
 | AI0 | Every step of the conveyor script runs through the registry; MCP's tool list matches it. The same build as an assistant change set previews the expected additions with no new errors, applies only after acceptance, as one undo step; undo restores canonical engineering and graphical files byte for byte and appends an undo record; committed revision changes so stale approvals cannot revive; a change set against an older fingerprint is refused. **No MCP or CLI call applies an assistant change set; approval exists only in the app.** An approved change set modified afterwards, or approved against an older project state, is refused. A forty-operation proposal is approved as one transaction. An MCP client can't name itself a person. CLI editing commands without `--apply`, or in a project not allowing automation, change nothing. `ecad apply` of a reviewed change set succeeds at the expected fingerprint and is refused at any other; an assistant's change set handed to `ecad apply` is refused. Missing, forged caller-supplied, changed, revoked, out-of-scope, stale and consumed approval records are refused; consumption is atomic. The shared release gate rejects available blocking errors consistently. A file edited while Electric Studio is closed is compared against retained committed content, without a baseline; missing prior content yields an explicit incomplete comparison. External edits are reported at open, preview and apply, with their impact where recoverable; saving over it is refused until reconciled. Accepting it records an *external, unknown* change and invalidates the approvals it touches. A deleted file, a corrupted object and an unexpected file are reported as missing, damaged (quarantined) and ignored. A fixture with `..`, an absolute path and a symlink out of the folder is refused. A crash injected between files and manifest leaves them consistent. A long generation can be cancelled, leaving the project unchanged. A change to `-F3`, which feeds the safety relay, is flagged as indirectly safety-related. Every applied change set leaves a change record |
@@ -277,4 +278,4 @@ decision.
 
 ### M7 closure and performance follow-up
 
-M7 formal acceptance requires PR #35 correction evidence, exact-head green CI, allocation-count evidence, and a qualified controlled Legion baseline. The observed superlinear checks and render costs are a follow-up: establish the baseline, profile multiple sizes and remove repeated work before synchronous interactive workflows depend on it. Sandbox wall-clock figures are not a merge gate. Do not begin M10 until formal acceptance.
+**Decision (owner approved, 27 Nov 2026): M7 accepted; R5 deferred, not passed.** PR #35 merged at `e258a59ed2d437691497d653c6247e2d41af7168` after exact-head `90d6dfbf4b707aeba99256d727c8da26a8c09f58` passed all six hosted jobs ([CI](https://github.com/kandyman991/ELECTRIC_STUDIO/actions/runs/46037120317), [build](https://github.com/kandyman991/ELECTRIC_STUDIO/actions/runs/46037120356)). R1–R4 correction evidence and allocation reference are [retained on the PR](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/35#issuecomment-7226987361). [Owner decision](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/35#issuecomment-7228169838): temporary lack of Legion access does not block M10. No controlled wall-clock or peak-RSS baseline has been measured. Run the qualified D41 benchmark on the Legion when access returns, and retain evidence before the first production release; the pre-release gate and native Windows responsiveness requirement remain mandatory. No relaxation of ongoing CI checks or engineering acceptance criteria. The observed superlinear checks and render costs remain a follow-up: establish the baseline, profile multiple sizes and remove repeated work before synchronous interactive workflows depend on it. Sandbox wall-clock figures are not a merge gate.

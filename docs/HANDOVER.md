@@ -11,12 +11,15 @@ merged PR.
 - **Review policy:** milestone-based. Implementation slices are merged once CI is green. Independent
   review happens when a milestone is ready for formal acceptance, or when a significant
   architectural issue needs a decision.
-- **Current milestone:** M7, model foundations.
-  - M7a (PR #33, merged): derived connectivity, netlist, checks, typed PLC data, content hash.
-  - M7b (PR #34): the conveyor acceptance project (schematic-first), its acceptance tests and
-    the benchmark harness.
-  - **Next:** close the independent review findings on PR #35, verify exact-head CI, and complete the first controlled benchmark
-    run on the Legion (`bench/run-controlled.sh`), which records the wall-clock baseline. Then M10.
+- **Current milestone:** M10, format 2 canonical connectivity (authorized, implementation next).
+  - M7a (PR #33) and M7b (PR #34) merged; corrective PR #35 merged at `e258a59`.
+  - M7 formally accepted on 27 Nov 2026 with R5 (controlled Legion wall-clock and peak RSS)
+    explicitly deferred by the owner, not passed. All six exact-head CI jobs passed at `90d6dfb`.
+  - **Next:** implement M10 according to ROADMAP.md and platform architecture, preserving stable
+    identities, explicit ambiguity reporting and byte-identical golden drawings. Review at the
+    major milestone, not every implementation slice.
+  - **Outstanding pre-release gate:** qualified D41 Legion benchmark when access returns;
+    retain recorded conditions and cold/warm timing and RSS evidence before first production release.
 - **On hold:** PR #32 (component library, draft), reused in M9 after reconciliation (D13).
 
 ## How to build and test
@@ -29,7 +32,7 @@ cargo test --workspace
 ```
 
 - CI runs fmt, clippy, tests on Ubuntu and Windows (the conveyor acceptance tests included), the
-  benchmark job (smoke suite, counts against the baseline, instruction counts), a Windows build,
+  benchmark job (smoke suite, counts against the baseline, instruction and allocation counts), a Windows build,
   and the MCP server against the official client.
 - Expected results: `ECAD_UPDATE_GOLDEN=1 cargo test -p ecad-acceptance --test conveyor` (and
   `-p ecad-view --test golden`); benchmark baselines as in bench/README.md. Any change to the
@@ -69,4 +72,4 @@ cargo test --workspace
 
 ## M7 acceptance closure (PR #35)
 
-Formal acceptance remains pending. Corrective work covers multi-level terminal report identity and completeness, strict benchmark comparison, prepared-fixture disk-cold open, allocation counting with DHAT, and controlled benchmark provenance. The first corrected-head CI allocation artifact and qualified Legion baseline must be retained. No M10 work until M7 is accepted. Track check/render scaling as a dedicated profiling follow-up, not a sandbox-timing acceptance gate.
+M7 accepted with the owner-approved R5 exception. R1–R4 validated: multi-level terminal report identity and completeness, strict benchmark comparison, prepared-fixture disk-cold open, allocation counting with DHAT, and controlled benchmark provenance. [Validation evidence and allocation reference](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/35#issuecomment-7226987361); [owner decision](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/35#issuecomment-7228169838). The qualified Legion run has not been performed and is mandatory before first production release. Track check/render scaling as a dedicated profiling follow-up, not a sandbox-timing acceptance gate.

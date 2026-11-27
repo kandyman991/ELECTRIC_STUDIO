@@ -70,8 +70,19 @@ and report their first-sample median and spread. Do not mix disk-cold and proces
 
 - `baseline-smoke.json`: counts for the smoke size (times from the build sandbox, informative).
 - `instructions-conveyor.json`: instructions per workload on the conveyor, rustc 1.97.0.
-- A wall-clock baseline is pending the first qualified controlled run on the Legion.
-- Allocation counts: initial corrected-head DHAT artifact pending CI.
+- Controlled Legion wall-clock and peak-RSS baseline: **NOT RUN / DEFERRED** by the owner on 27 Nov 2026. M7 accepted and M10 authorized, but the qualified D41 run remains mandatory before first production release. Run when access returns; do not treat sandbox or hosted measurements as Legion evidence. [Decision](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/35#issuecomment-7228169838).
+- Initial allocation reference: exact head `90d6dfbf4b707aeba99256d727c8da26a8c09f58`, [successful benchmark job](https://github.com/kandyman991/ELECTRIC_STUDIO/actions/runs/46037120317/job/140635343964), [retained evidence](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/35#issuecomment-7226987361). Release conveyor, DHAT setup-subtracted heap allocation blocks (not a hard regression threshold):
+
+| Workload | Allocation blocks |
+|---|---:|
+| open | 4404 |
+| save | 2914 |
+| edit | 41730 |
+| check | 41728 |
+| netlist | 2514 |
+| hash | 19617 |
+| render | 103514 |
+| pdf | 406429 |
 
 First observations on the build sandbox (2 cores, release), for the full size: `check` takes
 about 8 s and `render` about 16 s on 2 000 devices and 240 pages, against 68 ms and 85 ms on
