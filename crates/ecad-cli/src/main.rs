@@ -23,7 +23,7 @@ usage:
   ecad report <project-dir> <report>
       Print one report as CSV: wire-list, bom, terminal-diagram, plc-io-list,
       cable-list, table-of-contents, devices-without-parts, panel-cut-list,
-      wire-totals
+      wire-totals, netlist
   ecad import-tia <project-dir> <tags.xlsx>
       Take PLC symbols and comments from a TIA Portal PLC tags export, matched by
       address, and save the project. Tags at other addresses are listed, not added.

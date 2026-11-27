@@ -23,7 +23,9 @@ rfd = "0.18"
 tempfile = "3"
 serde = { version = "1", features = ["derive", "rc"] }
 thiserror = "2"
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
+# Stable content hashes (revisions, generation, manifests).
+sha2 = "0.10"
 png = "0.18"
 # The TIA Portal tag table is an Excel file: written and read without Excel.
 rust_xlsxwriter = { version = "0.104", default-features = false }

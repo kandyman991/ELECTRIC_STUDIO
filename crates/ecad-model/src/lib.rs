@@ -3,6 +3,8 @@
 //! Drawings, reports and exports are all derived from this model. This crate must never depend
 //! on CADCraft or on any UI crate (see AGENTS.md).
 
+pub mod connectivity;
+pub mod content_hash;
 pub mod geometry;
 pub mod history;
 pub mod layout;
@@ -20,6 +22,7 @@ pub mod sheet;
 pub mod symbol;
 pub mod underlay;
 
+pub use connectivity::{Connectivity, Endpoint, Net, Netlist, NodeId, TerminalId};
 pub use geometry::{Direction, Point, Rotation};
 pub use history::History;
 pub use lengths::{WireLength, WireLengthSettings};

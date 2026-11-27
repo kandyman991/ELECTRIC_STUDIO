@@ -513,6 +513,8 @@ pub enum ModelError {
     SymbolInUse(String, String),
     #[error("part number must not be empty")]
     EmptyPartNumber,
+    #[error("can't compute the content hash: {0}")]
+    Hash(String),
     #[error("quantity must be at least 1")]
     ZeroQuantity,
     #[error("{0}:{1} already exists")]

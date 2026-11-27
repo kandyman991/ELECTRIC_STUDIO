@@ -7,6 +7,7 @@
 //! which is almost always a mistake (L+ shorted to M).
 
 use crate::project::{ConnectionId, ConnectionRef, FunctionId, Project};
+#[cfg(test)]
 use crate::symbol::Role;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -35,9 +36,11 @@ impl Potential {
     }
 }
 
-/// Union-find over point indices.
+/// Union-find over point indices (for the legacy computation kept as a test oracle).
+#[cfg(test)]
 struct Sets(Vec<usize>);
 
+#[cfg(test)]
 impl Sets {
     fn find(&mut self, mut i: usize) -> usize {
         while self.0[i] != i {
@@ -56,8 +59,44 @@ impl Sets {
 
 impl Project {
     /// All potentials that have a wire or a name, sorted by name (named first), then by their
-    /// first point.
+    /// first point. Computed from the netlist ([`crate::connectivity`]): a potential is a net,
+    /// with every drawing of its endpoints as its points.
     pub fn potentials(&self) -> Vec<Potential> {
+        let c = self.connectivity();
+        let netlist = crate::connectivity::netlist_of(self, &c);
+        // Points in drawing order: functions by id, points in symbol order.
+        let mut order: BTreeMap<(FunctionId, String), usize> = BTreeMap::new();
+        for f in self.functions.values() {
+            let Ok(sym) = self.symbol(&f.symbol) else { continue };
+            for cp in &sym.connection_points {
+                let n = order.len();
+                order.insert((f.id, cp.name.clone()), n);
+            }
+        }
+        let rank = |r: &ConnectionRef| order.get(&(r.function, r.point.clone())).copied().unwrap_or(usize::MAX);
+        let mut out: Vec<Potential> = netlist
+            .nets
+            .into_iter()
+            .map(|n| {
+                let mut points: Vec<ConnectionRef> =
+                    n.endpoints.iter().flat_map(|e| c.drawings(*e).iter().cloned()).collect();
+                points.sort_by_key(|r| rank(r));
+                Potential { names: n.names, points, connections: n.wires }
+            })
+            .collect();
+        out.sort_by(|a, b| match (a.names.first(), b.names.first()) {
+            (Some(x), Some(y)) => x.cmp(y),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.points.first().map(rank).cmp(&b.points.first().map(rank)),
+        });
+        out
+    }
+
+    /// The computation before M7a, straight from the drawings: kept to check the netlist
+    /// against.
+    #[cfg(test)]
+    pub(crate) fn potentials_legacy(&self) -> Vec<Potential> {
         // Index every connection point of every drawing.
         let mut index: BTreeMap<(FunctionId, String), usize> = BTreeMap::new();
         let mut refs: Vec<ConnectionRef> = Vec::new();
@@ -156,6 +195,40 @@ impl Project {
 mod tests {
     use crate::sample::{self, start_circuit};
     use crate::*;
+
+    /// The same sets of points, names and wires as before the netlist, for every sample.
+    #[test]
+    fn potentials_from_the_netlist_match_the_drawings() {
+        let projects = [
+            sample::start_circuit(),
+            sample::with_contacts(),
+            sample::with_potentials(),
+            sample::with_terminals(),
+            sample::with_plc(),
+            sample::with_power(),
+            sample::library_overview(),
+            crate::reference::reference_project(),
+        ];
+        for p in projects {
+            let p = p.unwrap();
+            type Canon = (Vec<String>, Vec<(FunctionId, String)>, Vec<ConnectionId>);
+            let canon = |v: Vec<Potential>| {
+                let mut v: Vec<Canon> = v
+                    .into_iter()
+                    .map(|mut x| {
+                        let mut points: Vec<(FunctionId, String)> =
+                            x.points.into_iter().map(|r| (r.function, r.point)).collect();
+                        points.sort();
+                        x.connections.sort();
+                        (x.names, points, x.connections)
+                    })
+                    .collect();
+                v.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+                v
+            };
+            assert_eq!(canon(p.potentials()), canon(p.potentials_legacy()), "{}", p.name);
+        }
+    }
 
     fn wire(p: &Project, number: &str) -> ConnectionId {
         p.connections.values().find(|c| c.wire_number.as_deref() == Some(number)).unwrap().id

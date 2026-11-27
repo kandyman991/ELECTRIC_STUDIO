@@ -592,6 +592,29 @@ mod tests {
         assert_eq!(std::fs::read(dir.path().join("devices.json")).unwrap(), first);
     }
 
+    /// The content hash and the derived connectivity (terminal and node ids, the netlist) come
+    /// back the same after a save and load.
+    #[test]
+    fn content_hash_and_netlist_survive_a_save_and_load() {
+        use ecad_model::sample;
+        for p in [
+            sample::start_circuit(),
+            sample::with_potentials(),
+            sample::with_terminals(),
+            sample::with_plc(),
+            sample::with_power(),
+            ecad_model::reference::reference_project(),
+        ] {
+            let p = p.unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            save(&p, dir.path()).unwrap();
+            let back = load(dir.path()).unwrap();
+            assert_eq!(back.content_hash().unwrap(), p.content_hash().unwrap(), "{}", p.name);
+            assert_eq!(back.connectivity(), p.connectivity(), "{}", p.name);
+            assert_eq!(back.netlist(), p.netlist(), "{}", p.name);
+        }
+    }
+
     #[test]
     fn wire_length_settings_out_of_range_are_rejected_on_load() {
         let dir = tempfile::tempdir().unwrap();
