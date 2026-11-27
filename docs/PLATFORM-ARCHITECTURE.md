@@ -124,8 +124,8 @@ Six layers, each with one owner of its facts. Arrows mean "refers to".
 | Requirements | **Requirement**: what a section needs, independent of maker | Kind, typed parameters with units, quantity, optional ETIM mapping | Section, location |
 | Products | **Product**: one neutral schema for every kind (D39): a **generic** definition, a **commercial** product of a manufacturer, or a **custom** (internally made) component; electrical or mechanical (today's `Part`, extended by #32) | Canonical product id, kind, completeness, manufacturer id and order number (commercial), class, technical data, functions, terminal pattern, symbol mapping, 2D geometry | Manufacturer (commercial); the generic definition it realises (optional) |
 | Device instances | **Device**: one installed thing with a tag | Tag, description, assignments, safety marking | Section, location, requirement, products |
-| Connectivity | **Terminal**: a physical connection point of a device, with a persistent `TerminalId` | Designation (editable), side, kind (coil, contact pole, strip side, PLC channel, port) | Device |
-| | **Node**: a logical connection point with no physical terminal, `NodeId`: a junction, a named potential (`L+`, `M`), an interruption pair | Kind, name | — |
+| Connectivity | **Terminal**: a physical connection point of a device, with a persistent `TerminalId` | Designation (editable), physical terminal grouping, connection-point key (side/level/position), kind (coil, contact pole, strip side, PLC channel, port) | Device |
+| | **Node**: a logical connection point with no physical terminal, `NodeId`: a junction, a named potential (`L+`, `M`), an interruption pair | Kind, name, optional explicit naming scope | — |
 | | **Wire**: a conductor between two ends, each a terminal or a node | Number, cross-section, colour, cable core | Two ends, cable |
 | | **Cable** (exists) | Tag, type, cores, shield | Product (later) |
 | | **Potential** (derived) | — | Computed from wires, terminals' internal bridges and nodes |
@@ -237,8 +237,9 @@ device drawn with `iec.junction`.
 Approved (D1, D2):
 
 ```text
-Terminal { id: TerminalId, device: DeviceId, designation: String, side: Option<Side>, kind }
-Node     { id: NodeId, kind: Junction | Potential { name } | Interruption { name } }
+Terminal { id: TerminalId, device: DeviceId, physical_group: GroupKey,
+           designation: String, point_key: PointKey, kind }
+Node     { id: NodeId, kind: Junction | Potential { name, scope } | Interruption { name, scope } }
 Wire     { id, number, cross_section, colour, cable_core, from: End, to: End }
 End      = Terminal(TerminalId) | Node(NodeId)
 Function { ..., shows: { symbol point -> TerminalId } }      // the drawing of a device
@@ -254,22 +255,29 @@ WireGraphics { wire, page, bend, from_drawing, to_drawing }    // how one wire i
   exactly as now.
 - **Terminals are entities.** A device's terminals come from its product's terminal pattern,
   from the symbols it is drawn with, or both, and are checked against each other. A terminal
-  strip's terminal is one terminal per side, bridged internally. A PLC channel is a
-  terminal of the card, with its address as a typed property.
-- **Designations are properties.** Renumbering a terminal changes one field. No wire is
-  rewritten, because wires point at the `TerminalId`. Designations stay unique per device:
-  a checked invariant.
+  strip's physical terminal assembly groups its separately identified connection points (sides,
+  levels, or positions). Internal bridges are explicit electrical relationships, not inferred
+  from the printed number; isolated levels remain isolated. A PLC channel is a terminal of
+  the card, with its address as a typed property.
+- **Designations are properties.** Renumbering an assembly updates its designation consistently
+  without rewriting any wire. `TerminalId` identifies a connection point, not a drawing or
+  printed number. Group and point keys are stable within the device; point keys are unique
+  within a group, and distinct groups have unique designations in the appropriate device
+  naming scope. Multiple sides or levels can share a printed designation. Multiple drawings
+  may reference the same connection point without creating another terminal. Ambiguous
+  mappings must be resolved explicitly; matching a label never establishes connectivity.
 - **Nodes are explicit logical connectivity:**
   - a junction, where three or more wires meet with no physical terminal;
   - a named potential (`L+`, `M`, `L1`), drawn by potential points on any number of pages;
   - an interruption pair, continuing a potential on another page.
   Their drawings are representations only, and the netlist resolves through nodes.
-- **Node names are scoped explicitly** (D33):
-  - a named potential's name is unique in the project, among potentials;
-  - an interruption's name is unique in the project, among interruptions, and all its
-    drawings are one node;
-  - a junction has no name, only its id.
-  Lookups by name say which kind they look for.
+- **Node names are scoped explicitly** (D33): a stable node id, not a displayed name or
+  cabinet location, determines electrical equivalence. Named potentials and interruptions
+  may have the same displayed name in independent electrical networks; a lookup by name
+  includes node kind and an explicit naming scope, and refuses ambiguity. An interruption's
+  representations share a node only through an explicit binding. A junction has no name, only
+  its id. Neither matching labels nor moving drawings between sections or locations merges
+  networks. A connection between independent networks requires an explicit engineering operation.
 - **On disk,** connectivity leaves the page files: `terminals.json`, `nodes.json` and
   `wires.json` at project level. Page files keep functions (with their point-to-terminal
   map), node drawings and wire graphics. Format 1 projects are read and converted
@@ -283,8 +291,8 @@ my-machine/
   structure.json      sections and locations                                    new
   requirements.json   requirements                                              new
   devices.json        devices (+ section, location, requirement, safety marking)
-  terminals.json      terminals: id, device, designation, side, kind            new
-  nodes.json          junctions, named potentials, interruptions                new
+  terminals.json      terminals: id, device, group, designation, point key, kind            new
+  nodes.json          junctions, scoped named potentials, interruptions                new
   wires.json          wires with terminal or node ends                          moved out of pages
   cables.json, symbols/   as today (+ source and revision of copies)
   products.json       the project's product copies (today's parts.json, read as such)
@@ -336,7 +344,7 @@ separate, verified backup keeps them, and the documentation says so.
   - Cleanup is an explicit operation with a preview. It marks everything reachable from the
     roots, then offers to delete only objects reached by none of them and older than a grace
     period.
-  - The roots: the current project files, every baseline manifest, every change record, every
+  - The roots: the current project files and last committed manifest/object generation, every baseline manifest, every change record, every
     issued document, every pinned library copy and every library revision the project
     references.
   - **Content referenced by project snapshots, library revisions, baselines or issued
@@ -545,7 +553,9 @@ Generation is a pure function `(model, generation settings) -> commands`:
 - ids from UUID v5 (section 4.1);
 - all ordering by stable keys.
 
-Generating twice gives byte-identical project files, and that is an acceptance test. It
+Generating twice gives byte-identical canonical engineering and graphical files; a second
+run with no engineering changes is a no-op, not another applied engineering change. Audit
+records and transactional metadata are not part of this equality test. It
 lives in `ecad-model` (it needs symbol geometry, not CADCraft), so the editor, CLI and MCP
 run the same code.
 
@@ -693,18 +703,18 @@ devices and cable routes drawn over it.
 
 | Change | Migration | Breaking? |
 | --- | --- | --- |
-| Terminals as entities (`terminals.json`) | Format 1 reader creates one terminal per physical drawing point, with a UUID v5 from (function, point), so converting twice gives the same ids; designations move from drawings to terminals | File format yes, behaviour no |
-| Nodes (`nodes.json`) | Junction, potential and interruption devices become nodes; their tags become node names in their kind's scope; their drawings become node drawings; electrical connectivity, names, drawings and cross-references are preserved and checked equal after conversion (D33). **Ambiguous mappings are detected, never merged or reconnected silently:** an interruption whose drawings join differently named potentials, a potential and an interruption sharing a name, a junction device drawn more than once. The conversion then keeps the nodes apart, reports each case with its pages, and nothing is saved until a person resolves them or saves knowingly | File format yes; scripts that treat `L+` as a device find it as a node by name |
+| Terminals as entities (`terminals.json`) | Format 1 reader creates one connection-point identity per distinct legacy electrical endpoint, UUID v5 from its stable legacy function/point (or a canonical representative of proven aliases); explicit physical grouping and bridges preserve legacy strip numbering, connectivity and repeated representations; ambiguous aliases remain distinct pending reconciliation; conversion is deterministic | File format yes, behaviour no |
+| Nodes (`nodes.json`) | Junction, potential and interruption devices become nodes; their tags become display names in the legacy naming scope; preserve the legacy resolved netlist and explicit bindings, never infer new equivalence from label text; their drawings become node drawings; electrical connectivity, names, drawings and cross-references are preserved and checked equal after conversion (D33). **Ambiguous mappings are detected, never merged or reconnected silently:** an interruption whose drawings join differently named potentials, a potential and an interruption sharing a name, a junction device drawn more than once. The conversion then keeps the nodes apart, reports each case with its pages, and nothing is saved until a person resolves them or saves knowingly | File format yes; scripts that treat `L+` as a device find it as a node by name |
 | Wires (`wires.json`) | Each end's function and point become its `TerminalId` or `NodeId`; bends become wire graphics in the page file | File format yes, behaviour no |
 | `Reassign` | Becomes "show another device's terminals"; wires move to that device's terminals and it is reported as rewiring (section 14, item 2) | Behaviour yes, reported |
-| Designations unique per device | Checked on load; a format 1 project that breaks it loads, and a check reports it with a fix command | No |
+| Physical group and point uniqueness | Validate group/point keys and scoped designations; legacy ambiguities load for explicit reconciliation without silent merges | No |
 | Products by canonical id | `parts.json` read as products with new ids; `PartRef` by id, with the number kept beside it for reading | File format yes |
 | Sections and locations | New, empty. Optional command proposes them from tag prefixes and location-box labels | No |
 | Location boxes | Gain an optional location reference; the label stays for boxes that aren't locations (connector housings, `EXT`) | No |
 | Device assignments, safety marking | New optional fields | No |
 | PLC channel data | `properties` keys become typed terminal properties, read from the old keys | File format yes |
 | Symbol `Graphic` | Extended to the CAD primitives of section 8; old symbols read unchanged | No |
-| Stable hash | New, for revisions and generation; the folder fingerprint stays as it is | No |
+| Stable hash | Canonical engineering content hash for revisions and generation; committed revision token for freshness and authorization; file manifest for integrity (§11.4) | No |
 | Page order | Sparse keys; format 1's dense order is converted on read | File format yes |
 | Numbering | New `numbering.json`; default **sequential** (D22): after deleting `-K2`, the next device is `-K4`, not `-K2` | **Behaviour yes,** on purpose |
 | Per-potential wire numbers on joining | No longer renumbers existing wires; reports `wire-numbers-differ` instead | **Behaviour yes,** on purpose (section 12.2) |
@@ -726,7 +736,7 @@ devices and cable routes drawn over it.
 | Risk | Mitigation |
 | --- | --- |
 | The connectivity change touches routing, naming, checks, reports, view, editor and MCP | First terminals and nodes derived in memory with no format change (M7). Then the one storage switch (M10) behind the existing tests and golden files |
-| Terminal identity: drawings, contact numbering and reassignment all touch terminals | Persistent `TerminalId` (D2) means a renumber writes one field; deterministic ids on conversion; property tests over random renames and reassignments |
+| Terminal identity: drawings, contact numbering and reassignment all touch terminals | Persistent `TerminalId` (D2) means a renumber updates the group designation without changing endpoint identities; deterministic ids on conversion; property tests over random renames and reassignments |
 | Native CAD is a large new scope | Its own track (C0–C3), model-owned geometry, editor-owned tools; CADCraft for rendering, IO and algorithms; no 3D |
 | AI approval can't be enforced against an agent with the user's own permissions | Enforcement inside the trust boundary (built-in assistant, MCP); outside changes detected, not claimed attributable; documented need for OS-level isolation (D31) |
 | Manufacturer files are hostile input | Bounded reads, no external entities, archive checks, worker isolation for complex parsers, validation, provenance with file hash |
@@ -741,7 +751,7 @@ devices and cable routes drawn over it.
 | Performance on large projects | Derived data cached per Session; measured on the reference and conveyor projects |
 | Functional safety is out of scope | Safety circuits are documented, not validated; stated in the docs and the UI |
 | An assistant edits around the rules | No AI-only path; every operation goes through `apply` and the checks; proposals with new errors can't be applied; safety-related changes need a person |
-| AI-suggested data passes as verified | Provenance on facts; the `unverified-data` check; release export refuses unverified safety-related data |
+| AI-suggested data passes as verified | Provenance on facts; the `unverified-data` check; the common release gate refuses any missing required verification |
 | Confidential data leaves the machine | Local provider by default; external only by project setting; excluded fields; audit log |
 | An operation changes more than it should | Declared scope plus the stability test on every operation; the conveyor retrofit in CI |
 | Baselines grow the project folder | Content-addressed and shared between baselines; underlays by hash; a baseline only adds changed files |
@@ -751,9 +761,13 @@ devices and cable routes drawn over it.
 | AI infrastructure grows ahead of need | Only the registry, change sets and provenance are built before inference. Each also serves people, CLI or generation |
 
 Dependencies: M7, then M10 (the one format break), then S0, AI0 and C0; M8 and M9 after
-AI0; S1 after S0 and AI0; M11 after M8 and M9; M12 after M9 and M10; M13 after M12, S0 and
-S1; C2 after C1 and M9; M14 after M13, C0 and S1; M15 after M8, M9, S0, C1 and C2; M16 after
-M13. Details are in [ROADMAP.md](ROADMAP.md).
+AI0 and S0; S1 after S0, AI0 and M9; M11 after M8, M9 and S1; M12 after M9, M10 and S0; M13 after
+M11, M12, S0 and S1; C2 after C1 and M9; M14 after M13, C0 and S1; M15 after M8, M9, S0, C1 and
+C2; M16 after M13. AI0 owns the basic engineering impact comparison and committed object
+retention; S1 extends them to baselines, physical work and issued-document reports. M9 owns
+product/terminal reconciliation; S1 depends on M9 and uses existing schematic-first devices
+and explicit operations without M11 requirements or M13 generation. Details
+are in [ROADMAP.md](ROADMAP.md).
 
 ## 11. AI readiness
 
@@ -889,10 +903,29 @@ Provenance and verification are tracked separately (D17).
   - the modification it belongs to (section 12.7).
   They are kept with the project and included in baselines. Undo of an applied change writes a
   record of the undo; records aren't deleted. The full undo history stays in memory only.
+- **State and revision domains (F06).** Canonical engineering and stored graphical state
+  have a stable content hash, excluding append-only audit records, approval bookkeeping and
+  transactional metadata. Undo restores that engineering/graphical state exactly, but appends
+  audit records; redo does likewise. The committed revision used for freshness and approval
+  is a separate token binding the engineering hash, project identity and monotonic committed
+  engineering generation and relevant workflow/authorization policy. Approval bookkeeping alone
+  does not advance the reviewed revision; changes to engineering content, scope or relevant
+  policy do. Undo advances the generation and cannot revive a consumed or invalidated approval. The file manifest covers audit and workflow files for integrity,
+  excludes its own recursive hash, and is not the engineering equality hash. No-op generation
+  creates no engineering changes; deterministic fixtures compare engineering content, not
+  clocks, transaction ids or append-only logs.
 - **Checks.**
   - `unverified-data` (warning) lists values that need verification and don't have it.
-  - In a release export (`ecad export --release`), unverified safety-related data is an
-    error.
+  - **One release-validation policy (F08)** serves GUI release, CLI `--release`, baseline
+    release creation and issued-document generation. Block release on model/integrity errors,
+    unresolved product placeholders, incompatible selections or unresolved terminal mappings,
+    and any missing verification required by the effective project policy (default:
+    safety-related, imported and suggested data, including derived data with unresolved
+    required inputs). Safety-related verification cannot be disabled by ordinary policy.
+    Draft exports remain available and clearly identified as unreleased. Revalidate the exact
+    revision before release, and report blocking reasons consistently. Passing these checks
+    means software consistency and configured engineering verification, not electrical or
+    functional safety certification.
 - **Generated is not suggested.** Deterministic generation output (section 6) has an
   *origin*. It is derived from its inputs and regenerated, so its trustworthiness is its
   inputs' verification.
@@ -999,6 +1032,18 @@ doesn't control.
   can change the setting. Global operations (renumbering, regeneration of existing content,
   layout optimisation) and safety-related changes are outside any automation scope. They go
   through a reviewed change set (`ecad apply ... --expect`) or the app.
+- **CLI approval contract (F04).** Consequential trusted-automation proposals require an
+  approval record created by the app review panel and persisted by trusted application code,
+  keyed by project identity, exact canonical proposal hash, reviewed engineering revision,
+  permitted operation scope and required separate confirmations. The CLI loads that record
+  from the committed project, checks that it is valid, unconsumed and matches the proposal,
+  scope and current revision, then revalidates the resulting operation batch. `--expect`
+  supplies freshness only; caller-supplied actor fields, flags or approval records in the
+  proposal are never trusted. Apply and consumption of the approval are atomic with the
+  change record. Missing, stale, altered, revoked or replayed approvals are refused.
+  Assistant-origin proposals remain app-only; the restricted MCP/assistant boundary cannot
+  create CLI authorization. This is application-level enforcement, not authentication
+  against an unrestricted OS user (D31).
 - **Provenance.** Every automated run writes a change record with:
   - the actor `CLI automation`: OS user, host, command line, program version;
   - the operation scope;
@@ -1012,7 +1057,13 @@ doesn't control.
 engineering file and referenced object with its SHA-256 and size.
 
 - **It is updated in the same transaction as the files.** The manifest is a staged file in
-  the store's journal (4.6), so files and manifest always describe the same commit.
+  the store's journal (4.6), so files and manifest always describe the same commit. The last
+  committed engineering contents, including referenced assets, are retained as immutable
+  objects keyed by the manifest hashes; publish the manifest only after its objects exist.
+  Recovery selects a complete matching generation. Retain the current committed manifest and
+  its reachable objects as cleanup and archive roots, independently of optional baselines.
+  Until reconciliation commits, preserve that prior generation, even if working files differ.
+  The manifest itself and transaction metadata are excluded from recursive hashing.
 - **It is verified at:**
   - project opening;
   - change-set preview and change-set application;
@@ -1029,7 +1080,10 @@ engineering file and referenced object with its SHA-256 and size.
 - **Controlled reconciliation.** Electric Studio:
   1. loads the files as they are on disk, read-only;
   2. validates them through the model (a file that breaks a rule is reported by name);
-  3. shows an impact report against the last committed state.
+  3. reconstructs the last committed state from retained objects and shows its impact report.
+     If prior contents are missing or damaged, identify the unavailable comparison, never
+     claim a complete diff, and require explicit recovery or acknowledgement of that limitation
+     and revalidation before accepting a new committed state.
   The engineer then either:
   - accepts the changes as a change record by actor *external, unknown*, after revalidation
     (checks run, approvals and verifications they touch are invalidated); or
@@ -1275,8 +1329,8 @@ An approved modification does not mean the machine has been modified.
   through:
   - *proposed*, then *approved* (by a person, recorded);
   - *released* (a Revision baseline is made);
-  - *installed*: a person confirms the work was carried out on the machine, and a new
-    As-built baseline is made.
+  - *installed*: a person confirms the work was carried out on the machine against the
+    exact released baseline id and content hash, and a new As-built baseline is made.
 - **No parallel models.** The working project is the designed state of the modification
   being worked on, and baselines hold the others.
   - What is installed but changed by the modification is found by comparing with the
@@ -1305,6 +1359,14 @@ An approved modification does not mean the machine has been modified.
   - Release requires a valid approval.
 - **Installed is a separate, explicit confirmation** by a person, after the work was done on
   the machine. Approval or release never implies it, and the UI shows the two states apart.
+  Installation confirmation names the immutable released baseline id and content hash. Build
+  the as-built snapshot from that released state plus explicitly reviewed and confirmed
+  commissioning deviations, never from the current working tree. Record the released source,
+  deviations and confirmation in the same transaction. If a later revision is being edited,
+  retain its pending changes and revalidate/reconcile them against the new as-built baseline;
+  they are not installed merely by confirmation of the older release. Partial or unknown
+  installation remains pending until explicitly reconciled. The installed-state transition
+  and baseline creation are atomic and recoverable.
 - **One open package per project** (D36). There is no branching, no merging, and no
   concurrent packages.
   - *Cancel:* a person discards the package's changes. It is an explicit global operation with
@@ -1409,7 +1471,7 @@ None needs reversing. These need the stated adjustment, or a decision of their o
      - designations move to terminals;
      - `Reassign` becomes "show the other device's terminals here", which moves the wires to
        that device's terminals and is reported as rewiring;
-     - format 1 conversion gives each terminal a UUID v5 from its drawing and point, so
+     - format 1 conversion gives each distinct legacy endpoint a UUID v5 from its drawing and point (canonical representative for proven aliases), preserving physical group and explicit bridges, so
        converting the same project twice gives the same ids.
 3. **D1 explicit nodes.**
    - **What exists:** junctions, potential points and interruption points are devices with
@@ -1588,6 +1650,22 @@ the decisions above:
 
 A milestone that finds one of these needs an architectural change brings it back as a new
 decision instead of settling it alone.
+
+## 17. Final review finding-resolution matrix
+
+Review basis: `e97b36c91055f7021f9776cdf38e9dbc8c0f8dbb`. These are architecture contracts,
+not implemented or validated features. The accepted D1–D43 direction is unchanged.
+
+| Finding | Resolution | Acceptance gate |
+| --- | --- | --- |
+| F01 | Physical groups, stable endpoint ids, explicit bridges, scoped uniqueness (§4.5, §9) | M7/M10: two sides, isolated levels, repeated drawings and numbering survive migration |
+| F02 | Electrical identity independent of scoped display names (§4.5, §9) | M10: independent identically labelled networks remain separate |
+| F03 | Retained committed contents, recovery, cleanup and archive roots (§4.7, §11.8) | AI0/S1: outside edit while closed, missing prior object, crash and archive |
+| F04 | App-issued exact approval record, scope, revision and atomic consumption (§11.8) | AI0: absent, altered, stale, out-of-scope and replayed approval rejected |
+| F05 | Installation bound to released baseline and confirmed deviations (§12.7) | S1: release A, edit B, confirm A only |
+| F06 | Engineering equality distinct from freshness, audit and manifests (§6.2, §11.4) | AI0/S1/M13: undo preserves audit; no-op generation; stale approval remains invalid |
+| F07 | Explicit dependencies and staged fixtures (§10, ROADMAP) | Each milestone gates only capabilities available at that stage |
+| F08 | Common release-validation policy and draft export distinction (§11.4) | AI0/M9/M11/S1/M14: consistent blockers across available release paths |
 
 ## Decision record
 
