@@ -281,6 +281,7 @@ mod tests {
             let id = FunctionId::new();
             let page = p.function(K1_COIL).unwrap().page;
             p.place(Function {
+                terminals: Default::default(),
                 id,
                 device: k1,
                 symbol,
@@ -321,7 +322,7 @@ mod tests {
         let numbers = |p: &Project, f| {
             let f = p.function(f).unwrap();
             let sym = p.symbol(&f.symbol).unwrap();
-            sym.connection_points.iter().map(|cp| f.designation(&cp.name).to_owned()).collect::<Vec<_>>()
+            sym.connection_points.iter().map(|cp| p.designation(f, &cp.name).to_owned()).collect::<Vec<_>>()
         };
         let no1 = place(&mut p, "iec.contact_no", 110.0);
         let no2 = place(&mut p, "iec.contact_no", 120.0);
@@ -349,6 +350,7 @@ mod tests {
         p.add_device(Device::new(device, "-K9", "")).unwrap();
         let f = FunctionId::new();
         p.place(Function {
+            terminals: Default::default(),
             id: f,
             device,
             symbol: SymbolId::new("iec.contact_co"),
@@ -373,6 +375,7 @@ mod tests {
         // A right-leaving point leaves left when mirrored.
         let motor = FunctionId::new();
         p.place(Function {
+            terminals: Default::default(),
             id: motor,
             device,
             symbol: SymbolId::new("iec.motor_3"),
@@ -393,8 +396,14 @@ mod tests {
         let original = sample::with_contacts().unwrap();
         let mut p = original.clone();
         let s1 = DeviceId::from_u128(0x102);
-        let undo =
-            p.apply(Command::Reassign { id: sample::K1_NO, device: s1, designations: Default::default() }).unwrap();
+        let undo = p
+            .apply(Command::Reassign {
+                id: sample::K1_NO,
+                device: s1,
+                designations: Default::default(),
+                terminals: Default::default(),
+            })
+            .unwrap();
         assert_eq!(p.contacts_of(DeviceId::from_u128(0x103)).len(), 1);
         assert_eq!(p.describe(&ConnectionRef::new(sample::K1_NO, "13")).unwrap(), ("-S1".into(), "13".into()));
         p.apply(undo).unwrap();

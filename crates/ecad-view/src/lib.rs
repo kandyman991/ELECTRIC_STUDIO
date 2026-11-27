@@ -361,7 +361,7 @@ pub fn page_drawing(project: &Project, page: PageId) -> Result<Drawing> {
             let (at, leaves) = project.connection_point(&ecad_model::ConnectionRef::new(f.id, &cp.name))?;
             leaving.push(leaves);
             if !sym.hide_point_labels {
-                let label = point_label(at, leaves, f.designation(&cp.name));
+                let label = point_label(at, leaves, project.designation(f, &cp.name));
                 if let Some(r) = clash::text_rect(&label) {
                     tag_min = Point::new(tag_min.x.min(r.lo.x), tag_min.y.min(r.lo.y));
                     tag_max = Point::new(tag_max.x.max(r.hi.x), tag_max.y.max(r.hi.y));

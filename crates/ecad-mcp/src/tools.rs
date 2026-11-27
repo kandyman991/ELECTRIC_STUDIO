@@ -387,7 +387,7 @@ fn points_of(p: &Project, f: &ecad_model::Function) -> Vec<Value> {
                 let to = p.describe(other).map(|(t, pt)| format!("{t}:{pt}")).unwrap_or_default();
                 json!({ "number": c.wire_number, "to": to })
             });
-            json!({ "point": f.designation(&cp.name), "wire": wire })
+            json!({ "point": p.designation(f, &cp.name), "wire": wire })
         })
         .collect()
 }

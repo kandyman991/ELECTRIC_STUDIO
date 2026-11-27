@@ -862,6 +862,7 @@ mod tests {
         let designations = p.next_designations(strip, &symbol);
         let page = p.function(ecad_model::sample::X2_1).unwrap().page;
         p.place(ecad_model::Function {
+            terminals: Default::default(),
             id: ecad_model::FunctionId::new(),
             device: strip,
             symbol,

@@ -155,6 +155,9 @@ fn copy_commands(base: &Project, k: usize) -> Result<Vec<Command>> {
         f.id = FunctionId(remap(k, f.id.0));
         f.device = device_id(f.device);
         f.page = page_id(f.page);
+        // New terminals for the copy, with the same designations.
+        f.designations = base.designations_of(&f);
+        f.terminals.clear();
         if let Some(a) = f.properties.get_mut(ADDRESS) {
             *a = shift_address(a, 2 * k32);
         }

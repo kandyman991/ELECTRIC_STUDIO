@@ -1187,6 +1187,7 @@ impl Editor {
         let cmd = Command::Batch(vec![
             Command::AddDevice(Device::new(device, &tag, &description)),
             Command::Place(Function {
+                terminals: Default::default(),
                 id: function,
                 device,
                 symbol: symbol.clone(),
@@ -1236,6 +1237,7 @@ impl Editor {
         };
         let function = FunctionId::new();
         let cmd = Command::Place(Function {
+            terminals: Default::default(),
             id: function,
             device,
             symbol: symbol.clone(),
@@ -1281,9 +1283,10 @@ impl Editor {
         self.execute(&label, Command::SetDesignations { id: f, designations })
     }
 
-    /// Make the selected drawing part of the device tagged `tag` (e.g. turn a stray contact
-    /// into a contact of -K1). It takes that device's next contact numbers; its old device is
-    /// removed when nothing else draws it.
+    /// Make the selected drawing show terminals of the device tagged `tag` (e.g. turn a stray
+    /// contact into a contact of -K1). It takes that device's next contact numbers, and its
+    /// wires go to those terminals: a rewiring, said so in the step's name (D2). Its old device
+    /// is removed when nothing else draws it.
     pub fn reassign_selected(&mut self, tag: &str) -> Result<(), ModelError> {
         let Some(Selected::Function(f)) = self.selection else { return Ok(()) };
         let tag = tag.trim();
@@ -1295,11 +1298,11 @@ impl Editor {
         }
         let old_tag = self.project.device(func.device)?.tag.clone();
         let designations = self.project.next_designations(target, &func.symbol);
-        let mut cmds = vec![Command::Reassign { id: f, device: target, designations }];
+        let mut cmds = vec![Command::Reassign { id: f, device: target, designations, terminals: Default::default() }];
         if self.project.functions_of(func.device).count() == 1 {
             cmds.push(Command::RemoveDevice(func.device));
         }
-        self.execute(&format!("Move {old_tag} to {tag}"), Command::Batch(cmds))
+        self.execute(&format!("Rewire {old_tag} to {tag}"), Command::Batch(cmds))
     }
 
     fn wire_click(&mut self, hit: Option<Hit>) {

@@ -4,6 +4,7 @@
 //!
 //! Every change goes through [`Project::apply`], which returns the command that undoes it.
 
+use crate::connectivity::{GroupId, TerminalId};
 use crate::geometry::{Direction, Point, Rotation};
 use crate::parts::{Part, PartRef};
 use crate::sheet::Sheet;
@@ -179,14 +180,37 @@ pub struct Function {
     /// a horizontal line.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mirrored: bool,
-    /// Terminal designations shown for this drawing, by connection-point name, where they
-    /// differ from the symbol's: a device's second NO contact shows `23`/`24` for the
-    /// symbol's `13`/`14`.
+    /// Designations for the terminals this drawing creates, by connection-point name, where
+    /// they differ from the symbol's: a device's second NO contact gets `23`/`24` for the
+    /// symbol's `13`/`14`. Read by [`Command::Place`], which moves them onto the terminals and
+    /// leaves this empty: a placed drawing's designations are its terminals'
+    /// ([`Project::designation`]). Format 1 page files store them here.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub designations: BTreeMap<String, String>,
+    /// The terminal each connection point shows (D2), for drawings of physical connection
+    /// points. [`Command::Place`] fills in the points not given, with new terminals; a point
+    /// given an existing terminal of the same device shows that one (a repeated drawing).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub terminals: BTreeMap<String, TerminalId>,
     /// Extra fields some drawings carry, e.g. a PLC channel's `address`, `symbol`, `comment`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub properties: BTreeMap<String, String>,
+}
+
+/// A physical connection point of a device (D2), persistent from format 2 on: its id never
+/// changes when it is renumbered, redrawn or drawn more than once.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalEntry {
+    pub id: TerminalId,
+    pub device: DeviceId,
+    /// The physical terminal it belongs to (a strip terminal's sides and levels share one).
+    pub group: GroupId,
+    /// The point within the group (a strip terminal's side or level); empty for an ordinary
+    /// device terminal.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub point: String,
+    /// The printed designation, an editable property: `A1`, `13`, a strip terminal's `3`.
+    pub designation: String,
 }
 
 /// Property keys of a PLC channel.
@@ -198,11 +222,6 @@ impl Function {
     /// A property's value, or `""`.
     pub fn property(&self, key: &str) -> &str {
         self.properties.get(key).map_or("", String::as_str)
-    }
-
-    /// The designation shown for one of this function's connection points.
-    pub fn designation<'a>(&'a self, point: &'a str) -> &'a str {
-        self.designations.get(point).map_or(point, String::as_str)
     }
 
     /// A symbol-local point in page coordinates.
@@ -436,12 +455,21 @@ pub enum Command {
     ReorderPages(Vec<PageId>),
     /// Give these pages these exact sort keys, leaving the others': how a reorder is undone.
     SetPageKeys(BTreeMap<PageId, u64>),
-    /// Make a function part of another device, with the designations it gets there.
+    /// Show another device's terminals with this drawing (D2): its points get terminals of
+    /// `device`, with these designations, and its wires go with them: a rewiring. The
+    /// terminals only this drawing showed are removed. `terminals`: the ids to use, by point
+    /// (how a reassign is undone); empty for new ones.
     Reassign {
         id: FunctionId,
         device: DeviceId,
         designations: BTreeMap<String, String>,
+        #[serde(default)]
+        terminals: BTreeMap<String, TerminalId>,
     },
+    /// A terminal, drawn or not yet (format 2 files list them before the drawings).
+    AddTerminal(TerminalEntry),
+    /// Remove a terminal no drawing shows.
+    RemoveTerminal(TerminalId),
     /// Draw a location box (at least 4 mm each way).
     /// Make a page a layout page with this mounting plate (`None`: an ordinary page again).
     SetPanel {
@@ -550,6 +578,12 @@ pub enum ModelError {
     UnknownTag(String),
     #[error("there is no cable `{0}`")]
     UnknownCable(String),
+    #[error("terminal {0} is not in the project")]
+    NoTerminal(Uuid),
+    #[error("terminal {0} is shown by a drawing")]
+    TerminalInUse(Uuid),
+    #[error("a drawing can only show its own device's terminals")]
+    TerminalOfOtherDevice,
     #[error("part `{0}` is already in the catalogue")]
     DuplicatePart(String),
     #[error("more than one manufacturer makes a part numbered `{0}`; say which")]
@@ -627,6 +661,9 @@ pub struct Project {
     /// The sheet every page is drawn on.
     #[serde(default)]
     pub sheet: Sheet,
+    /// The physical connection points of the devices (D2), by id.
+    #[serde(default)]
+    pub terminals: BTreeMap<TerminalId, TerminalEntry>,
     /// The parts catalogue (the project's products), by product id.
     #[serde(default)]
     pub parts: BTreeMap<ProductId, Part>,
@@ -743,7 +780,7 @@ impl Project {
     /// `(device tag, point)` for display and reports.
     pub fn describe(&self, r: &ConnectionRef) -> Result<(String, String)> {
         let f = self.function(r.function)?;
-        Ok((self.device(f.device)?.tag.clone(), f.designation(&r.point).to_owned()))
+        Ok((self.device(f.device)?.tag.clone(), self.designation(f, &r.point).to_owned()))
     }
 
     // ---- cross-references ----
@@ -776,7 +813,7 @@ impl Project {
             .filter_map(|f| {
                 let sym = self.symbol(&f.symbol).ok()?;
                 let Role::Contact { kind } = sym.role else { return None };
-                let names: Vec<&str> = sym.connection_points.iter().map(|cp| f.designation(&cp.name)).collect();
+                let names: Vec<&str> = sym.connection_points.iter().map(|cp| self.designation(f, &cp.name)).collect();
                 let (poles, terminals) = if let (ContactKind::Changeover, [common, nc, no]) = (kind, names.as_slice()) {
                     // One row, read `11 12/14`: the common, then the closed and open sides.
                     (vec![(format!("{nc}/{no}"), (*common).to_owned())], format!("{common}-{nc}-{no}"))
@@ -843,7 +880,7 @@ impl Project {
             .filter(|f| matches!(self.role(f.id), Ok(Role::Contact { .. })))
             .filter_map(|f| {
                 let sym = self.symbol(&f.symbol).ok()?;
-                Some(sym.connection_points.iter().map(|cp| f.designation(&cp.name).to_owned()).collect())
+                Some(sym.connection_points.iter().map(|cp| self.designation(f, &cp.name).to_owned()).collect())
             })
             .collect();
         let taken = |numbers: &[&String]| drawn.iter().any(|d| d.iter().eq(numbers.iter().copied()));
@@ -914,11 +951,100 @@ impl Project {
             .collect()
     }
 
+    /// The designation a drawing shows for one of its connection points: its terminal's, or
+    /// the point's own name (node drawings, a point without a terminal).
+    pub fn designation<'a>(&'a self, f: &'a Function, point: &'a str) -> &'a str {
+        f.terminals.get(point).and_then(|t| self.terminals.get(t)).map_or(point, |t| t.designation.as_str())
+    }
+
+    /// The designations a drawing shows that differ from its symbol's point names.
+    pub fn designations_of(&self, f: &Function) -> BTreeMap<String, String> {
+        f.terminals
+            .iter()
+            .filter_map(|(point, t)| self.terminals.get(t).map(|t| (point, &t.designation)))
+            .filter(|(point, d)| *point != *d)
+            .map(|(point, d)| (point.clone(), d.clone()))
+            .collect()
+    }
+
+    /// Insert a drawing, giving each of its physical connection points a terminal: the one it
+    /// names, if it exists (it must be the drawing's device's), or a new one with the id it
+    /// names or the drawing's default id, and the designation `f.designations` gives it (else
+    /// the point's name). Returns the terminals created. Nothing changes on error.
+    fn attach_terminals(&mut self, mut f: Function) -> Result<Vec<TerminalId>> {
+        let sym = self.symbol(&f.symbol)?.clone();
+        let mut created = Vec::new();
+        let mut new_entries = Vec::new();
+        if crate::connectivity::bears_terminals(&sym) {
+            let numbered = sym.role.numbered();
+            for cp in &sym.connection_points {
+                let id = f
+                    .terminals
+                    .get(&cp.name)
+                    .copied()
+                    .unwrap_or_else(|| crate::connectivity::default_terminal(f.id, &cp.name));
+                match self.terminals.get(&id) {
+                    Some(t) if t.device != f.device => return Err(ModelError::TerminalOfOtherDevice),
+                    Some(_) => {}
+                    None if new_entries.iter().any(|t: &TerminalEntry| t.id == id) => {}
+                    None => {
+                        let designation = f.designations.get(&cp.name).cloned().unwrap_or_else(|| cp.name.clone());
+                        let (group, point) = crate::connectivity::default_group(f.id, id, &cp.name, numbered);
+                        new_entries.push(TerminalEntry { id, device: f.device, group, point, designation });
+                    }
+                }
+                f.terminals.insert(cp.name.clone(), id);
+            }
+        }
+        for t in new_entries {
+            created.push(t.id);
+            self.terminals.insert(t.id, t);
+        }
+        f.designations.clear();
+        self.functions.insert(f.id, f);
+        Ok(created)
+    }
+
+    /// Take a drawing out, removing the terminals only it showed. Returns the drawing as it
+    /// would be placed again: its terminal ids and their designations.
+    fn detach_terminals(&mut self, id: FunctionId) -> Result<Function> {
+        let mut f = self.functions.remove(&id).ok_or(ModelError::NoFunction(id))?;
+        f.designations = self.designations_of(&f);
+        for t in f.terminals.values() {
+            let shown = self.functions.values().any(|g| g.terminals.values().any(|u| u == t));
+            if !shown {
+                self.terminals.remove(t);
+            }
+        }
+        Ok(f)
+    }
+
+    /// A drawing and the terminals it shows, to put back exactly if a change fails.
+    fn clone_drawing_state(&self, id: FunctionId) -> Result<(Function, Vec<TerminalEntry>)> {
+        let f = self.function(id)?.clone();
+        let terminals = f.terminals.values().filter_map(|t| self.terminals.get(t).cloned()).collect();
+        Ok((f, terminals))
+    }
+
+    fn restore_drawing_state(&mut self, id: FunctionId, (f, terminals): (Function, Vec<TerminalEntry>)) {
+        if let Some(now) = self.functions.remove(&id) {
+            for t in now.terminals.values() {
+                if !self.functions.values().any(|g| g.terminals.values().any(|u| u == t)) {
+                    self.terminals.remove(t);
+                }
+            }
+        }
+        for t in terminals {
+            self.terminals.insert(t.id, t);
+        }
+        self.functions.insert(id, f);
+    }
+
     /// The number of a terminal or PLC channel: the designation of its first connection point.
     pub fn drawing_number(&self, f: FunctionId) -> Option<String> {
         let f = self.function(f).ok()?;
         let sym = self.symbol(&f.symbol).ok()?;
-        sym.role.numbered().then(|| sym.connection_points.first().map(|cp| f.designation(&cp.name).to_owned()))?
+        sym.role.numbered().then(|| sym.connection_points.first().map(|cp| self.designation(f, &cp.name).to_owned()))?
     }
 
     /// A terminal's number.
@@ -1083,9 +1209,12 @@ impl Project {
                 self.device(f.device)?;
                 self.symbol(&f.symbol)?;
                 let id = f.id;
-                self.functions.insert(id, f);
+                let created = self.attach_terminals(f)?;
                 if let Err(e) = self.check_terminal(id).and_then(|()| self.check_plc(id)) {
                     self.functions.remove(&id);
+                    for t in created {
+                        self.terminals.remove(&t);
+                    }
                     return Err(e);
                 }
                 Ok(Command::Unplace(id))
@@ -1104,7 +1233,7 @@ impl Project {
                         undo.push(Command::Connect(c));
                     }
                 }
-                let f = self.functions.remove(&id).ok_or(ModelError::NoFunction(id))?;
+                let f = self.detach_terminals(id)?;
                 undo.insert(0, Command::Place(f));
                 Ok(Command::Batch(undo))
             }
@@ -1241,21 +1370,52 @@ impl Project {
                 }
                 Ok(Command::SetPageKeys(old))
             }
-            Command::Reassign { id, device, designations } => {
+            Command::Reassign { id, device, designations, terminals } => {
                 self.device(device)?;
-                let f = self.functions.get_mut(&id).ok_or(ModelError::NoFunction(id))?;
-                let old_device = std::mem::replace(&mut f.device, device);
-                let old_designations = std::mem::replace(&mut f.designations, designations);
+                let before = self.clone_drawing_state(id)?;
+                let old = self.detach_terminals(id)?;
+                let old_device = old.device;
+                let old_designations = old.designations.clone();
+                let old_terminals = old.terminals.clone();
+                let mut moved = Function { device, designations, terminals, ..old };
+                for (point, t) in &old_terminals {
+                    moved.terminals.entry(point.clone()).or_insert_with(|| {
+                        // A new connection point of the other device, the same on every run.
+                        TerminalId(Uuid::new_v5(&t.0, device.0.as_bytes()))
+                    });
+                }
                 // The same rules as placing it there: no second terminal or channel with its
                 // number, no PLC address used twice.
-                if let Err(e) = self.check_terminal(id).and_then(|()| self.check_plc(id)) {
-                    if let Some(f) = self.functions.get_mut(&id) {
-                        f.device = old_device;
-                        f.designations = old_designations;
-                    }
+                let placed = self
+                    .attach_terminals(moved)
+                    .and_then(|_| self.check_terminal(id))
+                    .and_then(|()| self.check_plc(id));
+                if let Err(e) = placed {
+                    self.restore_drawing_state(id, before);
                     return Err(e);
                 }
-                Ok(Command::Reassign { id, device: old_device, designations: old_designations })
+                Ok(Command::Reassign {
+                    id,
+                    device: old_device,
+                    designations: old_designations,
+                    terminals: old_terminals,
+                })
+            }
+            Command::AddTerminal(t) => {
+                if self.terminals.contains_key(&t.id) {
+                    return Err(ModelError::DuplicateId(t.id.0));
+                }
+                self.device(t.device)?;
+                let id = t.id;
+                self.terminals.insert(id, t);
+                Ok(Command::RemoveTerminal(id))
+            }
+            Command::RemoveTerminal(id) => {
+                if self.functions.values().any(|f| f.terminals.values().any(|t| *t == id)) {
+                    return Err(ModelError::TerminalInUse(id.0));
+                }
+                let t = self.terminals.remove(&id).ok_or(ModelError::NoTerminal(id.0))?;
+                Ok(Command::AddTerminal(t))
             }
             Command::SetUnderlay { page, underlay } => {
                 self.page(page)?;
@@ -1433,15 +1593,35 @@ impl Project {
                 Ok(Command::SetProperties { id, properties: old })
             }
             Command::SetDesignations { id, designations } => {
-                let f = self.functions.get_mut(&id).ok_or(ModelError::NoFunction(id))?;
-                let old = std::mem::replace(&mut f.designations, designations);
+                // The designations are the drawing's terminals': renumbering changes no id
+                // and no wire.
+                let f = self.function(id)?.clone();
+                let mut old = BTreeMap::new();
+                for (point, t) in &f.terminals {
+                    let Some(entry) = self.terminals.get_mut(t) else { continue };
+                    let new = designations.get(point).cloned().unwrap_or_else(|| point.clone());
+                    if new != entry.designation {
+                        old.insert(point.clone(), std::mem::replace(&mut entry.designation, new));
+                    }
+                }
+                // Points the map leaves out show the symbol's name again; undo restores exactly.
+                let undo: BTreeMap<String, String> = f
+                    .terminals
+                    .iter()
+                    .filter_map(|(point, t)| {
+                        let now = self.terminals.get(t)?.designation.clone();
+                        Some((point.clone(), old.get(point).cloned().unwrap_or(now)))
+                    })
+                    .collect();
                 if let Err(e) = self.check_terminal(id) {
-                    if let Some(f) = self.functions.get_mut(&id) {
-                        f.designations = old;
+                    for (point, d) in old {
+                        if let Some(entry) = f.terminals.get(&point).and_then(|t| self.terminals.get_mut(t)) {
+                            entry.designation = d;
+                        }
                     }
                     return Err(e);
                 }
-                Ok(Command::SetDesignations { id, designations: old })
+                Ok(Command::SetDesignations { id, designations: undo })
             }
             Command::Batch(cmds) => {
                 let mut undo = Vec::with_capacity(cmds.len());
@@ -1480,9 +1660,13 @@ impl Project {
             return Err(ModelError::EmptyNumber);
         }
         let device = self.function(f)?.device;
-        let taken = self
-            .functions_of(device)
-            .any(|g| g.id != f && self.drawing_number(g.id).as_deref() == Some(number.as_str()));
+        let mine: Vec<TerminalId> = self.function(f)?.terminals.values().copied().collect();
+        // Another drawing of the same terminal (a repeated representation) is no second one.
+        let taken = self.functions_of(device).any(|g| {
+            g.id != f
+                && !g.terminals.values().any(|t| mine.contains(t))
+                && self.drawing_number(g.id).as_deref() == Some(number.as_str())
+        });
         if taken {
             return Err(ModelError::DuplicateNumber(self.device(device)?.tag.clone(), number));
         }
@@ -1773,7 +1957,7 @@ impl Project {
             .collect();
         let pe_point = |r: &ConnectionRef| {
             let Ok(f) = self.function(r.function) else { return false };
-            let d = f.designation(&r.point).to_ascii_uppercase();
+            let d = self.designation(f, &r.point).to_ascii_uppercase();
             d.strip_prefix("PE").is_some_and(|rest| rest.chars().all(|ch| ch == '\'' || ch.is_ascii_digit()))
         };
         for c in self.connections.values() {
