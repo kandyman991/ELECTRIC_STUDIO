@@ -132,10 +132,11 @@ machine wiring rules. ANSI/NFPA 79 later.
 
 | Decision | Status |
 | --- | --- |
-| Separate product from HMI Studio; they share only a tag-exchange format | Decided |
+| Separate product from HMI Studio, with no direct tag exchange: HMI tags come in from TIA Portal, which gets them from the TIA tag table | Decided (2026-11-27) |
 | CADCraft crates as libraries, not a fork | Decided |
 | Milestones M0 to M6 with an MVP gate after M4 | Decided |
 | UI technology: egui, a thin shell (`apps/ecad-app`) over `ecad-editor` | Decided in M1b (docs/UI-DECISION.md) |
 | Project files: a folder of JSON files | Implemented in M1a |
+| MCP server (`ecad-mcp`): stdio, hand-written JSON-RPC (no async runtime); read only unless `--write`; edits through `ecad_editor::script`, one undo step each, saved only on `save` | Implemented in M6b (docs/MCP.md) |
 | Licence and business model | *Open*, no licence until the owner decides |
 | IEC first; Windows and Linux first | *Open*, proposed |

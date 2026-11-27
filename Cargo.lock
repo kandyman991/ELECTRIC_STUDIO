@@ -1257,6 +1257,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ecad-mcp"
+version = "0.0.1"
+dependencies = [
+ "ecad-editor",
+ "ecad-model",
+ "ecad-project",
+ "ecad-reports",
+ "ecad-rules",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "ecad-model"
 version = "0.0.1"
 dependencies = [

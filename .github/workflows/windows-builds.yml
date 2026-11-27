@@ -1,6 +1,6 @@
 name: Windows build
 
-# A Windows build of the editor for trying it out. Not signed: Windows SmartScreen will warn
+# A Windows build of the editor, the ecad command and the MCP server, for trying them out. Not signed: Windows SmartScreen will warn
 # ("More info" → "Run anyway") until a code-signing certificate is added.
 on:
   pull_request:
@@ -20,9 +20,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --locked -p ecad-app
+      - run: cargo build --release --locked -p ecad-app -p ecad-cli -p ecad-mcp
       - uses: actions/upload-artifact@v4
         with:
           name: electric-studio-windows
-          path: target/release/electric-studio.exe
+          path: |
+            target/release/electric-studio.exe
+            target/release/ecad.exe
+            target/release/ecad-mcp.exe
           if-no-files-found: error

@@ -20,6 +20,7 @@ pub use session::{
 };
 pub use view::Viewport;
 
+pub mod script;
 pub mod session;
 pub mod view;
 
@@ -817,24 +818,11 @@ impl Editor {
             }
             Key::Delete => match self.selection.take() {
                 Some(Selected::Function(f)) => {
-                    let label = format!("Delete {}", self.tag_of(f));
-                    let device = self.project.function(f).map(|f| f.device).ok();
-                    let mut cmds = vec![Command::Unplace(f)];
-                    // Drop the device too when this was its only drawing (and its footprint).
-                    if let Some(d) = device
-                        && self.project.functions.values().filter(|x| x.device == d).count() == 1
-                    {
-                        if let Some(item) = self.project.panel_item_of(d) {
-                            cmds.push(Command::RemovePanelItem(item.id));
-                        }
-                        cmds.push(Command::RemoveDevice(d));
-                    }
-                    let r = self.execute(&label, Command::Batch(cmds));
+                    let r = self.delete_function(f);
                     self.report(r);
                 }
                 Some(Selected::Connection(c)) => {
-                    let label = format!("Delete wire {}", self.wire_name(c));
-                    let r = self.execute(&label, Command::Disconnect(c));
+                    let r = self.delete_wire(c);
                     self.report(r);
                 }
                 Some(Selected::Box(b)) => {
@@ -867,18 +855,59 @@ impl Editor {
                     self.report(r);
                 }
             }
-            Key::Undo => match self.history.undo(&mut self.project) {
-                Ok(Some(label)) => self.changed(format!("Undid: {label}")),
+            Key::Undo => match self.undo() {
+                Ok(Some(label)) => self.status = format!("Undid: {label}"),
                 Ok(None) => self.status = "Nothing to undo".into(),
                 Err(e) => self.status = e.to_string(),
             },
-            Key::Redo => match self.history.redo(&mut self.project) {
-                Ok(Some(label)) => self.changed(format!("Redid: {label}")),
+            Key::Redo => match self.redo() {
+                Ok(Some(label)) => self.status = format!("Redid: {label}"),
                 Ok(None) => self.status = "Nothing to redo".into(),
                 Err(e) => self.status = e.to_string(),
             },
         }
         self.forget_missing();
+    }
+
+    /// Undo the last change; its label, or `None` if there was nothing to undo.
+    pub fn undo(&mut self) -> Result<Option<String>, ModelError> {
+        let label = self.history.undo(&mut self.project)?;
+        if let Some(l) = &label {
+            self.changed(format!("Undid: {l}"));
+        }
+        self.forget_missing();
+        Ok(label)
+    }
+
+    /// Redo the last undone change; its label, or `None` if there was nothing to redo.
+    pub fn redo(&mut self) -> Result<Option<String>, ModelError> {
+        let label = self.history.redo(&mut self.project)?;
+        if let Some(l) = &label {
+            self.changed(format!("Redid: {l}"));
+        }
+        self.forget_missing();
+        Ok(label)
+    }
+
+    /// Delete a drawing, and its device when it was the device's only drawing (with its
+    /// footprint on a layout), undoably.
+    pub(crate) fn delete_function(&mut self, f: FunctionId) -> Result<(), ModelError> {
+        let label = format!("Delete {}", self.tag_of(f));
+        let device = self.project.function(f)?.device;
+        let mut cmds = vec![Command::Unplace(f)];
+        if self.project.functions.values().filter(|x| x.device == device).count() == 1 {
+            if let Some(item) = self.project.panel_item_of(device) {
+                cmds.push(Command::RemovePanelItem(item.id));
+            }
+            cmds.push(Command::RemoveDevice(device));
+        }
+        self.execute(&label, Command::Batch(cmds))
+    }
+
+    /// Delete a wire, undoably.
+    pub(crate) fn delete_wire(&mut self, c: ConnectionId) -> Result<(), ModelError> {
+        let label = format!("Delete wire {}", self.wire_name(c));
+        self.execute(&label, Command::Disconnect(c))
     }
 
     /// The project's potentials, computed once per change.
@@ -1116,11 +1145,18 @@ impl Editor {
     }
 
     fn place(&mut self, symbol: &SymbolId, at: Point) {
-        if let Err(e) = self.project.symbol(symbol) {
-            return self.status = e.to_string();
+        let result = self.place_new(self.page, symbol, at);
+        if let Ok(function) = result {
+            self.selection = Some(Selected::Function(function));
         }
+        self.report(result.map(|_| ()));
+    }
+
+    /// Place a symbol as a new device on `page` (the project's next tag), undoably.
+    pub(crate) fn place_new(&mut self, page: PageId, symbol: &SymbolId, at: Point) -> Result<FunctionId, ModelError> {
+        self.project.symbol(symbol)?;
         // The project's tag format: -K1, or A2SB1 with the page in front.
-        let tag = self.project.new_tag(symbol, self.page);
+        let tag = self.project.new_tag(symbol, page);
         // A black box is one particular device: it starts with the box's description.
         let description = match self.project.symbol(symbol) {
             Ok(s) if s.id.0.starts_with("box.") => s.description.clone(),
@@ -1134,7 +1170,7 @@ impl Editor {
                 id: function,
                 device,
                 symbol: symbol.clone(),
-                page: self.page,
+                page,
                 position: at,
                 rotation: Rotation::R0,
                 // A new terminal strip starts at terminal 1; contacts keep their own numbers.
@@ -1144,18 +1180,29 @@ impl Editor {
                 mirrored: false,
             }),
         ]);
-        let result = self.execute(&format!("Place {tag}"), cmd);
-        if result.is_ok() {
-            self.selection = Some(Selected::Function(function));
-        }
-        self.report(result);
+        self.execute(&format!("Place {tag}"), cmd)?;
+        Ok(function)
     }
 
     fn place_for(&mut self, symbol: &SymbolId, device: DeviceId, at: Point) {
-        let tag = match self.project.device(device) {
-            Ok(d) => d.tag.clone(),
-            Err(e) => return self.status = e.to_string(),
-        };
+        let result = self.place_another(self.page, symbol, device, at);
+        if let Ok(function) = result {
+            self.tool = Tool::Select;
+            self.selection = Some(Selected::Function(function));
+        }
+        self.report(result.map(|_| ()));
+    }
+
+    /// Place another drawing of `device` (a contact of a relay, a terminal of a strip) on
+    /// `page`, undoably.
+    pub(crate) fn place_another(
+        &mut self,
+        page: PageId,
+        symbol: &SymbolId,
+        device: DeviceId,
+        at: Point,
+    ) -> Result<FunctionId, ModelError> {
+        let tag = self.project.device(device)?.tag.clone();
         let designations = self.project.next_designations(device, symbol);
         let mut terminals: Vec<&String> = designations.values().collect();
         terminals.sort();
@@ -1172,19 +1219,15 @@ impl Editor {
             id: function,
             device,
             symbol: symbol.clone(),
-            page: self.page,
+            page,
             position: at,
             rotation: Rotation::R0,
             designations,
             properties: self.project.new_drawing_properties(symbol),
             mirrored: false,
         });
-        let result = self.execute(&format!("Place {tag}{what}"), cmd);
-        if result.is_ok() {
-            self.tool = Tool::Select;
-            self.selection = Some(Selected::Function(function));
-        }
-        self.report(result);
+        self.execute(&format!("Place {tag}{what}"), cmd)?;
+        Ok(function)
     }
 
     /// Set one property of the selected drawing (a PLC channel's `address`, `symbol` or
@@ -1255,6 +1298,17 @@ impl Editor {
             None => self.wire_start = Some(point),
             Some(start) if start == point => {}
             Some(start) => {
+                let result = self.draw_wire(start, point);
+                self.report(result.map(|_| ()));
+            }
+        }
+    }
+
+    /// Draw a wire between two free connection points, undoably: it takes its potential's
+    /// number and keeps off other wires and symbols where a nearby route does.
+    pub(crate) fn draw_wire(&mut self, start: ConnectionRef, point: ConnectionRef) -> Result<ConnectionId, ModelError> {
+        {
+            {
                 // Per potential, the wire takes its potential's number, and a wire that joins
                 // two potentials brings the other one's wires to the same number.
                 let (number, renumber) = self.project.number_for_new_wire(&start, &point);
@@ -1278,8 +1332,8 @@ impl Editor {
                 {
                     cmds.push(Command::SetWireBend { id, bend: Some(bend) });
                 }
-                let result = self.execute(&format!("Draw wire {number}"), Command::Batch(cmds));
-                self.report(result);
+                self.execute(&format!("Draw wire {number}"), Command::Batch(cmds))?;
+                Ok(id)
             }
         }
     }
