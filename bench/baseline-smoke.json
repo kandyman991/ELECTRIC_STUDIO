@@ -2,14 +2,14 @@
   "machine": {
     "arch": "x86_64",
     "assetSha256": null,
-    "commit": "e258a59ed2d437691497d653c6247e2d41af7168",
+    "commit": "5e8e8bf4d1b225139ac03049769f2cbc0a2746ba",
     "controlled": null,
     "cores": 2,
     "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
     "governor": null,
     "kernel": "6.18.44-fc-v880",
     "label": "sandbox",
-    "loadavg": "0.21 0.81 1.04 1/104 731",
+    "loadavg": "1.65 1.34 1.01 1/106 25430",
     "onAc": false,
     "os": "linux",
     "profile": "release",
@@ -18,7 +18,7 @@
   "results": [
     {
       "counts": {
-        "contentHash": "sha256:da95512a9aea6c32fc9440eae6ff14ae95800a786864f7ae3f895c16abe908ff",
+        "contentHash": "sha256:732423ab9b8550cfc2c2c0feae025d372efa949c1ba0587d0eb4abd25c818038",
         "devices": 50,
         "drawings": 91,
         "loadedDevices": 50,
@@ -30,20 +30,20 @@
         "wires": 97
       },
       "iterations": 3,
-      "peakKib": 8640,
+      "peakKib": 9192,
       "project": "conveyor",
-      "setupPeakKib": 8444,
+      "setupPeakKib": 8936,
       "size": "smoke",
       "timesNs": [
-        2638019,
-        2007947,
-        1572059
+        1533535,
+        1309904,
+        1345528
       ],
       "workload": "open"
     },
     {
       "counts": {
-        "contentHash": "sha256:da95512a9aea6c32fc9440eae6ff14ae95800a786864f7ae3f895c16abe908ff",
+        "contentHash": "sha256:732423ab9b8550cfc2c2c0feae025d372efa949c1ba0587d0eb4abd25c818038",
         "devices": 50,
         "drawings": 91,
         "nets": 40,
@@ -55,20 +55,20 @@
         "wires": 97
       },
       "iterations": 3,
-      "peakKib": 8520,
+      "peakKib": 8884,
       "project": "conveyor",
-      "setupPeakKib": 8136,
+      "setupPeakKib": 8500,
       "size": "smoke",
       "timesNs": [
-        32452492,
-        1408397,
-        1358787
+        38662835,
+        1979392,
+        1863944
       ],
       "workload": "save"
     },
     {
       "counts": {
-        "contentHash": "sha256:da95512a9aea6c32fc9440eae6ff14ae95800a786864f7ae3f895c16abe908ff",
+        "contentHash": "sha256:732423ab9b8550cfc2c2c0feae025d372efa949c1ba0587d0eb4abd25c818038",
         "devices": 50,
         "drawings": 91,
         "findings": 0,
@@ -80,20 +80,20 @@
         "wires": 97
       },
       "iterations": 3,
-      "peakKib": 8268,
+      "peakKib": 8732,
       "project": "conveyor",
-      "setupPeakKib": 8200,
+      "setupPeakKib": 8636,
       "size": "smoke",
       "timesNs": [
-        5885591,
-        5321557,
-        5344829
+        4152138,
+        4038734,
+        4010709
       ],
       "workload": "edit"
     },
     {
       "counts": {
-        "contentHash": "sha256:da95512a9aea6c32fc9440eae6ff14ae95800a786864f7ae3f895c16abe908ff",
+        "contentHash": "sha256:732423ab9b8550cfc2c2c0feae025d372efa949c1ba0587d0eb4abd25c818038",
         "devices": 50,
         "drawings": 91,
         "errors": 0,
@@ -106,20 +106,20 @@
         "wires": 97
       },
       "iterations": 3,
-      "peakKib": 8224,
+      "peakKib": 8616,
       "project": "conveyor",
-      "setupPeakKib": 8096,
+      "setupPeakKib": 8536,
       "size": "smoke",
       "timesNs": [
-        5640639,
-        5460287,
-        5502209
+        4749762,
+        4395361,
+        4098995
       ],
       "workload": "check"
     },
     {
       "counts": {
-        "contentHash": "sha256:da95512a9aea6c32fc9440eae6ff14ae95800a786864f7ae3f895c16abe908ff",
+        "contentHash": "sha256:732423ab9b8550cfc2c2c0feae025d372efa949c1ba0587d0eb4abd25c818038",
         "devices": 50,
         "drawings": 91,
         "nets": 40,
@@ -131,23 +131,23 @@
         "wires": 97
       },
       "iterations": 3,
-      "peakKib": 8188,
+      "peakKib": 8600,
       "project": "conveyor",
-      "setupPeakKib": 8188,
+      "setupPeakKib": 8600,
       "size": "smoke",
       "timesNs": [
-        389767,
-        339624,
-        328505
+        287069,
+        284723,
+        239337
       ],
       "workload": "netlist"
     },
     {
       "counts": {
-        "contentHash": "sha256:da95512a9aea6c32fc9440eae6ff14ae95800a786864f7ae3f895c16abe908ff",
+        "contentHash": "sha256:732423ab9b8550cfc2c2c0feae025d372efa949c1ba0587d0eb4abd25c818038",
         "devices": 50,
         "drawings": 91,
-        "hash": "sha256:da95512a9aea6c32fc9440eae6ff14ae95800a786864f7ae3f895c16abe908ff",
+        "hash": "sha256:732423ab9b8550cfc2c2c0feae025d372efa949c1ba0587d0eb4abd25c818038",
         "nets": 40,
         "nodes": 30,
         "pages": 6,
@@ -156,20 +156,20 @@
         "wires": 97
       },
       "iterations": 3,
-      "peakKib": 8120,
+      "peakKib": 8628,
       "project": "conveyor",
-      "setupPeakKib": 8120,
+      "setupPeakKib": 8628,
       "size": "smoke",
       "timesNs": [
-        1527270,
-        1327675,
-        1291804
+        1328097,
+        1273700,
+        1273084
       ],
       "workload": "hash"
     },
     {
       "counts": {
-        "contentHash": "sha256:da95512a9aea6c32fc9440eae6ff14ae95800a786864f7ae3f895c16abe908ff",
+        "contentHash": "sha256:732423ab9b8550cfc2c2c0feae025d372efa949c1ba0587d0eb4abd25c818038",
         "devices": 50,
         "drawings": 91,
         "nets": 40,
@@ -181,20 +181,20 @@
         "wires": 97
       },
       "iterations": 3,
-      "peakKib": 9924,
+      "peakKib": 11156,
       "project": "conveyor",
-      "setupPeakKib": 8132,
+      "setupPeakKib": 8512,
       "size": "smoke",
       "timesNs": [
-        15310528,
-        9554808,
-        8959280
+        7597377,
+        7305944,
+        7840890
       ],
       "workload": "render"
     },
     {
       "counts": {
-        "contentHash": "sha256:da95512a9aea6c32fc9440eae6ff14ae95800a786864f7ae3f895c16abe908ff",
+        "contentHash": "sha256:732423ab9b8550cfc2c2c0feae025d372efa949c1ba0587d0eb4abd25c818038",
         "devices": 50,
         "drawings": 91,
         "nets": 40,
@@ -206,20 +206,20 @@
         "wires": 97
       },
       "iterations": 3,
-      "peakKib": 15004,
+      "peakKib": 16076,
       "project": "conveyor",
-      "setupPeakKib": 8184,
+      "setupPeakKib": 8596,
       "size": "smoke",
       "timesNs": [
-        91584568,
-        83974711,
-        84545553
+        74312752,
+        70008133,
+        69508306
       ],
       "workload": "pdf"
     },
     {
       "counts": {
-        "contentHash": "sha256:f4e7ce8b66affb2b7462369eb53f0dd975fde8e987c097536a3d58bbcd65b30e",
+        "contentHash": "sha256:3bb94bee31806901f51f62f9115838b3cbb993516d3e9b6a95704d7f6e567690",
         "devices": 169,
         "drawings": 279,
         "loadedDevices": 169,
@@ -231,20 +231,20 @@
         "wires": 297
       },
       "iterations": 3,
-      "peakKib": 10972,
+      "peakKib": 11672,
       "project": "reference",
-      "setupPeakKib": 10780,
+      "setupPeakKib": 11448,
       "size": "smoke",
       "timesNs": [
-        2912677,
-        2876789,
-        2701086
+        3317332,
+        3471467,
+        3362031
       ],
       "workload": "open"
     },
     {
       "counts": {
-        "contentHash": "sha256:f4e7ce8b66affb2b7462369eb53f0dd975fde8e987c097536a3d58bbcd65b30e",
+        "contentHash": "sha256:3bb94bee31806901f51f62f9115838b3cbb993516d3e9b6a95704d7f6e567690",
         "devices": 169,
         "drawings": 279,
         "nets": 96,
@@ -256,20 +256,20 @@
         "wires": 297
       },
       "iterations": 3,
-      "peakKib": 10704,
+      "peakKib": 11544,
       "project": "reference",
-      "setupPeakKib": 10320,
+      "setupPeakKib": 11096,
       "size": "smoke",
       "timesNs": [
-        39559025,
-        2166978,
-        1889266
+        27010245,
+        2347678,
+        2142115
       ],
       "workload": "save"
     },
     {
       "counts": {
-        "contentHash": "sha256:f4e7ce8b66affb2b7462369eb53f0dd975fde8e987c097536a3d58bbcd65b30e",
+        "contentHash": "sha256:3bb94bee31806901f51f62f9115838b3cbb993516d3e9b6a95704d7f6e567690",
         "devices": 169,
         "drawings": 279,
         "findings": 63,
@@ -281,20 +281,20 @@
         "wires": 297
       },
       "iterations": 3,
-      "peakKib": 10460,
+      "peakKib": 11036,
       "project": "reference",
-      "setupPeakKib": 10332,
+      "setupPeakKib": 10908,
       "size": "smoke",
       "timesNs": [
-        28867438,
-        28816403,
-        31084665
+        22588618,
+        22282728,
+        23092817
       ],
       "workload": "edit"
     },
     {
       "counts": {
-        "contentHash": "sha256:f4e7ce8b66affb2b7462369eb53f0dd975fde8e987c097536a3d58bbcd65b30e",
+        "contentHash": "sha256:3bb94bee31806901f51f62f9115838b3cbb993516d3e9b6a95704d7f6e567690",
         "devices": 169,
         "drawings": 279,
         "errors": 0,
@@ -307,20 +307,20 @@
         "wires": 297
       },
       "iterations": 3,
-      "peakKib": 10416,
+      "peakKib": 11064,
       "project": "reference",
-      "setupPeakKib": 10288,
+      "setupPeakKib": 10936,
       "size": "smoke",
       "timesNs": [
-        25296784,
-        26393453,
-        29953994
+        23003732,
+        22561747,
+        22078649
       ],
       "workload": "check"
     },
     {
       "counts": {
-        "contentHash": "sha256:f4e7ce8b66affb2b7462369eb53f0dd975fde8e987c097536a3d58bbcd65b30e",
+        "contentHash": "sha256:3bb94bee31806901f51f62f9115838b3cbb993516d3e9b6a95704d7f6e567690",
         "devices": 169,
         "drawings": 279,
         "nets": 96,
@@ -332,23 +332,23 @@
         "wires": 297
       },
       "iterations": 3,
-      "peakKib": 10304,
+      "peakKib": 11036,
       "project": "reference",
-      "setupPeakKib": 10304,
+      "setupPeakKib": 11036,
       "size": "smoke",
       "timesNs": [
-        1157030,
-        1214153,
-        1558569
+        821205,
+        747137,
+        823001
       ],
       "workload": "netlist"
     },
     {
       "counts": {
-        "contentHash": "sha256:f4e7ce8b66affb2b7462369eb53f0dd975fde8e987c097536a3d58bbcd65b30e",
+        "contentHash": "sha256:3bb94bee31806901f51f62f9115838b3cbb993516d3e9b6a95704d7f6e567690",
         "devices": 169,
         "drawings": 279,
-        "hash": "sha256:f4e7ce8b66affb2b7462369eb53f0dd975fde8e987c097536a3d58bbcd65b30e",
+        "hash": "sha256:3bb94bee31806901f51f62f9115838b3cbb993516d3e9b6a95704d7f6e567690",
         "nets": 96,
         "nodes": 101,
         "pages": 11,
@@ -357,20 +357,20 @@
         "wires": 297
       },
       "iterations": 3,
-      "peakKib": 10280,
+      "peakKib": 11060,
       "project": "reference",
-      "setupPeakKib": 10280,
+      "setupPeakKib": 11060,
       "size": "smoke",
       "timesNs": [
-        2529668,
-        2359825,
-        2157230
+        2991722,
+        2650032,
+        2639543
       ],
       "workload": "hash"
     },
     {
       "counts": {
-        "contentHash": "sha256:f4e7ce8b66affb2b7462369eb53f0dd975fde8e987c097536a3d58bbcd65b30e",
+        "contentHash": "sha256:3bb94bee31806901f51f62f9115838b3cbb993516d3e9b6a95704d7f6e567690",
         "devices": 169,
         "drawings": 279,
         "nets": 96,
@@ -382,20 +382,20 @@
         "wires": 297
       },
       "iterations": 3,
-      "peakKib": 12856,
+      "peakKib": 14256,
       "project": "reference",
-      "setupPeakKib": 10276,
+      "setupPeakKib": 11000,
       "size": "smoke",
       "timesNs": [
-        36008247,
-        35306477,
-        36013414
+        32441247,
+        31562902,
+        31714043
       ],
       "workload": "render"
     },
     {
       "counts": {
-        "contentHash": "sha256:f4e7ce8b66affb2b7462369eb53f0dd975fde8e987c097536a3d58bbcd65b30e",
+        "contentHash": "sha256:3bb94bee31806901f51f62f9115838b3cbb993516d3e9b6a95704d7f6e567690",
         "devices": 169,
         "drawings": 279,
         "nets": 96,
@@ -407,20 +407,20 @@
         "wires": 297
       },
       "iterations": 3,
-      "peakKib": 25092,
+      "peakKib": 26632,
       "project": "reference",
-      "setupPeakKib": 10304,
+      "setupPeakKib": 10908,
       "size": "smoke",
       "timesNs": [
-        364336105,
-        353785089,
-        346722369
+        336685296,
+        342293894,
+        371135538
       ],
       "workload": "pdf"
     },
     {
       "counts": {
-        "contentHash": "sha256:849dfb39ac83c508b01cff4e68a75ddce06b97f1e4484bec029c0f12bfdabf17",
+        "contentHash": "sha256:bfa95f9bf9316693414352d93a7a6932ffa0d418cc00ec75a0c15bad430d86f5",
         "devices": 200,
         "drawings": 364,
         "loadedDevices": 200,
@@ -432,20 +432,20 @@
         "wires": 388
       },
       "iterations": 3,
-      "peakKib": 23240,
+      "peakKib": 23608,
       "project": "synthetic",
-      "setupPeakKib": 23048,
+      "setupPeakKib": 23352,
       "size": "smoke",
       "timesNs": [
-        7662830,
-        7595307,
-        9157197
+        8435820,
+        8138039,
+        7641256
       ],
       "workload": "open"
     },
     {
       "counts": {
-        "contentHash": "sha256:849dfb39ac83c508b01cff4e68a75ddce06b97f1e4484bec029c0f12bfdabf17",
+        "contentHash": "sha256:bfa95f9bf9316693414352d93a7a6932ffa0d418cc00ec75a0c15bad430d86f5",
         "devices": 200,
         "drawings": 364,
         "nets": 160,
@@ -457,20 +457,20 @@
         "wires": 388
       },
       "iterations": 3,
-      "peakKib": 23140,
+      "peakKib": 23492,
       "project": "synthetic",
-      "setupPeakKib": 22756,
+      "setupPeakKib": 23048,
       "size": "smoke",
       "timesNs": [
-        40310332,
-        4177586,
-        3759611
+        34331002,
+        4692675,
+        3996513
       ],
       "workload": "save"
     },
     {
       "counts": {
-        "contentHash": "sha256:849dfb39ac83c508b01cff4e68a75ddce06b97f1e4484bec029c0f12bfdabf17",
+        "contentHash": "sha256:bfa95f9bf9316693414352d93a7a6932ffa0d418cc00ec75a0c15bad430d86f5",
         "devices": 200,
         "drawings": 364,
         "findings": 0,
@@ -482,20 +482,20 @@
         "wires": 388
       },
       "iterations": 3,
-      "peakKib": 22796,
+      "peakKib": 23144,
       "project": "synthetic",
-      "setupPeakKib": 22668,
+      "setupPeakKib": 23032,
       "size": "smoke",
       "timesNs": [
-        70053913,
-        72578746,
-        69110648
+        55879320,
+        60328352,
+        58641990
       ],
       "workload": "edit"
     },
     {
       "counts": {
-        "contentHash": "sha256:849dfb39ac83c508b01cff4e68a75ddce06b97f1e4484bec029c0f12bfdabf17",
+        "contentHash": "sha256:bfa95f9bf9316693414352d93a7a6932ffa0d418cc00ec75a0c15bad430d86f5",
         "devices": 200,
         "drawings": 364,
         "errors": 0,
@@ -508,20 +508,20 @@
         "wires": 388
       },
       "iterations": 3,
-      "peakKib": 22824,
+      "peakKib": 23108,
       "project": "synthetic",
-      "setupPeakKib": 22696,
+      "setupPeakKib": 23012,
       "size": "smoke",
       "timesNs": [
-        66068726,
-        64713164,
-        69217019
+        52951887,
+        53622550,
+        53509808
       ],
       "workload": "check"
     },
     {
       "counts": {
-        "contentHash": "sha256:849dfb39ac83c508b01cff4e68a75ddce06b97f1e4484bec029c0f12bfdabf17",
+        "contentHash": "sha256:bfa95f9bf9316693414352d93a7a6932ffa0d418cc00ec75a0c15bad430d86f5",
         "devices": 200,
         "drawings": 364,
         "nets": 160,
@@ -533,23 +533,23 @@
         "wires": 388
       },
       "iterations": 3,
-      "peakKib": 22672,
+      "peakKib": 22956,
       "project": "synthetic",
-      "setupPeakKib": 22672,
+      "setupPeakKib": 22956,
       "size": "smoke",
       "timesNs": [
-        1520853,
-        1433400,
-        1477004
+        1279777,
+        1084457,
+        1094042
       ],
       "workload": "netlist"
     },
     {
       "counts": {
-        "contentHash": "sha256:849dfb39ac83c508b01cff4e68a75ddce06b97f1e4484bec029c0f12bfdabf17",
+        "contentHash": "sha256:bfa95f9bf9316693414352d93a7a6932ffa0d418cc00ec75a0c15bad430d86f5",
         "devices": 200,
         "drawings": 364,
-        "hash": "sha256:849dfb39ac83c508b01cff4e68a75ddce06b97f1e4484bec029c0f12bfdabf17",
+        "hash": "sha256:bfa95f9bf9316693414352d93a7a6932ffa0d418cc00ec75a0c15bad430d86f5",
         "nets": 160,
         "nodes": 120,
         "pages": 24,
@@ -558,20 +558,20 @@
         "wires": 388
       },
       "iterations": 3,
-      "peakKib": 22692,
+      "peakKib": 22956,
       "project": "synthetic",
-      "setupPeakKib": 22692,
+      "setupPeakKib": 22952,
       "size": "smoke",
       "timesNs": [
-        11805461,
-        11075287,
-        10730441
+        10727808,
+        10209922,
+        10300581
       ],
       "workload": "hash"
     },
     {
       "counts": {
-        "contentHash": "sha256:849dfb39ac83c508b01cff4e68a75ddce06b97f1e4484bec029c0f12bfdabf17",
+        "contentHash": "sha256:bfa95f9bf9316693414352d93a7a6932ffa0d418cc00ec75a0c15bad430d86f5",
         "devices": 200,
         "drawings": 364,
         "nets": 160,
@@ -583,20 +583,20 @@
         "wires": 388
       },
       "iterations": 3,
-      "peakKib": 24544,
+      "peakKib": 25284,
       "project": "synthetic",
-      "setupPeakKib": 22772,
+      "setupPeakKib": 23036,
       "size": "smoke",
       "timesNs": [
-        79447625,
-        77044155,
-        75966405
+        65393196,
+        64418396,
+        67735655
       ],
       "workload": "render"
     },
     {
       "counts": {
-        "contentHash": "sha256:849dfb39ac83c508b01cff4e68a75ddce06b97f1e4484bec029c0f12bfdabf17",
+        "contentHash": "sha256:bfa95f9bf9316693414352d93a7a6932ffa0d418cc00ec75a0c15bad430d86f5",
         "devices": 200,
         "drawings": 364,
         "nets": 160,
@@ -608,14 +608,14 @@
         "wires": 388
       },
       "iterations": 3,
-      "peakKib": 55168,
+      "peakKib": 55984,
       "project": "synthetic",
-      "setupPeakKib": 22736,
+      "setupPeakKib": 22952,
       "size": "smoke",
       "timesNs": [
-        1315413739,
-        1367095787,
-        1324360563
+        1247939316,
+        1314976815,
+        1282387831
       ],
       "workload": "pdf"
     }

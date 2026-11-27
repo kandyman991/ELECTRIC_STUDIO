@@ -6,6 +6,7 @@
 //!   project.json          format version, name, pages (with sparse sort keys)
 //!   devices.json          all devices, sorted by tag; their products by id, number beside
 //!   products.json         the project's products (the parts catalogue), by id
+//!   terminals.json        the devices' terminals (D2): id, device, group, point, designation
 //!   cables.json           cables, sorted by tag
 //!   symbols/<id>.json     one file per symbol used by the project
 //!   pages/<page-id>.json  the functions and connections on that page
@@ -14,7 +15,8 @@
 //!
 //! Format 2 is written; format 1 is read and converted on load (docs/PLATFORM-ARCHITECTURE.md
 //! section 9): `parts.json` becomes `products.json` with ids from [`ProductId::for_number`],
-//! devices' parts are found by number, and the dense page order becomes sparse keys. The first
+//! devices' parts are found by number, the dense page order becomes sparse keys, and each
+//! drawing's designations become terminals with the ids M7 derived (`terminal/<drawing>/<point>`). The first
 //! save of a format 1 project writes format 2, which older versions can't open:
 //! [`format_of`] lets a program say so first.
 //!
@@ -26,7 +28,7 @@
 
 use ecad_model::{
     Cable, Command, Connection, Device, DeviceId, Function, LocationBox, ModelError, Naming, PAGE_STEP, Page, Part,
-    PartRef, Point, ProductId, Project, ProjectInfo, Sheet, SymbolDef, SymbolId,
+    PartRef, Point, ProductId, Project, ProjectInfo, Sheet, SymbolDef, SymbolId, TerminalEntry,
 };
 
 pub mod csv;
@@ -298,6 +300,13 @@ fn render(project: &Project) -> Result<Vec<(String, Vec<u8>)>> {
     cables.sort_by(|a, b| a.tag.cmp(&b.tag));
     files.push(("cables.json".to_owned(), render_json(Path::new("cables.json"), &cables)?));
 
+    let tag = |d| project.device(d).map(|d| d.tag.as_str()).unwrap_or("");
+    let mut terminals: Vec<&TerminalEntry> = project.terminals.values().collect();
+    terminals.sort_by(|a, b| {
+        (tag(a.device), &a.designation, &a.point, a.id).cmp(&(tag(b.device), &b.designation, &b.point, b.id))
+    });
+    files.push(("terminals.json".to_owned(), render_json(Path::new("terminals.json"), &terminals)?));
+
     let mut devices: Vec<DeviceFile> = project.devices.values().map(|d| DeviceFile::of(project, d)).collect();
     devices.sort_by(|a, b| a.tag.cmp(&b.tag));
     files.push(("devices.json".to_owned(), render_json(Path::new("devices.json"), &devices)?));
@@ -487,6 +496,15 @@ pub fn load(dir: &Path) -> Result<Project> {
         project.apply(Command::AddDevice(d.into_device())).map_err(model(&path))?;
     }
 
+    // Terminals before the drawings that show them (format 2); format 1 has none: placing a
+    // drawing gives it terminals from its designations.
+    let path = dir.join("terminals.json");
+    if !legacy && path.exists() {
+        for t in read_json::<Vec<TerminalEntry>>(&path)? {
+            project.apply(Command::AddTerminal(t)).map_err(model(&path))?;
+        }
+    }
+
     // Place every page's functions before any connection, then connect.
     let mut pages = Vec::new();
     for id in project.pages.keys().copied().collect::<Vec<_>>() {
@@ -604,6 +622,28 @@ mod tests {
             }
         }
         std::fs::write(root.join("devices.json"), serde_json::to_string_pretty(&devices).unwrap()).unwrap();
+        // Designations back on the drawings, no terminals file.
+        let terminals: Vec<TerminalEntry> =
+            serde_json::from_str(&std::fs::read_to_string(root.join("terminals.json")).unwrap()).unwrap();
+        std::fs::remove_file(root.join("terminals.json")).unwrap();
+        for entry in std::fs::read_dir(root.join("pages")).unwrap() {
+            let path = entry.unwrap().path();
+            let mut page: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            for f in page["functions"].as_array_mut().unwrap() {
+                let Some(map) = f.as_object_mut().unwrap().remove("terminals") else { continue };
+                let mut designations = serde_json::Map::new();
+                for (point, id) in map.as_object().unwrap() {
+                    let t = terminals.iter().find(|t| serde_json::to_value(t.id).unwrap() == *id).unwrap();
+                    if t.designation != *point {
+                        designations.insert(point.clone(), t.designation.clone().into());
+                    }
+                }
+                if !designations.is_empty() {
+                    f["designations"] = designations.into();
+                }
+            }
+            std::fs::write(&path, serde_json::to_string_pretty(&page).unwrap()).unwrap();
+        }
         let mut head: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(root.join("project.json")).unwrap()).unwrap();
         head["format"] = 1.into();
@@ -620,6 +660,8 @@ mod tests {
         // with sparse keys.
         assert_eq!(q.parts, p.parts);
         assert_eq!(q.devices, p.devices);
+        assert_eq!(q.terminals, p.terminals, "terminals from the drawings' designations, same ids");
+        assert_eq!(q.functions, p.functions);
         let names: Vec<_> = q.pages_in_order().iter().map(|pg| pg.name.clone()).collect();
         let mut want: Vec<_> = p.pages_in_order().iter().map(|pg| pg.name.clone()).collect();
         want.reverse();

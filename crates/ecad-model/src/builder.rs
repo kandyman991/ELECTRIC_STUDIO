@@ -76,6 +76,7 @@ impl Builder {
     ) -> Result<F> {
         let id = F::from_u128(self.id());
         self.p.place(Function {
+            terminals: Default::default(),
             id,
             device,
             symbol,
@@ -130,7 +131,7 @@ impl Builder {
         // A point's own name first (a terminal's two sides share one number), then its
         // designation (a contact numbered 21-22 on a symbol whose points are 11 and 12).
         sym.connection_point(d)
-            .or_else(|| sym.connection_points.iter().find(|cp| func.designation(&cp.name) == d))
+            .or_else(|| sym.connection_points.iter().find(|cp| self.p.designation(func, &cp.name) == d))
             .map(|cp| ConnectionRef::new(f, &cp.name))
             .ok_or_else(|| ModelError::NoConnectionPoint { symbol: func.symbol.0.clone(), point: d.into() })
     }

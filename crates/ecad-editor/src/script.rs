@@ -40,7 +40,7 @@ pub fn find_point(project: &Project, spec: &str) -> Result<ConnectionRef, String
     for f in project.functions_of(device) {
         let Ok(symbol) = project.symbol(&f.symbol) else { continue };
         for cp in &symbol.connection_points {
-            let shown = f.designation(&cp.name);
+            let shown = project.designation(f, &cp.name);
             all.push(shown.to_owned());
             if shown == point {
                 found.push(ConnectionRef::new(f.id, &cp.name));

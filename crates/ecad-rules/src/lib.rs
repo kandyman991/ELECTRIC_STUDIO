@@ -441,7 +441,7 @@ fn contacts_on_parts(out: &mut Out) {
                 continue;
             }
             let Ok(sym) = project.symbol(&f.symbol) else { continue };
-            let numbers: Vec<&str> = sym.connection_points.iter().map(|cp| f.designation(&cp.name)).collect();
+            let numbers: Vec<&str> = sym.connection_points.iter().map(|cp| project.designation(f, &cp.name)).collect();
             let fits = blocks.iter().any(|b| {
                 let b: Vec<&str> = b.iter().map(String::as_str).collect();
                 numbers == b || matches!(b.as_slice(), [c, nc, no] if numbers == [*c, *no] || numbers == [*c, *nc])
@@ -689,6 +689,7 @@ mod tests {
         let mut p = sample::with_contacts().unwrap();
         let k1 = DeviceId::from_u128(0x103);
         let f = ecad_model::Function {
+            terminals: Default::default(),
             id: FunctionId::new(),
             device: k1,
             symbol: ecad_model::SymbolId::new("iec.coil"),
@@ -730,6 +731,7 @@ mod tests {
         let mut p = sample::start_circuit().unwrap();
         let l_plus = DeviceId::from_u128(0x101);
         let f = ecad_model::Function {
+            terminals: Default::default(),
             id: FunctionId::new(),
             device: l_plus,
             symbol: ecad_model::SymbolId::new("iec.interruption"),

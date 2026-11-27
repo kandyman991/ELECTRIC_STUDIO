@@ -270,6 +270,7 @@ mod tests {
         let (l_plus, m) = (DeviceId::from_u128(0x101), DeviceId::from_u128(0x104));
         let mut extra = |device, x| {
             let f = Function {
+                terminals: Default::default(),
                 id: FunctionId::new(),
                 device,
                 symbol: SymbolId::new("iec.supply"),
