@@ -1,0 +1,9 @@
+strip,terminal,inside,outside,potential,location
+-X2,1,J12582965:2,-M1:U,,1/0E
+-X2,2,J12582969:2,-M1:V,,1/0E
+-X2,3,J12582973:2,-M1:W,,1/1E
+-X2,PE,PE:1,-M1:PE,PE,1/1E
+-X3,1,J12583086:2,-B1:BN,L+,5/3C
+-X3,2,-A1:7,-B1:BK,,5/3C
+-X3,3,J12583089:2,-B2:BN,L+,5/4C
+-X3,4,-A1:8,-B2:BK,,5/4C

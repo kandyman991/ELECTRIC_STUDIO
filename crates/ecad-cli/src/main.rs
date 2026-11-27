@@ -34,7 +34,7 @@ usage:
       read in a separate worker process.
   ecad remove-underlay <project-dir> <page>
       Take a page's underlay away.
-  ecad new-sample <project-dir> [start|contacts|potentials|terminals|plc|power|library|reference]
+  ecad new-sample <project-dir> [start|contacts|potentials|terminals|plc|power|library|reference|conveyor]
       Write a sample project (default: start).
   ecad demo <out-dir>
       export for the built-in sample, without a project folder.
@@ -263,9 +263,10 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                 Some("power") => sample::with_power(),
                 Some("library") => sample::library_overview(),
                 Some("reference") => ecad_model::reference::reference_project(),
+                Some("conveyor") => ecad_model::conveyor::conveyor(),
                 Some(other) => {
                     return Err(format!(
-                        "unknown sample `{other}` (use start, contacts, potentials, terminals, plc, power, library, reference)"
+                        "unknown sample `{other}` (use start, contacts, potentials, terminals, plc, power, library, reference, conveyor)"
                     ));
                 }
             }
