@@ -138,5 +138,6 @@ machine wiring rules. ANSI/NFPA 79 later.
 | UI technology: egui, a thin shell (`apps/ecad-app`) over `ecad-editor` | Decided in M1b (docs/UI-DECISION.md) |
 | Project files: a folder of JSON files | Implemented in M1a |
 | MCP server (`ecad-mcp`): stdio, hand-written JSON-RPC (no async runtime); read only unless `--write`; edits through `ecad_editor::script`, one undo step each, saved only on `save` | Implemented in M6b (docs/MCP.md) |
+| Project saves: all-or-nothing (staged files, a journal as the commit point, recovery on open), one saver at a time (`.ecad-lock`), refused over someone else's save (folder fingerprint) — in the editor and the MCP server alike | Implemented in M6b (`ecad_project::store`) |
 | Licence and business model | *Open*, no licence until the owner decides |
 | IEC first; Windows and Linux first | *Open*, proposed |

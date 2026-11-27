@@ -62,15 +62,33 @@ Edit (only with `--write`), one undo step each:
 | `edit_device` | New tag and/or description |
 | `set_plc_channel` | A PLC channel's address, symbol and comment |
 | `undo`, `redo` | As in the editor |
-| `save` | Write the project folder |
+| `save` | Write the project folder (nothing, if there are no unsaved changes) |
+| `reload` | Load the folder again as last saved, dropping unsaved changes |
 
 Names, not ids: a page is its name (or `#2` for the second page), a device its tag, a point
 `TAG:POINT` as drawn. Positions are mm on the page and snap to the 4 mm grid. The model's
 rules hold as in the editor: a point takes one wire, tags and PLC addresses are unique, and a
 refused edit comes back as a tool error saying why.
 
+Arguments are checked against each tool's schema before it runs (types, required fields, no
+unknown fields), and JSON-RPC messages against the protocol (`jsonrpc: "2.0"`, a string or
+integer `id`, `initialize` first and once). Tool hints are declared per tool: read tools are
+read-only; `place_symbol` and `connect` only add; the rest change or overwrite and are marked
+destructive. Hints describe, they don't authorise: only `--write` does.
+
 ## Saving, and the editor
 
 Edits stay in the server until `save`; closing it without saving leaves the folder as it was.
-The server and the editor each hold their own copy of the project, so don't edit the same
-project in both at once: whichever saves last wins.
+
+The server and the editor each hold their own copy, and saving is safe between them (and
+between two servers):
+
+- A save is refused if someone else saved the folder since this copy was loaded or last saved;
+  nothing is written. The server then suggests `reload`; the editor keeps the changes open.
+- One program saves at a time (`.ecad-lock`).
+- A save is all or nothing: new files are staged, a journal marks the moment of the save, and
+  a save cut short (full disk, crash) is finished or undone the next time the folder is opened,
+  so it always loads as one complete version. See `ecad_project::store`.
+
+`crates/ecad-mcp/tests/client/check.py` drives the server with the official MCP Python SDK;
+CI runs it.

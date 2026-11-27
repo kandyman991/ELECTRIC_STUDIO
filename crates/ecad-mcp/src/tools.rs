@@ -5,16 +5,79 @@ use ecad_editor::script::{find_device, find_page};
 use ecad_model::Project;
 use serde_json::{Value, json};
 
-/// A tool's definition: name, description, JSON Schema of its arguments, and whether it only
-/// reads.
-fn tool(name: &str, title: &str, description: &str, properties: Value, required: &[&str], read_only: bool) -> Value {
+/// What a tool does to the project, for the client's hints: declared per tool, never guessed
+/// from its name. Hints describe; they don't authorise (only `--write` does).
+#[derive(Clone, Copy)]
+enum Effect {
+    /// Only reads.
+    Reads,
+    /// Adds to the project and changes nothing already there.
+    Adds,
+    /// Changes or removes what is there (in memory, undoable).
+    Changes,
+    /// Overwrites or throws away saved or unsaved work: `save`, `reload`.
+    Overwrites,
+}
+
+/// A tool's definition: name, description, JSON Schema of its arguments, and hints.
+fn tool(name: &str, title: &str, description: &str, properties: Value, required: &[&str], effect: Effect) -> Value {
+    let (read_only, destructive, idempotent) = match effect {
+        Effect::Reads => (true, false, true),
+        Effect::Adds => (false, false, false),
+        Effect::Changes => (false, true, false),
+        Effect::Overwrites => (false, true, false),
+    };
     json!({
         "name": name,
         "title": title,
         "description": description,
         "inputSchema": { "type": "object", "properties": properties, "required": required, "additionalProperties": false },
-        "annotations": { "readOnlyHint": read_only, "destructiveHint": !read_only && name.starts_with("delete"), "openWorldHint": false },
+        "annotations": {
+            "readOnlyHint": read_only,
+            "destructiveHint": destructive,
+            "idempotentHint": idempotent,
+            "openWorldHint": false,
+        },
     })
+}
+
+/// Check arguments against a tool's schema: an object, no unknown fields, every required one,
+/// each of its type (and in its list, for an enum).
+pub fn validate(definition: &Value, args: &Value) -> Result<(), String> {
+    let schema = &definition["inputSchema"];
+    let Some(args) = args.as_object() else { return Err("the arguments must be an object".into()) };
+    let properties = schema["properties"].as_object().cloned().unwrap_or_default();
+    for (key, value) in args {
+        let Some(property) = properties.get(key) else {
+            let known: Vec<&String> = properties.keys().collect();
+            let known = if known.is_empty() {
+                "none".to_owned()
+            } else {
+                known.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ")
+            };
+            return Err(format!("unknown argument `{key}` (arguments: {known})"));
+        };
+        let fits = match property["type"].as_str() {
+            Some("string") => value.is_string(),
+            Some("number") => value.as_f64().is_some_and(f64::is_finite),
+            _ => true,
+        };
+        if !fits {
+            return Err(format!("`{key}` must be a {}", property["type"].as_str().unwrap_or("value")));
+        }
+        if let Some(allowed) = property["enum"].as_array()
+            && !allowed.contains(value)
+        {
+            let list: Vec<String> = allowed.iter().filter_map(Value::as_str).map(str::to_owned).collect();
+            return Err(format!("`{key}` must be one of: {}", list.join(", ")));
+        }
+    }
+    for key in schema["required"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        if !args.contains_key(key) {
+            return Err(format!("`{key}` is needed"));
+        }
+    }
+    Ok(())
 }
 
 fn string(description: &str) -> Value {
@@ -34,7 +97,7 @@ pub fn list(writable: bool) -> Vec<Value> {
             "The project's name, pages, how many devices, symbols and wires it has, its errors and warnings, and whether there are unsaved changes.",
             json!({}),
             &[],
-            true,
+            Effect::Reads,
         ),
         tool(
             "list_devices",
@@ -42,7 +105,7 @@ pub fn list(writable: bool) -> Vec<Value> {
             "Every device (by tag) with its description, parts and where it is drawn. Optionally only devices drawn on one page.",
             json!({ "page": string("A page name, or #n for the n-th page") }),
             &[],
-            true,
+            Effect::Reads,
         ),
         tool(
             "device_details",
@@ -50,7 +113,7 @@ pub fn list(writable: bool) -> Vec<Value> {
             "One device: its drawings (symbol, page, position, properties) and each connection point with the wire on it and where that wire goes.",
             json!({ "tag": string("The device's tag, like -K1") }),
             &["tag"],
-            true,
+            Effect::Reads,
         ),
         tool(
             "list_wires",
@@ -58,7 +121,7 @@ pub fn list(writable: bool) -> Vec<Value> {
             "The wire list: wire number, potential, both ends as TAG:POINT, cross-section, colour, cable and estimated length. Optionally only wires at one device.",
             json!({ "device": string("Only wires with an end on this device, like -K1") }),
             &[],
-            true,
+            Effect::Reads,
         ),
         tool(
             "run_checks",
@@ -66,7 +129,7 @@ pub fn list(writable: bool) -> Vec<Value> {
             "The project's checks: errors and warnings (unconnected points, duplicate tags or addresses, missing parts, layout clashes and more), each with its page location.",
             json!({}),
             &[],
-            true,
+            Effect::Reads,
         ),
         tool(
             "report",
@@ -74,7 +137,7 @@ pub fn list(writable: bool) -> Vec<Value> {
             &format!("One report as CSV: {}.", ecad_reports::REPORTS.join(", ")),
             json!({ "name": { "type": "string", "enum": ecad_reports::REPORTS, "description": "The report" } }),
             &["name"],
-            true,
+            Effect::Reads,
         ),
         tool(
             "list_symbols",
@@ -82,7 +145,7 @@ pub fn list(writable: bool) -> Vec<Value> {
             "Symbols that can be placed, with their id, description, category and connection points. Optionally filtered by a word in the id, description or category.",
             json!({ "search": string("A word to look for, like coil or terminal") }),
             &[],
-            true,
+            Effect::Reads,
         ),
     ];
     if writable {
@@ -99,7 +162,7 @@ pub fn list(writable: bool) -> Vec<Value> {
                     "device": string("An existing device to add this drawing to, like -K1"),
                 }),
                 &["symbol", "page", "x", "y"],
-                false,
+                Effect::Adds,
             ),
             tool(
                 "connect",
@@ -107,7 +170,7 @@ pub fn list(writable: bool) -> Vec<Value> {
                 "Draw a wire between two free connection points, written TAG:POINT as drawn (-S1:14 to -K1:A1). It takes its potential's wire number.",
                 json!({ "from": string("One end, like -S1:14"), "to": string("The other end, like -K1:A1") }),
                 &["from", "to"],
-                false,
+                Effect::Adds,
             ),
             tool(
                 "delete_wire",
@@ -115,7 +178,7 @@ pub fn list(writable: bool) -> Vec<Value> {
                 "Delete the wire at a connection point.",
                 json!({ "at": string("A connection point the wire is on, like -K1:A1") }),
                 &["at"],
-                false,
+                Effect::Changes,
             ),
             tool(
                 "delete_device",
@@ -123,7 +186,7 @@ pub fn list(writable: bool) -> Vec<Value> {
                 "Delete a device: all its drawings, the wires on them, and its place on a panel layout.",
                 json!({ "tag": string("The device's tag, like -K1") }),
                 &["tag"],
-                false,
+                Effect::Changes,
             ),
             tool(
                 "edit_device",
@@ -131,7 +194,7 @@ pub fn list(writable: bool) -> Vec<Value> {
                 "Give a device a new tag and/or description.",
                 json!({ "tag": string("The device's tag now"), "new_tag": string("Its new tag"), "description": string("Its new description") }),
                 &["tag"],
-                false,
+                Effect::Changes,
             ),
             tool(
                 "set_plc_channel",
@@ -145,17 +208,25 @@ pub fn list(writable: bool) -> Vec<Value> {
                     "comment": string("The comment"),
                 }),
                 &["card", "channel"],
-                false,
+                Effect::Changes,
             ),
-            tool("undo", "Undo", "Undo the last change.", json!({}), &[], false),
-            tool("redo", "Redo", "Redo the last undone change.", json!({}), &[], false),
+            tool("undo", "Undo", "Undo the last change.", json!({}), &[], Effect::Changes),
+            tool("redo", "Redo", "Redo the last undone change.", json!({}), &[], Effect::Changes),
             tool(
                 "save",
                 "Save",
-                "Write the project to its folder. Until then changes are only in this server.",
+                "Write the project to its folder, replacing what is saved there. Until then changes are only in this server. Refused if someone else saved the folder since this server loaded or last saved it; does nothing without unsaved changes.",
                 json!({}),
                 &[],
-                false,
+                Effect::Overwrites,
+            ),
+            tool(
+                "reload",
+                "Reload",
+                "Load the project folder again, as last saved (by anyone). Drops this server's unsaved changes and undo history.",
+                json!({}),
+                &[],
+                Effect::Overwrites,
             ),
         ]);
     }
@@ -230,11 +301,8 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Result<Value, Stri
             let key = if name == "undo" { "undid" } else { "redid" };
             changed(server, json!({ key: label }))
         }
-        "save" => {
-            ecad_project::save(server.editor.project(), &server.dir).map_err(|e| e.to_string())?;
-            server.editor.mark_saved();
-            Ok(json!({ "saved": server.dir.display().to_string() }))
-        }
+        "save" => server.save(),
+        "reload" => server.reload(),
         other => Err(format!("unknown tool `{other}`")),
     }
 }
