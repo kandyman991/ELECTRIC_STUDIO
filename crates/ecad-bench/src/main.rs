@@ -177,28 +177,89 @@ fn key(r: &Value) -> String {
     format!("{} {}", r["project"].as_str().unwrap_or("?"), r["workload"].as_str().unwrap_or("?"))
 }
 
-fn compare(results: &Value, baseline: &Value) -> Result<ExitCode, String> {
-    let empty = Vec::new();
-    let base: std::collections::BTreeMap<String, &Value> =
-        baseline["results"].as_array().unwrap_or(&empty).iter().map(|r| (key(r), r)).collect();
-    let same_machine = baseline["machine"]["label"].is_string()
-        && baseline["machine"]["label"] == results["machine"]["label"]
-        && baseline["machine"]["profile"] == results["machine"]["profile"];
-    let mut mismatches = 0;
-    for r in results["results"].as_array().unwrap_or(&empty) {
-        let k = key(r);
-        let Some(b) = base.get(&k) else {
-            println!("{k}: not in the baseline");
-            continue;
-        };
-        if r["size"] != b["size"] {
-            return Err(format!("{k}: size {} against a {} baseline", r["size"], b["size"]));
+/// Validate the complete result set before comparing any measurements. A partial suite must
+/// never satisfy a full baseline, and malformed or duplicate rows must never disappear in a map.
+fn validated_rows(doc: &Value) -> Result<std::collections::BTreeMap<String, &Value>, String> {
+    let size = Size::parse(doc["size"].as_str().ok_or("missing suite size")?)?;
+    let rows = doc["results"].as_array().filter(|r| !r.is_empty()).ok_or("missing or empty results")?;
+    if !doc["machine"].is_object() {
+        return Err("missing machine metadata".into());
+    }
+    let mut indexed = std::collections::BTreeMap::new();
+    for r in rows {
+        let project = r["project"].as_str().ok_or("missing project")?;
+        let workload = r["workload"].as_str().ok_or("missing workload")?;
+        if !PROJECTS.contains(&project) || !WORKLOADS.contains(&workload) {
+            return Err(format!("unknown benchmark {project} {workload}"));
         }
+        let k = key(r);
+        if r["size"] != doc["size"] || r["iterations"].as_u64() != Some(size.iterations() as u64) {
+            return Err(format!("{k}: wrong size or iteration count"));
+        }
+        let times = r["timesNs"].as_array().ok_or_else(|| format!("{k}: missing timings"))?;
+        if times.len() != size.iterations() || times.iter().any(|t| t.as_u64().is_none()) {
+            return Err(format!("{k}: incomplete or invalid timings"));
+        }
+        for field in ["setupPeakKib", "peakKib"] {
+            if r.get(field).is_none_or(|v| !v.is_null() && v.as_u64().is_none()) {
+                return Err(format!("{k}: invalid {field}"));
+            }
+        }
+        let counts = r["counts"].as_object().ok_or_else(|| format!("{k}: missing counts"))?;
+        let mut numeric = vec!["pages", "devices", "drawings", "wires", "terminals", "nodes", "nets", "underlayPoints"];
+        match workload {
+            "open" => numeric.push("loadedDevices"),
+            "edit" => numeric.push("findings"),
+            "check" => numeric.extend(["findings", "errors"]),
+            "netlist" => numeric.push("unresolved"),
+            "render" => numeric.push("primitives"),
+            _ => {}
+        }
+        for field in numeric.iter().copied() {
+            if counts.get(field).and_then(Value::as_u64).is_none() {
+                return Err(format!("{k}: missing or invalid count {field}"));
+            }
+        }
+        let hash_ok = |field: &str| {
+            counts.get(field).and_then(Value::as_str).is_some_and(|s| {
+                s.strip_prefix("sha256:").is_some_and(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+            })
+        };
+        let valid_extra = match workload {
+            "save" => counts.get("saved").and_then(Value::as_bool) == Some(true),
+            "pdf" => counts.get("pdfNonEmpty").and_then(Value::as_bool) == Some(true),
+            "hash" => hash_ok("hash"),
+            _ => true,
+        };
+        let extra = usize::from(matches!(workload, "save" | "pdf" | "hash"));
+        if !hash_ok("contentHash") || !valid_extra || counts.len() != numeric.len() + 1 + extra {
+            return Err(format!("{k}: invalid count schema"));
+        }
+        if indexed.insert(k.clone(), r).is_some() {
+            return Err(format!("duplicate benchmark {k}"));
+        }
+    }
+    Ok(indexed)
+}
+
+fn compare(results: &Value, baseline: &Value) -> Result<ExitCode, String> {
+    let base = validated_rows(baseline)?;
+    let actual = validated_rows(results)?;
+    if baseline["size"] != results["size"] || base.keys().ne(actual.keys()) {
+        return Err("benchmark suite size or workload set differs from baseline".into());
+    }
+    let same_machine = baseline["machine"]["label"].is_string()
+        && ["label", "profile", "os", "arch", "cpu", "cores", "kernel", "governor", "onAc", "rustc"]
+            .iter()
+            .all(|field| baseline["machine"][*field] == results["machine"][*field]);
+    let mut mismatches = 0;
+    for (k, r) in actual {
+        let b = base.get(&k).ok_or_else(|| format!("{k}: missing baseline"))?;
         if r["counts"] != b["counts"] {
             mismatches += 1;
             println!("{k}: counts differ\n  got  {}\n  want {}", r["counts"], b["counts"]);
         }
-        if same_machine {
+        if same_machine && r["counts"] == b["counts"] {
             let t = |v: &Value| {
                 median(&v["timesNs"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect::<Vec<_>>())
             };
@@ -214,7 +275,7 @@ fn compare(results: &Value, baseline: &Value) -> Result<ExitCode, String> {
         }
     }
     if !same_machine {
-        println!("(times and memory not compared: the baseline comes from another machine or profile)");
+        println!("(times and memory not compared: machine conditions or toolchain differ)");
     }
     if mismatches > 0 {
         println!("{mismatches} workload(s) with different counts");
@@ -222,6 +283,42 @@ fn compare(results: &Value, baseline: &Value) -> Result<ExitCode, String> {
     }
     println!("counts match the baseline");
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod compare_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    #[test]
+    fn comparison_rejects_missing_extra_duplicate_and_malformed_results() {
+        let baseline: Value = serde_json::from_str(include_str!("../../../bench/baseline-smoke.json")).unwrap();
+        assert_eq!(compare(&baseline, &baseline).unwrap(), ExitCode::SUCCESS);
+        let mut empty = baseline.clone();
+        empty["results"] = json!([]);
+        assert!(compare(&empty, &baseline).is_err());
+        let mut missing = baseline.clone();
+        missing["results"].as_array_mut().unwrap().pop();
+        assert!(compare(&missing, &baseline).is_err());
+        let mut duplicate = baseline.clone();
+        let row = duplicate["results"][0].clone();
+        duplicate["results"].as_array_mut().unwrap().push(row);
+        assert!(compare(&duplicate, &baseline).is_err());
+        let mut unknown = baseline.clone();
+        unknown["results"][0]["workload"] = json!("unknown");
+        assert!(compare(&unknown, &baseline).is_err());
+        assert!(compare(&baseline, &missing).is_err());
+        let mut malformed = baseline.clone();
+        malformed["results"][0]["timesNs"] = json!([1]);
+        assert!(compare(&malformed, &baseline).is_err());
+        malformed = baseline.clone();
+        malformed["results"][0]["counts"] = json!({});
+        assert!(compare(&malformed, &baseline).is_err());
+        let mut changed = baseline.clone();
+        changed["results"][0]["counts"]["devices"] = json!(999);
+        assert_eq!(compare(&changed, &baseline).unwrap(), ExitCode::FAILURE);
+    }
 }
 
 /// Instructions executed by `run <project> <workload> --iterations <n>` under cachegrind.

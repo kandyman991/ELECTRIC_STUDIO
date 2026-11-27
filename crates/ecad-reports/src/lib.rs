@@ -11,6 +11,9 @@ pub struct WireListRow {
     pub from_point: String,
     pub to_tag: String,
     pub to_point: String,
+    /// Symbol point within a multi-point strip terminal; the printed designation stays separate.
+    pub from_terminal_point: String,
+    pub to_terminal_point: String,
     pub cross_section: String,
     pub colour: String,
     /// The cable's tag and the core, when the wire runs in a cable.
@@ -26,6 +29,16 @@ pub struct WireListRow {
     /// potential point or arrow standing for the one placed device on its potential, so the real
     /// route may differ; empty without a length.
     pub length_basis: String,
+}
+
+/// Preserve the printed number while identifying the actual point of a multi-point terminal.
+fn terminal_point(project: &Project, endpoint: &ecad_model::ConnectionRef) -> String {
+    project
+        .function(endpoint.function)
+        .and_then(|f| project.symbol(&f.symbol))
+        .ok()
+        .filter(|s| s.role == ecad_model::Role::Terminal && s.connection_points.len() > 2)
+        .map_or_else(String::new, |_| endpoint.point.clone())
 }
 
 /// One row per connection, sorted by wire number.
@@ -63,6 +76,8 @@ pub fn wire_list(project: &Project) -> Result<Vec<WireListRow>, ModelError> {
                 from_point,
                 to_tag,
                 to_point,
+                from_terminal_point: terminal_point(project, &c.from),
+                to_terminal_point: terminal_point(project, &c.to),
                 cross_section: c.spec.cross_section.clone(),
                 colour: c.spec.colour.clone(),
                 cable,
@@ -90,7 +105,7 @@ fn csv_field(s: &str) -> String {
 
 pub fn wire_list_csv(rows: &[WireListRow]) -> String {
     let mut out = String::from(
-        "wire,potential,from_device,from_point,to_device,to_point,cross_section,colour,cable,core,length_mm,route,length_basis\n",
+        "wire,potential,from_device,from_point,to_device,to_point,cross_section,colour,cable,core,length_mm,route,length_basis,from_terminal_point,to_terminal_point\n",
     );
     for r in rows {
         let fields = [
@@ -107,6 +122,8 @@ pub fn wire_list_csv(rows: &[WireListRow]) -> String {
             &r.length,
             &r.route,
             &r.length_basis,
+            &r.from_terminal_point,
+            &r.to_terminal_point,
         ];
         out += &fields.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(",");
         out.push('\n');
@@ -217,7 +234,7 @@ pub fn devices_without_parts_csv(rows: &[(String, String)]) -> String {
     out
 }
 
-/// One terminal in the terminal diagram.
+/// One row of a physical terminal; multi-point terminals list all explicitly bridged groups.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TerminalRow {
     pub strip: String,
@@ -229,6 +246,11 @@ pub struct TerminalRow {
     pub potential: String,
     /// Where the terminal is drawn, e.g. `1.6`.
     pub location: String,
+    /// Symbol points for multi-point terminals, separate from the printed designation.
+    pub inside_point: String,
+    pub outside_point: String,
+    /// All symbol points in this explicit bridge component (including unconnected points).
+    pub bridge_points: String,
 }
 
 /// Every terminal strip, sorted by tag, each in terminal order, with what both sides connect to.
@@ -241,39 +263,89 @@ pub fn terminal_diagram(project: &Project) -> Vec<TerminalRow> {
     for strip in strips {
         for t in project.terminals_of(strip.id) {
             let Ok(f) = project.function(t.function) else { continue };
-            let points: Vec<String> = project
-                .symbol(&f.symbol)
-                .map(|s| s.connection_points.iter().map(|cp| cp.name.clone()).collect())
-                .unwrap_or_default();
+            let Ok(symbol) = project.symbol(&f.symbol) else { continue };
+            let points: Vec<String> = symbol.connection_points.iter().map(|cp| cp.name.clone()).collect();
+            let multi = points.len() > 2;
             let far = |point: Option<&String>| -> String {
                 let Some(point) = point else { return String::new() };
                 let here = ecad_model::ConnectionRef::new(f.id, point);
                 let Some(c) = project.connection_at(&here) else { return String::new() };
                 let other = if c.from == here { &c.to } else { &c.from };
-                project.describe(other).map(|(tag, p)| format!("{tag}:{p}")).unwrap_or_default()
+                project.describe(other).map_or_else(
+                    |_| String::new(),
+                    |(tag, p)| {
+                        let point = terminal_point(project, other);
+                        if point.is_empty() { format!("{tag}:{p}") } else { format!("{tag}:{p}[{point}]") }
+                    },
+                )
             };
-            let first = points.first().map(|p| ecad_model::ConnectionRef::new(f.id, p));
-            let potential = first
-                .and_then(|r| potentials.iter().find(|p| p.points.contains(&r)))
-                .and_then(|p| p.name())
-                .unwrap_or_default();
-            rows.push(TerminalRow {
-                strip: strip.tag.clone(),
-                terminal: t.number.clone(),
-                inside: far(points.first()),
-                outside: far(points.get(1)),
-                potential,
-                location: t.location.clone(),
-            });
+            // Partition by explicit internal bridges, never by equal printed number or net name.
+            // Keep the existing two-point report convention for legacy terminal symbols.
+            let groups = if !multi || symbol.bridged {
+                vec![points]
+            } else {
+                let mut groups = Vec::new();
+                let mut remaining = points.clone();
+                while let Some(first) = remaining.first().cloned() {
+                    let mut group = std::collections::BTreeSet::from([first]);
+                    loop {
+                        let before = group.len();
+                        for bridge in &symbol.bridges {
+                            if bridge.iter().any(|point| group.contains(point)) {
+                                group.extend(bridge.iter().filter(|point| points.contains(point)).cloned());
+                            }
+                        }
+                        if before == group.len() {
+                            break;
+                        }
+                    }
+                    groups.push(points.iter().filter(|point| group.contains(*point)).cloned().collect());
+                    remaining.retain(|point| !group.contains(point));
+                }
+                groups
+            };
+            for group in groups {
+                let bridge_points = if multi { group.join("|") } else { String::new() };
+                // More than two points in one bridge component use additional rows, with the
+                // same bridge identity; no wired point is discarded.
+                for pair in group.chunks(2) {
+                    let first = pair.first().map(|p| ecad_model::ConnectionRef::new(f.id, p));
+                    let potential = first
+                        .and_then(|r| potentials.iter().find(|p| p.points.contains(&r)))
+                        .and_then(|p| p.name())
+                        .unwrap_or_default();
+                    rows.push(TerminalRow {
+                        strip: strip.tag.clone(),
+                        terminal: t.number.clone(),
+                        inside: far(pair.first()),
+                        outside: far(pair.get(1)),
+                        potential,
+                        location: t.location.clone(),
+                        inside_point: if multi { pair.first().cloned().unwrap_or_default() } else { String::new() },
+                        outside_point: if multi { pair.get(1).cloned().unwrap_or_default() } else { String::new() },
+                        bridge_points: bridge_points.clone(),
+                    });
+                }
+            }
         }
     }
     rows
 }
 
 pub fn terminal_diagram_csv(rows: &[TerminalRow]) -> String {
-    let mut out = String::from("strip,terminal,inside,outside,potential,location\n");
+    let mut out = String::from("strip,terminal,inside,outside,potential,location,inside_point,outside_point,bridge_points\n");
     for r in rows {
-        let fields = [&r.strip, &r.terminal, &r.inside, &r.outside, &r.potential, &r.location];
+        let fields = [
+            &r.strip,
+            &r.terminal,
+            &r.inside,
+            &r.outside,
+            &r.potential,
+            &r.location,
+            &r.inside_point,
+            &r.outside_point,
+            &r.bridge_points,
+        ];
         out += &fields.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(",");
         out.push('\n');
     }
@@ -691,10 +763,10 @@ mod tests {
         let csv = wire_list_csv(&wire_list(&start_circuit().unwrap()).unwrap());
         assert_eq!(
             csv,
-            "wire,potential,from_device,from_point,to_device,to_point,cross_section,colour,cable,core,length_mm,route,length_basis\n\
-             W1,L+,L+,1,-S1,13,,,,,,,\n\
-             W2,,-S1,14,-K1,A1,,,,,,,\n\
-             W3,M,-K1,A2,M,1,,,,,,,\n"
+            "wire,potential,from_device,from_point,to_device,to_point,cross_section,colour,cable,core,length_mm,route,length_basis,from_terminal_point,to_terminal_point\n\
+             W1,L+,L+,1,-S1,13,,,,,,,,,\n\
+             W2,,-S1,14,-K1,A1,,,,,,,,,\n\
+             W3,M,-K1,A2,M,1,,,,,,,,,\n"
         );
     }
 
@@ -767,9 +839,9 @@ mod tests {
         assert_eq!(
             csv,
             format!(
-                "strip,terminal,inside,outside,potential,location\n\
-                 -X2,1,L+:1,-S1:13,L+,1.{}\n\
-                 -X2,2,-S1:14,-K1:A1,,1.{}\n",
+                "strip,terminal,inside,outside,potential,location,inside_point,outside_point,bridge_points\n\
+                 -X2,1,L+:1,-S1:13,L+,1.{},,,\n\
+                 -X2,2,-S1:14,-K1:A1,,1.{},,,\n",
                 col(ecad_model::sample::X2_1),
                 col(ecad_model::sample::X2_2)
             )
