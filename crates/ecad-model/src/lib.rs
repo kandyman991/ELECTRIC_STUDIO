@@ -5,6 +5,7 @@
 
 pub mod connectivity;
 pub mod content_hash;
+pub mod finite;
 pub mod geometry;
 pub mod history;
 pub mod layout;

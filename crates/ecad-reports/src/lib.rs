@@ -542,10 +542,24 @@ pub const REPORTS: [&str; 10] = [
 /// The netlist: every endpoint of every net, with what it is and where it is drawn. One row per
 /// endpoint; a net's number is its place in the list (named nets first). Not part of the
 /// exported set: it is for checking the derived connectivity (`ecad report <dir> netlist`).
-pub fn netlist_csv(project: &Project) -> String {
+///
+/// An incomplete netlist (a wire ending on a point its symbol no longer has) is refused rather
+/// than listed as if it were complete; `ecad check` names the wires.
+pub fn netlist_csv(project: &Project) -> Result<String, ModelError> {
     use ecad_model::connectivity::{Endpoint, NodeKind, TerminalKind};
     let c = project.connectivity();
     let netlist = project.netlist();
+    if !netlist.is_complete() {
+        let ends: Vec<String> = netlist
+            .unresolved
+            .iter()
+            .map(|u| {
+                let tag = project.function(u.end.function).ok().and_then(|f| project.device(f.device).ok());
+                format!("{}:{}", tag.map(|d| d.tag.clone()).unwrap_or_default(), u.end.point)
+            })
+            .collect();
+        return Err(ModelError::IncompleteNetlist(ends.join(", ")));
+    }
     let mut out = String::from("net,name,endpoint,kind,device,group,point,designation,drawn_at\n");
     let tag = |d: ecad_model::DeviceId| project.device(d).map(|d| d.tag.clone()).unwrap_or_default();
     for (i, net) in netlist.nets.iter().enumerate() {
@@ -559,7 +573,7 @@ pub fn netlist_csv(project: &Project) -> String {
                         TerminalKind::Strip => "strip terminal".to_owned(),
                         TerminalKind::PlcChannel(ch) => format!("PLC {}", ch.kind.short()),
                     };
-                    (t.id.0, kind, tag(t.device), t.group.clone(), t.point.clone(), t.designation.clone())
+                    (t.id.0, kind, tag(t.device), t.group.0.to_string(), t.point.clone(), t.designation.clone())
                 }
                 Endpoint::Node(n) => {
                     let Some(n) = c.nodes.get(n) else { continue };
@@ -589,7 +603,7 @@ pub fn netlist_csv(project: &Project) -> String {
             out.push('\n');
         }
     }
-    out
+    Ok(out)
 }
 
 /// One report as CSV, by name (see [`REPORTS`]); `None` for an unknown name. A report with no
@@ -605,7 +619,7 @@ pub fn csv(project: &Project, name: &str) -> Result<Option<String>, ModelError> 
         "devices-without-parts" => devices_without_parts_csv(&devices_without_parts(project)),
         "panel-cut-list" => panel_cut_list_csv(&panel_cut_list(project)),
         "wire-totals" => wire_totals_csv(&wire_totals(project)),
-        "netlist" => netlist_csv(project),
+        "netlist" => netlist_csv(project)?,
         _ => return Ok(None),
     }))
 }
@@ -865,21 +879,30 @@ mod tests {
     #[test]
     fn the_netlist_lists_every_endpoint_of_every_net() {
         let p = ecad_model::sample::with_terminals().unwrap();
-        let text = super::netlist_csv(&p);
+        let text = super::netlist_csv(&p).unwrap();
         let rows: Vec<Vec<&str>> = text.lines().skip(1).map(|l| l.split(',').collect()).collect();
         let endpoints: usize = p.netlist().nets.iter().map(|n| n.endpoints.len()).sum();
         assert_eq!(rows.len(), endpoints);
         assert!(text.starts_with("net,name,endpoint,kind,device,group,point,designation,drawn_at\n"));
-        // Both sides of -X2:1, as one group with two points.
-        let x2: Vec<&Vec<&str>> = rows.iter().filter(|r| r[4] == "-X2" && r[5] == "1").collect();
+        // Both sides of -X2:1: one group, two points, one printed number.
+        let x2: Vec<&Vec<&str>> = rows.iter().filter(|r| r[4] == "-X2" && r[7] == "1").collect();
         assert_eq!(x2.len(), 2, "{text}");
-        assert!(x2.iter().all(|r| r[3] == "strip terminal" && r[7] == "1"));
+        assert!(x2.iter().all(|r| r[3] == "strip terminal" && r[5] == x2[0][5]));
         let mut sides: Vec<&str> = x2.iter().map(|r| r[6]).collect();
         sides.sort();
         assert_eq!(sides, ["1", "2"]);
-        // Named nets first; L+ is a potential node.
         assert!(rows[0][1] == "L+" || rows[0][1] == "M", "{text}");
         assert!(rows.iter().any(|r| r[3] == "potential" && r[7] == "L+"));
         assert_eq!(super::csv(&p, "netlist").unwrap().as_deref(), Some(text.as_str()));
+    }
+
+    #[test]
+    fn an_incomplete_netlist_is_refused_not_listed() {
+        let mut p = ecad_model::sample::start_circuit().unwrap();
+        let mut coil = p.symbol(&ecad_model::SymbolId::new("iec.coil")).unwrap().clone();
+        coil.connection_points.retain(|cp| cp.name != "A2");
+        p.add_symbol(coil);
+        let e = super::csv(&p, "netlist").unwrap_err().to_string();
+        assert!(e.contains("-K1:A2"), "{e}");
     }
 }

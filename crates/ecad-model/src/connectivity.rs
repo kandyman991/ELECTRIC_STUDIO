@@ -5,8 +5,9 @@
 //! format 2 (M10) will store (docs/PLATFORM-ARCHITECTURE.md section 4.5):
 //!
 //! - a [`Terminal`] for each physical connection point of a device, with a deterministic
-//!   [`TerminalId`], its physical group (a strip terminal by its number, a device terminal by its
-//!   designation), its point within the group (the strip side or level) and its kind;
+//!   [`TerminalId`], its physical group ([`GroupId`]: a numbered drawing such as a strip
+//!   terminal, or the point alone), its printed designation, its point within the group (the
+//!   strip side or level) and its kind;
 //! - a [`Node`] for each logical connection point with no physical terminal: a junction, a named
 //!   potential, an interruption;
 //! - explicit [`Bridge`]s inside a device (the two sides of a strip terminal, a black box's
@@ -44,6 +45,13 @@ pub struct TerminalId(pub Uuid);
 #[serde(transparent)]
 pub struct NodeId(pub Uuid);
 
+/// A physical terminal: the group a terminal's points belong to (a strip terminal's sides and
+/// levels). Derived from the drawing, not from the printed designation, so renumbering a
+/// terminal never changes which group its points are in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct GroupId(pub Uuid);
+
 /// One end of a wire: a terminal or a node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(tag = "type", content = "id", rename_all = "camelCase")]
@@ -80,10 +88,11 @@ pub struct PlcChannel {
 pub struct Terminal {
     pub id: TerminalId,
     pub device: DeviceId,
-    /// The physical terminal this point belongs to: a strip terminal by its number, a device
-    /// terminal by its designation. Points of one group share the printed designation.
-    pub group: String,
-    /// The printed designation.
+    /// The physical terminal this point belongs to. A numbered drawing (a strip terminal, a
+    /// PLC channel) is one group with a point per side or level; any other drawn point is a
+    /// group of its own. Not the printed designation, which can change.
+    pub group: GroupId,
+    /// The printed designation: shared by the points of one group.
     pub designation: String,
     /// The point within the group: the side or level of a strip terminal (the symbol's point
     /// name); empty for an ordinary device terminal.
@@ -128,10 +137,15 @@ pub struct Bridge {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Ambiguity {
-    /// Different drawn points of one device print the same designation: a coil drawn twice, or
-    /// two contacts both numbered 13. Format 1 can't tell which, so they are kept as separate
-    /// terminals until a person reconciles them.
-    SharedDesignation { device: DeviceId, designation: String, terminals: Vec<TerminalId> },
+    /// Different physical groups of one device print the same designation: a coil drawn twice,
+    /// two contacts both numbered 13, two strip drawings numbered alike. Format 1 can't tell
+    /// which, so they are kept as separate terminals until a person reconciles them. Lists
+    /// every group and every terminal involved.
+    SharedDesignation { device: DeviceId, designation: String, groups: Vec<GroupId>, terminals: Vec<TerminalId> },
+    /// A device drawn both as a potential point and as an interruption point. Its drawings stay
+    /// one node, as before (named, as a potential), so no net is split or renamed; M10 must
+    /// decide what it is.
+    MixedLogicalRoles { device: DeviceId, node: NodeId },
     /// A junction device drawn more than once: each drawing is its own junction.
     JunctionDrawnTwice { device: DeviceId, nodes: Vec<NodeId> },
 }
@@ -171,9 +185,10 @@ impl Project {
     /// Terminals, nodes and bridges, derived from the drawings.
     pub fn connectivity(&self) -> Connectivity {
         let mut c = Connectivity::default();
-        // Physical points by (device, group, point key), to find points that share a designation.
-        let mut physical: BTreeMap<(DeviceId, String, String), TerminalId> = BTreeMap::new();
-        let mut shared: BTreeMap<(DeviceId, String), Vec<TerminalId>> = BTreeMap::new();
+        // Groups by (device, designation), to find designations printed by more than one group.
+        let mut by_designation: BTreeMap<(DeviceId, String), BTreeMap<GroupId, Vec<TerminalId>>> = BTreeMap::new();
+        // Logical roles each device is drawn with: potential, interruption.
+        let mut logical_roles: BTreeMap<DeviceId, (bool, bool)> = BTreeMap::new();
         let mut junctions: BTreeMap<DeviceId, Vec<NodeId>> = BTreeMap::new();
 
         // Functions in id order, points in symbol order, so ambiguities list in a stable order.
@@ -184,10 +199,16 @@ impl Project {
 
             if sym.role.joins_drawings() {
                 let id = NodeId(v5(&format!("node/{}", f.device.0)));
-                let kind = if sym.role == Role::Potential { NodeKind::Potential } else { NodeKind::Interruption };
+                let roles = logical_roles.entry(f.device).or_default();
+                if sym.role == Role::Potential {
+                    roles.0 = true;
+                } else {
+                    roles.1 = true;
+                }
+                // The kind is settled below from all its drawings, whatever their order.
                 let node = c.nodes.entry(id).or_insert_with(|| Node {
                     id,
-                    kind,
+                    kind: NodeKind::Interruption,
                     name: device.tag.clone(),
                     scope: "project".into(),
                     device: f.device,
@@ -221,29 +242,19 @@ impl Project {
             }
 
             let numbered = sym.role.numbered();
-            let number = if numbered { self.drawing_number(f.id) } else { None };
+            let drawing_group = GroupId(v5(&format!("group/drawing/{}", f.id.0)));
             let mut mine: Vec<(String, TerminalId)> = Vec::new();
             for cp in &sym.connection_points {
                 let designation = f.designation(&cp.name).to_owned();
-                let (group, point) = match &number {
-                    Some(n) => (n.clone(), cp.name.clone()),
-                    None => (designation.clone(), String::new()),
-                };
-                let key = (f.device, group.clone(), point.clone());
                 let id = TerminalId(v5(&format!("terminal/{}/{}", f.id.0, cp.name)));
-                match physical.get(&key) {
-                    Some(first) => {
-                        // Another point of this device prints the same designation: kept apart.
-                        let list = shared.entry((f.device, designation.clone())).or_default();
-                        if list.is_empty() {
-                            list.push(*first);
-                        }
-                        list.push(id);
-                    }
-                    None => {
-                        physical.insert(key, id);
-                    }
-                }
+                // A numbered drawing is one physical terminal with a point per side or level;
+                // any other point is its own.
+                let (group, point) = if numbered {
+                    (drawing_group, cp.name.clone())
+                } else {
+                    (GroupId(v5(&format!("group/terminal/{}", id.0))), String::new())
+                };
+                by_designation.entry((f.device, designation.clone())).or_default().entry(group).or_default().push(id);
                 let kind = match sym.role {
                     Role::Terminal => TerminalKind::Strip,
                     Role::PlcChannel { kind } => {
@@ -289,8 +300,22 @@ impl Project {
         }
         c.bridges.sort();
         c.bridges.dedup();
-        for ((device, designation), terminals) in shared {
-            c.ambiguities.push(Ambiguity::SharedDesignation { device, designation, terminals });
+        for (device, (potential, interruption)) in logical_roles {
+            let id = NodeId(v5(&format!("node/{}", device.0)));
+            if let Some(node) = c.nodes.get_mut(&id) {
+                // As before M7a: drawn as a potential point anywhere, it names its net.
+                node.kind = if potential { NodeKind::Potential } else { NodeKind::Interruption };
+            }
+            if potential && interruption {
+                c.ambiguities.push(Ambiguity::MixedLogicalRoles { device, node: id });
+            }
+        }
+        for ((device, designation), groups) in by_designation {
+            if groups.len() > 1 {
+                let terminals = groups.values().flatten().copied().collect();
+                let groups = groups.into_keys().collect();
+                c.ambiguities.push(Ambiguity::SharedDesignation { device, designation, groups, terminals });
+            }
         }
         for (device, nodes) in junctions {
             if nodes.len() > 1 {
@@ -317,12 +342,26 @@ pub struct Net {
     pub wires: Vec<ConnectionId>,
 }
 
-/// Every net with a wire or a name, and the wires whose ends couldn't be resolved.
+/// A wire end on a point that doesn't exist (the symbol was changed underneath it).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct UnresolvedEnd {
+    pub wire: ConnectionId,
+    pub end: ConnectionRef,
+}
+
+/// Every net with a wire or a name, and the wire ends that couldn't be resolved. A wire with an
+/// unresolved end is on no net: the netlist is then incomplete, and says so.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Netlist {
     pub nets: Vec<Net>,
-    /// Wires with an end on a point that no longer exists (a symbol changed underneath).
-    pub unresolved: Vec<ConnectionId>,
+    pub unresolved: Vec<UnresolvedEnd>,
+}
+
+impl Netlist {
+    /// Whether every wire end resolved.
+    pub fn is_complete(&self) -> bool {
+        self.unresolved.is_empty()
+    }
 }
 
 /// Union-find over indices.
@@ -352,12 +391,16 @@ pub(crate) fn netlist_of(project: &Project, c: &Connectivity) -> Netlist {
     let mut unresolved = Vec::new();
     let mut wire_at: Vec<(ConnectionId, usize)> = Vec::new();
     for w in project.connections.values() {
-        match (c.endpoint(&w.from).and_then(|e| index.get(&e)), c.endpoint(&w.to).and_then(|e| index.get(&e))) {
-            (Some(&a), Some(&b)) => {
-                sets.join(a, b);
-                wire_at.push((w.id, a));
+        let a = c.endpoint(&w.from).and_then(|e| index.get(&e)).copied();
+        let b = c.endpoint(&w.to).and_then(|e| index.get(&e)).copied();
+        if let (Some(a), Some(b)) = (a, b) {
+            sets.join(a, b);
+            wire_at.push((w.id, a));
+        }
+        for (end, at) in [(&w.from, a), (&w.to, b)] {
+            if at.is_none() {
+                unresolved.push(UnresolvedEnd { wire: w.id, end: end.clone() });
             }
-            _ => unresolved.push(w.id),
         }
     }
     for b in &c.bridges {
@@ -403,7 +446,6 @@ pub(crate) fn netlist_of(project: &Project, c: &Connectivity) -> Netlist {
         (None, Some(_)) => std::cmp::Ordering::Greater,
         (None, None) => a.endpoints.cmp(&b.endpoints),
     });
-    unresolved.sort();
     Netlist { nets, unresolved }
 }
 
@@ -413,8 +455,8 @@ mod tests {
     use crate::sample;
     use crate::*;
 
-    fn place(p: &mut Project, device: DeviceId, symbol: &str, x: f64, designations: &[(&str, &str)]) -> FunctionId {
-        let f = Function {
+    fn function(device: DeviceId, symbol: &str, x: f64, designations: &[(&str, &str)]) -> Function {
+        Function {
             id: FunctionId::new(),
             device,
             symbol: SymbolId::new(symbol),
@@ -424,15 +466,25 @@ mod tests {
             mirrored: false,
             designations: designations.iter().map(|(a, b)| ((*a).to_owned(), (*b).to_owned())).collect(),
             properties: Default::default(),
-        };
+        }
+    }
+
+    fn place(p: &mut Project, device: DeviceId, symbol: &str, x: f64, designations: &[(&str, &str)]) -> FunctionId {
+        let f = function(device, symbol, x, designations);
         let id = f.id;
         p.place(f).unwrap();
         id
     }
 
-    #[test]
-    fn every_wire_end_is_a_terminal_or_a_node_with_the_same_ids_every_time() {
-        let all = [
+    fn terminal(c: &Connectivity, f: FunctionId, point: &str) -> TerminalId {
+        match c.endpoint(&ConnectionRef::new(f, point)) {
+            Some(Endpoint::Terminal(t)) => t,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn all_samples() -> Vec<Project> {
+        [
             sample::start_circuit(),
             sample::with_contacts(),
             sample::with_potentials(),
@@ -441,14 +493,20 @@ mod tests {
             sample::with_power(),
             sample::library_overview(),
             crate::reference::reference_project(),
-        ];
-        for p in all {
-            let p = p.unwrap();
+        ]
+        .into_iter()
+        .map(|p| p.unwrap())
+        .collect()
+    }
+
+    #[test]
+    fn every_wire_end_is_a_terminal_or_a_node_with_the_same_ids_every_time() {
+        for p in all_samples() {
             let c = p.connectivity();
             for w in p.connections.values() {
                 assert!(c.endpoint(&w.from).is_some() && c.endpoint(&w.to).is_some(), "{}: {:?}", p.name, w.id);
             }
-            assert!(p.netlist().unresolved.is_empty(), "{}", p.name);
+            assert!(p.netlist().is_complete(), "{}", p.name);
             assert_eq!(c, p.clone().connectivity(), "{}: deterministic", p.name);
             assert!(c.ambiguities.is_empty(), "{}: {:?}", p.name, c.ambiguities);
         }
@@ -466,10 +524,59 @@ mod tests {
         assert_eq!((i1.kind, i1.drawings.len()), (NodeKind::Interruption, 2));
         let j = c.endpoint(&ConnectionRef::new(sample::JUNCTION_1, "1")).unwrap();
         assert!(matches!(j, Endpoint::Node(n) if c.nodes[&n].kind == NodeKind::Junction));
-        // Every point of the junction is the one node.
         let sym = p.symbol(&SymbolId::new("iec.junction")).unwrap();
         for cp in &sym.connection_points {
             assert_eq!(c.endpoint(&ConnectionRef::new(sample::JUNCTION_1, &cp.name)), Some(j));
+        }
+    }
+
+    /// A device drawn as both a potential point and an interruption point (the model allows
+    /// it): one node, named as a potential whichever drawing sorts first, its net kept whole and
+    /// still clashing with another named potential, and reported for M10.
+    #[test]
+    fn a_device_drawn_as_potential_and_interruption_keeps_its_name_in_either_order() {
+        for interruption_first in [true, false] {
+            let mut p = sample::start_circuit().unwrap();
+            let l_plus = DeviceId::from_u128(0x101);
+            let existing = p.functions_of(l_plus).next().unwrap().id;
+            // An interruption drawing of L+ whose id sorts before or after the potential's.
+            let id = if interruption_first { FunctionId::from_u128(0x1) } else { FunctionId::from_u128(0xffff) };
+            assert_eq!(id < existing, interruption_first);
+            let f = Function { id, ..function(l_plus, "iec.interruption", 100.0, &[]) };
+            p.place(f).unwrap();
+            // Wire the interruption drawing to M: L+ is now shorted to M.
+            let m = p.functions_of(DeviceId::from_u128(0x104)).next().unwrap().id;
+            let m_point = ConnectionRef::new(m, "1");
+            if let Some(old) = p.connection_at(&m_point).map(|c| c.id) {
+                p.apply(Command::Disconnect(old)).unwrap();
+            }
+            p.apply(Command::Connect(Connection {
+                id: ConnectionId::new(),
+                from: ConnectionRef::new(id, "1"),
+                to: m_point,
+                wire_number: None,
+                spec: Default::default(),
+                bend: None,
+            }))
+            .unwrap();
+            let c = p.connectivity();
+            let node = c.nodes.values().find(|n| n.device == l_plus).unwrap();
+            assert_eq!((node.kind, node.name.as_str(), node.drawings.len()), (NodeKind::Potential, "L+", 2));
+            assert!(
+                c.ambiguities
+                    .iter()
+                    .any(|a| matches!(a, Ambiguity::MixedLogicalRoles { device, .. } if *device == l_plus))
+            );
+            let clash: Vec<Net> = p.netlist().nets.into_iter().filter(|n| n.names.len() > 1).collect();
+            assert_eq!(clash.len(), 1, "order {interruption_first}");
+            assert_eq!(clash[0].names, ["L+", "M"]);
+            // Exactly as before M7a.
+            let names = |v: Vec<crate::Potential>| {
+                let mut n: Vec<Vec<String>> = v.into_iter().map(|p| p.names).collect();
+                n.sort();
+                n
+            };
+            assert_eq!(names(p.potentials()), names(p.potentials_legacy()));
         }
     }
 
@@ -477,20 +584,31 @@ mod tests {
     fn a_strip_terminal_is_one_group_with_two_sides_bridged_explicitly() {
         let p = sample::with_terminals().unwrap();
         let c = p.connectivity();
-        let a = c.endpoint(&ConnectionRef::new(sample::X2_1, "1")).unwrap();
-        let b = c.endpoint(&ConnectionRef::new(sample::X2_1, "2")).unwrap();
-        let (Endpoint::Terminal(a), Endpoint::Terminal(b)) = (a, b) else { panic!("terminals") };
+        let (a, b) = (terminal(&c, sample::X2_1, "1"), terminal(&c, sample::X2_1, "2"));
         assert_ne!(a, b, "each side is its own connection point");
         let (ta, tb) = (&c.terminals[&a], &c.terminals[&b]);
-        assert_eq!((ta.group.as_str(), ta.designation.as_str()), ("1", "1"));
-        assert_eq!((tb.group.as_str(), tb.designation.as_str()), ("1", "1"), "both sides print the same number");
+        assert_eq!(ta.group, tb.group, "one physical terminal");
+        assert_eq!((ta.designation.as_str(), tb.designation.as_str()), ("1", "1"), "both sides print one number");
         assert_eq!((ta.point.as_str(), tb.point.as_str()), ("1", "2"));
         assert_eq!(ta.kind, TerminalKind::Strip);
         assert!(c.bridges.contains(&Bridge { a: a.min(b), b: a.max(b) }));
-        // The next terminal on the strip is a different group, not bridged to the first.
-        let Some(Endpoint::Terminal(other)) = c.endpoint(&ConnectionRef::new(sample::X2_2, "1")) else { panic!() };
+        let other = terminal(&c, sample::X2_2, "1");
         assert_ne!(c.terminals[&other].group, ta.group);
         assert!(!c.bridges.iter().any(|x| [x.a, x.b].contains(&a) && [x.a, x.b].contains(&other)));
+    }
+
+    #[test]
+    fn renumbering_a_terminal_keeps_its_group_and_its_ids() {
+        let mut p = sample::with_terminals().unwrap();
+        let before = p.connectivity();
+        let (a, b) = (terminal(&before, sample::X2_1, "1"), terminal(&before, sample::X2_1, "2"));
+        let renumbered = [("1".to_owned(), "41".to_owned()), ("2".to_owned(), "41".to_owned())].into();
+        p.apply(Command::SetDesignations { id: sample::X2_1, designations: renumbered }).unwrap();
+        let after = p.connectivity();
+        assert_eq!((terminal(&after, sample::X2_1, "1"), terminal(&after, sample::X2_1, "2")), (a, b));
+        assert_eq!(after.terminals[&a].group, before.terminals[&a].group);
+        assert_eq!(after.terminals[&a].designation, "41");
+        assert_eq!(p.netlist().nets.len(), sample::with_terminals().unwrap().netlist().nets.len());
     }
 
     #[test]
@@ -511,51 +629,97 @@ mod tests {
         let n = [("1a", "4"), ("1b", "4"), ("2a", "4"), ("2b", "4")];
         let f = place(&mut p, strip, "test.terminal_2level", 0.0, &n);
         let c = p.connectivity();
-        let t = |pt: &str| match c.endpoint(&ConnectionRef::new(f, pt)) {
-            Some(Endpoint::Terminal(t)) => t,
-            other => panic!("{other:?}"),
-        };
-        let ids = [t("1a"), t("1b"), t("2a"), t("2b")];
-        assert!(ids.iter().all(|i| c.terminals[i].group == "4"), "one physical terminal");
+        let ids = [terminal(&c, f, "1a"), terminal(&c, f, "1b"), terminal(&c, f, "2a"), terminal(&c, f, "2b")];
+        assert!(ids.iter().all(|i| c.terminals[i].group == c.terminals[&ids[0]].group), "one physical terminal");
         let bridged = |x: TerminalId, y: TerminalId| c.bridges.contains(&Bridge { a: x.min(y), b: x.max(y) });
         assert!(bridged(ids[0], ids[1]) && bridged(ids[2], ids[3]));
         assert!(!bridged(ids[0], ids[2]) && !bridged(ids[1], ids[3]), "levels isolated");
-        assert!(c.ambiguities.is_empty(), "points of one group may share the number: {:?}", c.ambiguities);
+        assert!(c.ambiguities.is_empty(), "points of one group share the number: {:?}", c.ambiguities);
     }
 
     #[test]
-    fn a_shared_number_on_a_device_is_kept_apart_and_reported() {
+    fn a_shared_designation_is_kept_apart_and_reported_with_every_point() {
         let mut p = sample::with_contacts().unwrap();
         let k1 = DeviceId::from_u128(0x103);
         let before = p.connectivity().terminals.len();
-        // The coil drawn a second time: format 1 can't prove it's the same coil, so its points
-        // are new terminals, reported for reconciliation rather than merged.
         let again = place(&mut p, k1, "iec.coil", 60.0, &[]);
         let c = p.connectivity();
-        assert_eq!(c.terminals.len(), before + 2);
-        assert_ne!(
-            c.endpoint(&ConnectionRef::new(again, "A1")),
-            c.endpoint(&ConnectionRef::new(sample::K1_COIL, "A1"))
-        );
-        let shared: Vec<&str> = c
+        assert_eq!(c.terminals.len(), before + 2, "not merged");
+        assert_ne!(terminal(&c, again, "A1"), terminal(&c, sample::K1_COIL, "A1"));
+        let shared: Vec<(&str, usize, usize)> = c
             .ambiguities
             .iter()
             .filter_map(|a| match a {
-                Ambiguity::SharedDesignation { device, designation, terminals } if *device == k1 => {
-                    assert_eq!(terminals.len(), 2);
-                    Some(designation.as_str())
+                Ambiguity::SharedDesignation { device, designation, groups, terminals } if *device == k1 => {
+                    Some((designation.as_str(), groups.len(), terminals.len()))
                 }
                 _ => None,
             })
             .collect();
-        assert_eq!(shared, ["A1", "A2"]);
-        // The netlist doesn't join them either: the second coil's A1 is on no net yet.
+        assert_eq!(shared, [("A1", 2, 2), ("A2", 2, 2)]);
         let net_of = |r: ConnectionRef| {
             let e = c.endpoint(&r).unwrap();
             p.netlist().nets.into_iter().position(|n| n.endpoints.contains(&e))
         };
         assert!(net_of(ConnectionRef::new(sample::K1_COIL, "A1")).is_some());
         assert_eq!(net_of(ConnectionRef::new(again, "A1")), None);
+    }
+
+    /// Two numbered drawings on one strip with the same number. The model's commands refuse
+    /// this, but it is detected however it arises, with every point of both, whether their point
+    /// names are disjoint or the same.
+    #[test]
+    fn numbered_drawings_sharing_a_number_are_reported_with_all_their_points() {
+        for second in ["test.terminal_ab", "iec.terminal"] {
+            let mut p = sample::with_terminals().unwrap();
+            let mut ab = p.symbol(&SymbolId::new("iec.terminal")).unwrap().clone();
+            ab.id = SymbolId::new("test.terminal_ab");
+            for (cp, n) in ab.connection_points.iter_mut().zip(["a", "b"]) {
+                cp.name = n.into();
+            }
+            p.add_symbol(ab);
+            let strip = p.function(sample::X2_1).unwrap().device;
+            let number = p.drawing_number(sample::X2_1).unwrap();
+            let points: Vec<String> =
+                p.symbol(&SymbolId::new(second)).unwrap().connection_points.iter().map(|c| c.name.clone()).collect();
+            let designations: Vec<(&str, &str)> = points.iter().map(|n| (n.as_str(), number.as_str())).collect();
+            // Behind the commands' back, as no command allows it.
+            let f = function(strip, second, 200.0, &designations);
+            p.functions.insert(f.id, f);
+            let c = p.connectivity();
+            let found: Vec<(usize, usize)> = c
+                .ambiguities
+                .iter()
+                .filter_map(|a| match a {
+                    Ambiguity::SharedDesignation { device, groups, terminals, .. } if *device == strip => {
+                        Some((groups.len(), terminals.len()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(found, [(2, 4)], "{second}: both groups, all four points");
+        }
+        // Through the commands, reassigning a numbered drawing onto a number already taken is
+        // refused, as placing it is.
+        let mut p = sample::with_terminals().unwrap();
+        let strip = p.function(sample::X2_1).unwrap().device;
+        let n = p.drawing_number(sample::X2_1).unwrap();
+        let taken = [("1".to_owned(), n.clone()), ("2".to_owned(), n)].into();
+        let r = p.apply(Command::Reassign { id: sample::X2_2, device: strip, designations: taken });
+        assert!(matches!(r, Err(ModelError::DuplicateNumber(..))), "{r:?}");
+    }
+
+    #[test]
+    fn a_wire_end_lost_to_a_symbol_change_makes_the_netlist_incomplete() {
+        let mut p = sample::start_circuit().unwrap();
+        let mut coil = p.symbol(&SymbolId::new("iec.coil")).unwrap().clone();
+        coil.connection_points.retain(|cp| cp.name != "A2");
+        p.add_symbol(coil);
+        let n = p.netlist();
+        assert!(!n.is_complete());
+        assert_eq!(n.unresolved.len(), 1);
+        assert_eq!((n.unresolved[0].end.function, n.unresolved[0].end.point.as_str()), (sample::K1_COIL, "A2"));
+        assert!(!n.nets.iter().any(|net| net.wires.contains(&n.unresolved[0].wire)), "on no net");
     }
 
     #[test]
@@ -576,28 +740,17 @@ mod tests {
         props.insert(ADDRESS.into(), "%i0.0".into());
         p.apply(Command::SetProperties { id: sample::KF1_DI0, properties: props }).unwrap();
         let c = p.connectivity();
-        let channels: Vec<&PlcChannel> = c
-            .terminals
-            .values()
-            .filter(|t| t.device == sample::KF1)
-            .filter_map(|t| match &t.kind {
-                TerminalKind::PlcChannel(ch) => Some(ch),
-                _ => None,
-            })
-            .collect();
-        assert!(!channels.is_empty());
-        let di0 = c
-            .terminals
-            .values()
-            .find(|t| t.drawings.iter().any(|r| r.function == sample::KF1_DI0))
-            .and_then(|t| match &t.kind {
-                TerminalKind::PlcChannel(ch) => Some(ch.clone()),
-                _ => None,
-            })
-            .unwrap();
+        let t = &c.terminals[&terminal(&c, sample::KF1_DI0, first_point(&p, sample::KF1_DI0))];
+        let TerminalKind::PlcChannel(ch) = &t.kind else { panic!("{:?}", t.kind) };
         assert_eq!(
-            (di0.kind, di0.address_text.as_str(), di0.address.as_deref()),
+            (ch.kind, ch.address_text.as_str(), ch.address.as_deref()),
             (IoKind::DigitalIn, "%i0.0", Some("I0.0"))
         );
+        assert_eq!(t.device, sample::KF1);
+    }
+
+    fn first_point(p: &Project, f: FunctionId) -> &str {
+        let sym = p.symbol(&p.function(f).unwrap().symbol).unwrap();
+        &sym.connection_points[0].name
     }
 }

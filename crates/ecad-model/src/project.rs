@@ -237,6 +237,11 @@ pub struct Cable {
     pub shielded: bool,
 }
 
+/// Refuse a value carrying a NaN or infinite number (a coordinate, a size).
+fn finite<T: Serialize>(value: &T) -> Result<()> {
+    crate::finite::check(value).map_err(|e| ModelError::NotFinite(e.0))
+}
+
 /// Compare terminal numbers naturally: numbers as numbers, then text.
 fn natural(a: &str, b: &str) -> std::cmp::Ordering {
     match (a.parse::<u64>(), b.parse::<u64>()) {
@@ -515,6 +520,10 @@ pub enum ModelError {
     EmptyPartNumber,
     #[error("can't compute the content hash: {0}")]
     Hash(String),
+    #[error("a number isn't finite (NaN or infinity): {0}")]
+    NotFinite(String),
+    #[error("the netlist is incomplete: wires end on points their symbols no longer have ({0})")]
+    IncompleteNetlist(String),
     #[error("quantity must be at least 1")]
     ZeroQuantity,
     #[error("{0}:{1} already exists")]
@@ -990,6 +999,7 @@ impl Project {
                 Ok(Command::SetDescription { id, description: old })
             }
             Command::Place(f) => {
+                finite(&f)?;
                 if self.functions.contains_key(&f.id) {
                     return Err(ModelError::DuplicateId(f.id.0));
                 }
@@ -1023,6 +1033,7 @@ impl Project {
                 Ok(Command::Batch(undo))
             }
             Command::Move { id, to } => {
+                finite(&to)?;
                 let f = self.functions.get_mut(&id).ok_or(ModelError::NoFunction(id))?;
                 let old = std::mem::replace(&mut f.position, to);
                 Ok(Command::Move { id, to: old })
@@ -1120,6 +1131,7 @@ impl Project {
                 Ok(Command::SetWireLengthSettings(std::mem::replace(&mut self.wire_length_settings, settings)))
             }
             Command::SetSheet(sheet) => {
+                finite(&sheet)?;
                 if !sheet.is_valid() {
                     return Err(ModelError::InvalidSheet);
                 }
@@ -1145,6 +1157,15 @@ impl Project {
                 let f = self.functions.get_mut(&id).ok_or(ModelError::NoFunction(id))?;
                 let old_device = std::mem::replace(&mut f.device, device);
                 let old_designations = std::mem::replace(&mut f.designations, designations);
+                // The same rules as placing it there: no second terminal or channel with its
+                // number, no PLC address used twice.
+                if let Err(e) = self.check_terminal(id).and_then(|()| self.check_plc(id)) {
+                    if let Some(f) = self.functions.get_mut(&id) {
+                        f.device = old_device;
+                        f.designations = old_designations;
+                    }
+                    return Err(e);
+                }
                 Ok(Command::Reassign { id, device: old_device, designations: old_designations })
             }
             Command::SetUnderlay { page, underlay } => {
@@ -1196,6 +1217,7 @@ impl Project {
                 Ok(Command::AddPanelItem(item))
             }
             Command::AddBox(b) => {
+                finite(&b)?;
                 let b = self.checked_box(b)?;
                 if self.boxes.contains_key(&b.id) {
                     return Err(ModelError::DuplicateId(b.id.0));
@@ -1205,6 +1227,7 @@ impl Project {
                 Ok(Command::RemoveBox(id))
             }
             Command::UpdateBox(b) => {
+                finite(&b)?;
                 let b = self.checked_box(b)?;
                 let slot = self.boxes.get_mut(&b.id).ok_or(ModelError::NoBox(b.id))?;
                 Ok(Command::UpdateBox(std::mem::replace(slot, b)))
@@ -1255,6 +1278,7 @@ impl Project {
                 Ok(Command::SetWireSpec { id, spec: std::mem::replace(&mut c.spec, spec) })
             }
             Command::AddSymbol(symbol) => {
+                finite(&symbol)?;
                 if self.symbols.contains_key(&symbol.id) {
                     return Err(ModelError::DuplicateSymbol(symbol.id.0));
                 }
@@ -1271,6 +1295,7 @@ impl Project {
                 Ok(Command::AddSymbol(symbol))
             }
             Command::AddPart(part) => {
+                finite(&part)?;
                 let part = Part { number: part.number.trim().to_owned(), ..part };
                 if part.number.is_empty() {
                     return Err(ModelError::EmptyPartNumber);
@@ -1283,6 +1308,7 @@ impl Project {
                 Ok(Command::RemovePart(number))
             }
             Command::UpdatePart(part) => {
+                finite(&part)?;
                 let slot =
                     self.parts.get_mut(&part.number).ok_or_else(|| ModelError::UnknownPart(part.number.clone()))?;
                 let old = std::mem::replace(slot, part);

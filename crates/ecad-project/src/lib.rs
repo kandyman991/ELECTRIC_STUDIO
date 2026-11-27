@@ -662,6 +662,10 @@ mod tests {
         let file = dir.path().join("underlays").join(format!("{}.json", page.0));
         assert!(std::fs::read_to_string(&file).unwrap().starts_with("{\"source\":\"old.dxf\""));
         assert_eq!(load(dir.path()).unwrap().underlays.get(&page), Some(&u));
+        // The content hash covers the underlay and survives the round trip.
+        let with = p.content_hash().unwrap();
+        assert_eq!(load(dir.path()).unwrap().content_hash().unwrap(), with);
+        assert_ne!(with, start_circuit().unwrap().content_hash().unwrap());
         p.apply(Command::SetUnderlay { page, underlay: None }).unwrap();
         save(&p, dir.path()).unwrap();
         assert!(!file.exists());
