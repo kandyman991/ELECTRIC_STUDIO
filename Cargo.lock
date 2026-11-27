@@ -1251,7 +1251,9 @@ dependencies = [
  "calamine",
  "ecad-model",
  "rust_xlsxwriter",
+ "tempfile",
  "thiserror 2.0.21",
+ "zip",
 ]
 
 [[package]]

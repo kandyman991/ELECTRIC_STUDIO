@@ -1353,7 +1353,8 @@ impl Project {
         Ok(())
     }
 
-    /// A PLC channel's address and symbol, when set, are unique in the project.
+    /// A PLC channel's address and symbol, when set, are unique in the project; addresses
+    /// however they are written.
     fn check_plc(&self, f: FunctionId) -> Result<()> {
         let func = self.function(f)?;
         if !matches!(self.role(f)?, Role::PlcChannel { .. }) {
@@ -1365,7 +1366,14 @@ impl Project {
                 continue;
             }
             let other = self.functions.values().find(|g| {
-                g.id != f && matches!(self.role(g.id), Ok(Role::PlcChannel { .. })) && g.property(key) == value
+                g.id != f
+                    && matches!(self.role(g.id), Ok(Role::PlcChannel { .. }))
+                    && if is_address {
+                        // `%I0.0` and `I00.0` are the same input.
+                        crate::plc_address::same(g.property(key), value)
+                    } else {
+                        g.property(key) == value
+                    }
             });
             if let Some(g) = other {
                 let by = format!("{}:{}", self.device(g.device)?.tag, self.drawing_number(g.id).unwrap_or_default());

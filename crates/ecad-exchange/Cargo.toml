@@ -10,7 +10,11 @@ publish.workspace = true
 ecad-model = { workspace = true }
 rust_xlsxwriter = { workspace = true }
 calamine = { workspace = true }
+zip = { workspace = true }
 thiserror = { workspace = true }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile = { workspace = true }

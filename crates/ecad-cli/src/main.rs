@@ -101,12 +101,15 @@ fn export(project: &Project, out: &Path, formats: Formats, reports: bool) -> Res
         for (name, csv) in ecad_reports::all_csv(project).map_err(|e| e.to_string())? {
             write(name, csv.as_bytes())?;
         }
-        let (tags, skipped) = ecad_exchange::tia::tags(project);
-        if !tags.is_empty() {
-            write(ecad_exchange::tia::FILE_NAME, &ecad_exchange::tia::to_xlsx(&tags).map_err(|e| e.to_string())?)?;
+        let tia = ecad_exchange::tia::export_to(project, out).map_err(|e| e.to_string())?;
+        if let Some(file) = &tia.file {
+            println!("wrote {}", file.display());
         }
-        for s in skipped {
+        for s in &tia.skipped {
             println!("not in the TIA tag table: {} ({})", s.channel, s.reason);
+        }
+        if tia.removed {
+            println!("removed the older {}: the project has no PLC channels", ecad_exchange::tia::FILE_NAME);
         }
     }
     Ok(())
@@ -187,13 +190,18 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             flags(&[])?;
             let mut project = load(Path::new(dir))?;
             let bytes = std::fs::read(file).map_err(|e| format!("{file}: {e}"))?;
-            let tags = ecad_exchange::tia::read_xlsx(&bytes).map_err(|e| format!("{file}: {e}"))?;
-            let import = ecad_exchange::tia::import(&project, &tags).map_err(|e| e.to_string())?;
-            for t in &import.unknown {
-                println!("no channel at {t}");
-            }
-            for t in &import.duplicates {
-                println!("address listed twice, left out: {t}");
+            let table = ecad_exchange::tia::read_xlsx(&bytes).map_err(|e| format!("{file}: {e}"))?;
+            let import = ecad_exchange::tia::import(&project, &table.tags).map_err(|e| e.to_string())?;
+            for (list, what) in [
+                (&table.ignored, "left out"),
+                (&import.unknown, "no channel at"),
+                (&import.mismatched, "another kind of channel, not applied:"),
+                (&import.conflicts, "different names or comments for one address, not applied:"),
+                (&import.duplicates, "the same tag twice:"),
+            ] {
+                for t in list {
+                    println!("{what} {t}");
+                }
             }
             if let Some(command) = import.command {
                 project.apply(command).map_err(|e| e.to_string())?;

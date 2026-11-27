@@ -76,7 +76,7 @@ fn tia_tags_go_out_and_renamed_symbols_come_back() {
     let out = dir.path().join("out");
     assert!(ecad(&["export", &plc, out.to_str().unwrap(), "--only", "reports"]).status.success());
     let bytes = std::fs::read(out.join("tia-plc-tags.xlsx")).unwrap();
-    let mut tags = ecad_exchange::tia::read_xlsx(&bytes).unwrap();
+    let mut tags = ecad_exchange::tia::read_xlsx(&bytes).unwrap().tags;
     let door = tags.iter_mut().find(|t| t.address == "%I0.0").unwrap();
     assert_eq!(door.name, "Door_Closed");
     door.name = "Guard_Door_Closed".into();
@@ -92,6 +92,11 @@ fn tia_tags_go_out_and_renamed_symbols_come_back() {
     // A file that isn't a tag table fails without touching the project.
     let o = ecad(&["import-tia", &plc, out.join("bom.csv").to_str().unwrap()]);
     assert_eq!(o.status.code(), Some(2), "{}", text(&o));
+    // Exporting a project without PLC into the same folder removes the older table.
+    let start = sample(dir.path(), "start");
+    let o = ecad(&["export", &start, out.to_str().unwrap(), "--only", "reports"]);
+    assert!(text(&o).contains("removed the older tia-plc-tags.xlsx"), "{}", text(&o));
+    assert!(!out.join("tia-plc-tags.xlsx").exists());
 }
 
 #[test]

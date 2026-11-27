@@ -954,9 +954,12 @@ impl Session {
         let result = std::fs::read(path)
             .map_err(|e| format!("{}: {e}", path.display()))
             .and_then(|bytes| ecad_exchange::tia::read_xlsx(&bytes).map_err(|e| format!("{}: {e}", path.display())))
-            .and_then(|tags| self.editor.import_tia_tags(&tags).map_err(|e| e.to_string()));
+            .and_then(|table| {
+                let import = self.editor.import_tia_tags(&table.tags).map_err(|e| e.to_string())?;
+                Ok((import, table.ignored))
+            });
         self.message = Some(match result {
-            Ok(i) => {
+            Ok((i, ignored)) => {
                 let mut text = match i.updated {
                     0 => "Nothing to change: the PLC channels already match".to_owned(),
                     1 => "Updated 1 PLC channel".to_owned(),
@@ -965,8 +968,15 @@ impl Session {
                 if !i.unknown.is_empty() {
                     text += &format!("; {} tags at addresses no channel has", i.unknown.len());
                 }
-                if !i.duplicates.is_empty() {
-                    text += &format!("; {} addresses listed twice (first kept)", i.duplicates.len());
+                let notes = [
+                    (&i.mismatched, "at a channel of another kind, not applied"),
+                    (&i.conflicts, "given different names or comments, not applied"),
+                    (&ignored, "without a name or address"),
+                ];
+                for (list, what) in notes {
+                    if !list.is_empty() {
+                        text += &format!("; {} {what}: {}", list.len(), first_few(list));
+                    }
                 }
                 text
             }
@@ -996,21 +1006,30 @@ impl Session {
             for (name, text) in &files {
                 std::fs::write(dir.join(name), text).map_err(|e| format!("{}: {e}", dir.join(name).display()))?;
             }
-            let (tags, _) = ecad_exchange::tia::tags(self.editor.project());
-            if tags.is_empty() {
-                return Ok(files.len());
-            }
-            let path = dir.join(ecad_exchange::tia::FILE_NAME);
-            let bytes = ecad_exchange::tia::to_xlsx(&tags).map_err(|e| e.to_string())?;
-            std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-            Ok(files.len() + 1)
+            let tia = ecad_exchange::tia::export_to(self.editor.project(), dir).map_err(|e| e.to_string())?;
+            Ok((files.len() + usize::from(tia.file.is_some()), tia))
         });
         let missing = ecad_reports::devices_without_parts(self.editor.project()).len();
         self.message = Some(match result {
-            Ok(n) if missing > 0 => {
-                format!("Wrote {n} reports to {}; {missing} devices have no part yet", dir.display())
+            Ok((n, tia)) => {
+                let mut text = format!("Wrote {n} reports to {}", dir.display());
+                if missing > 0 {
+                    text += &format!("; {missing} devices have no part yet");
+                }
+                if !tia.skipped.is_empty() {
+                    let skipped: Vec<String> =
+                        tia.skipped.iter().map(|s| format!("{} ({})", s.channel, s.reason)).collect();
+                    text +=
+                        &format!("; {} PLC channels not in the TIA tag table: {}", skipped.len(), first_few(&skipped));
+                }
+                if tia.removed {
+                    text += &format!(
+                        "; removed the older {}: the project has no PLC channels",
+                        ecad_exchange::tia::FILE_NAME
+                    );
+                }
+                text
             }
-            Ok(n) => format!("Wrote {n} reports to {}", dir.display()),
             Err(e) => format!("Export failed: {e}"),
         });
     }
@@ -1375,6 +1394,15 @@ impl Session {
             prompt,
             close: self.closing,
         }
+    }
+}
+
+/// The first three items, and how many more (`a, b, c and 4 more`).
+fn first_few(items: &[String]) -> String {
+    let shown = items.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+    match items.len() {
+        0..=3 => shown,
+        n => format!("{shown} and {} more", n - 3),
     }
 }
 
@@ -1873,7 +1901,7 @@ mod tests {
         let out = dir.path().join("reports");
         s.handle(UiEvent::ExportReports { path: out.clone() });
         let file = out.join(ecad_exchange::tia::FILE_NAME);
-        let mut tags = ecad_exchange::tia::read_xlsx(&std::fs::read(&file).unwrap()).unwrap();
+        let mut tags = ecad_exchange::tia::read_xlsx(&std::fs::read(&file).unwrap()).unwrap().tags;
         for t in &mut tags {
             t.name = format!("{}_x", t.name);
         }
@@ -1893,6 +1921,23 @@ mod tests {
         assert!(symbols(&s).iter().all(|x| !x.ends_with("_x")));
         s.handle(UiEvent::ImportTiaTags { path: out.join("bom.csv") });
         assert!(s.frame(None, [0, 0, 0]).status.starts_with("Import failed:"));
+        // Exporting again, from a project whose channels have no addresses: the table is
+        // replaced and the reasons shown.
+        let mut bare = ecad_model::sample::with_plc().unwrap();
+        let ids: Vec<_> =
+            bare.functions.values().filter(|f| !f.property(ecad_model::ADDRESS).is_empty()).map(|f| f.id).collect();
+        for id in ids {
+            let mut properties = bare.function(id).unwrap().properties.clone();
+            properties.remove(ecad_model::ADDRESS);
+            bare.apply(ecad_model::Command::SetProperties { id, properties }).unwrap();
+        }
+        let other = tempfile::tempdir().unwrap();
+        ecad_project::save(&bare, other.path()).unwrap();
+        let mut s = Session::open(other.path()).unwrap();
+        s.handle(UiEvent::ExportReports { path: out.clone() });
+        let status = s.frame(None, [0, 0, 0]).status;
+        assert!(status.contains("PLC channels not in the TIA tag table: -KF1:0 (no address)"), "{status}");
+        assert!(ecad_exchange::tia::read_xlsx(&std::fs::read(&file).unwrap()).unwrap().tags.is_empty());
     }
 
     #[test]

@@ -28,6 +28,8 @@ png = "0.18"
 # The TIA Portal tag table is an Excel file: written and read without Excel.
 rust_xlsxwriter = { version = "0.104", default-features = false }
 calamine = { version = "0.38", default-features = false }
+# To check a tag table's unpacked size before reading it (the version calamine uses).
+zip = { version = "9", default-features = false }
 
 # CADCraft, used as a library and pinned to one upstream commit (see docs/CADCRAFT.md).
 # Only ecad-view may depend on these crates.

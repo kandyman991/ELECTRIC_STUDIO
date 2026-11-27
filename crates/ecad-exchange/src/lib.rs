@@ -16,6 +16,8 @@ pub enum ExchangeError {
     Read(String),
     #[error("the tag table has no `{0}` column")]
     MissingColumn(&'static str),
+    #[error("two channels share an address: {}", .0.join("; "))]
+    SharedAddresses(Vec<String>),
     #[error(transparent)]
     Model(#[from] ecad_model::ModelError),
 }
