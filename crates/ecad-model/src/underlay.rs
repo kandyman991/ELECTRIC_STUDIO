@@ -133,6 +133,19 @@ impl UnderlayShapes {
     }
 }
 
+/// How [`Underlay::placement`] placed a drawing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Placed {
+    /// Real size, where it was drawn.
+    AsDrawn,
+    /// Real size, as far from the sheet's corner as from its own sheet's.
+    FromCorner,
+    /// Real size, centred.
+    Centred,
+    /// Too big: shrunk to fit, centred.
+    Fitted,
+}
+
 /// An underlay on a page.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Underlay {
@@ -178,28 +191,45 @@ impl Underlay {
         self.scale / self.units.mm()
     }
 
-    /// The scale (page mm per source unit) and position that put `shapes` inside `lo`–`hi`:
-    /// at its real size where it was drawn if it fits there (`origin` is where the source's
-    /// lower-left corner was, in its own units), otherwise fitted, centred, proportions kept.
-    pub fn placement(shapes: &UnderlayShapes, origin: Point, units: Units, lo: Point, hi: Point) -> (Point, f64) {
+    /// Where and how big `shapes` go on a sheet from `lo` to `hi`: never enlarged, shrunk only
+    /// if too big. `origin` is where the source's lower-left corner was, in its own units.
+    /// Tried in turn: real size where it was drawn, if that is on the sheet (a drawing made on
+    /// this sheet); real size keeping its place from its own sheet's corner (a drawing on paper
+    /// from 0, 0, as AutoCAD and SPAC draw one); real size, centred; shrunk to fit, centred.
+    pub fn placement(
+        shapes: &UnderlayShapes,
+        origin: Point,
+        units: Units,
+        lo: Point,
+        hi: Point,
+    ) -> (Point, f64, Placed) {
         let mm = units.mm();
-        let at = Point::new(origin.x * mm, origin.y * mm);
-        let fits_as_drawn = at.x >= lo.x - 1e-6
-            && at.y >= lo.y - 1e-6
-            && at.x + shapes.width * mm <= hi.x + 1e-6
-            && at.y + shapes.height * mm <= hi.y + 1e-6;
-        if fits_as_drawn {
-            return (at, mm);
-        }
-        let (w, h) = (hi.x - lo.x, hi.y - lo.y);
-        let scale = match (shapes.width > 0.0, shapes.height > 0.0) {
-            (true, true) => (w / shapes.width).min(h / shapes.height),
-            (true, false) => w / shapes.width,
-            (false, true) => h / shapes.height,
-            (false, false) => 1.0,
+        let (w, h) = (shapes.width * mm, shapes.height * mm);
+        let fits_at = |at: Point| {
+            at.x >= lo.x - 1e-6 && at.y >= lo.y - 1e-6 && at.x + w <= hi.x + 1e-6 && at.y + h <= hi.y + 1e-6
         };
-        let at = Point::new(lo.x + (w - shapes.width * scale) / 2.0, lo.y + (h - shapes.height * scale) / 2.0);
-        (at, scale)
+        let as_drawn = Point::new(origin.x * mm, origin.y * mm);
+        if fits_at(as_drawn) {
+            return (as_drawn, mm, Placed::AsDrawn);
+        }
+        let from_corner = Point::new(lo.x + as_drawn.x, lo.y + as_drawn.y);
+        if fits_at(from_corner) {
+            return (from_corner, mm, Placed::FromCorner);
+        }
+        let (sw, sh) = (hi.x - lo.x, hi.y - lo.y);
+        let centred = |scale: f64| {
+            Point::new(lo.x + (sw - shapes.width * scale) / 2.0, lo.y + (sh - shapes.height * scale) / 2.0)
+        };
+        if w <= sw + 1e-6 && h <= sh + 1e-6 {
+            return (centred(mm), mm, Placed::Centred);
+        }
+        let scale = match (shapes.width > 0.0, shapes.height > 0.0) {
+            (true, true) => (sw / shapes.width).min(sh / shapes.height),
+            (true, false) => sw / shapes.width,
+            (false, true) => sh / shapes.height,
+            (false, false) => mm,
+        };
+        (centred(scale), scale, Placed::Fitted)
     }
 }
 
@@ -228,25 +258,38 @@ mod tests {
     fn a_drawing_that_fits_stays_as_drawn_and_a_big_one_is_fitted() {
         let (lo, hi) = (Point::new(0.0, 0.0), Point::new(420.0, 297.0));
         let mm = Units::Millimetres;
-        assert_eq!(
-            Underlay::placement(&square(100.0), Point::new(10.0, 20.0), mm, lo, hi),
-            (Point::new(10.0, 20.0), 1.0)
-        );
-        let (at, scale) = Underlay::placement(&square(2970.0), Point::new(0.0, 0.0), mm, lo, hi);
-        assert!((scale - 0.1).abs() < 1e-9);
+        let placed = Underlay::placement(&square(100.0), Point::new(10.0, 20.0), mm, lo, hi);
+        assert_eq!(placed, (Point::new(10.0, 20.0), 1.0, Placed::AsDrawn));
+        let (at, scale, how) = Underlay::placement(&square(2970.0), Point::new(0.0, 0.0), mm, lo, hi);
+        assert!((scale - 0.1).abs() < 1e-9 && how == Placed::Fitted);
         assert!((at.x - (420.0 - 297.0) / 2.0).abs() < 1e-9 && at.y.abs() < 1e-9, "{at:?}");
+    }
+
+    #[test]
+    fn an_a3_sheet_from_another_program_lands_on_ours_at_real_size() {
+        // Electric Studio's A3 sheet runs from (-216, -132); a SPAC sheet's frame is 405 × 275,
+        // drawn at (10, 15) on paper from (0, 0). Same paper: same place, never enlarged.
+        let (lo, hi) = (Point::new(-216.0, -132.0), Point::new(204.0, 165.0));
+        let frame = UnderlayShapes { width: 405.0, height: 275.0, ..square(1.0) };
+        let placed = Underlay::placement(&frame, Point::new(10.0, 15.0), Units::Millimetres, lo, hi);
+        assert_eq!(placed, (Point::new(-206.0, -117.0), 1.0, Placed::FromCorner));
+        // Small and drawn far off: real size, centred.
+        let far = Point::new(5000.0, 5000.0);
+        let (at, scale, how) = Underlay::placement(&square(100.0), far, Units::Millimetres, lo, hi);
+        assert_eq!((scale, how), (1.0, Placed::Centred));
+        assert_eq!(at, Point::new(-216.0 + 160.0, -132.0 + 98.5));
     }
 
     #[test]
     fn units_decide_real_size() {
         let (lo, hi) = (Point::new(0.0, 0.0), Point::new(420.0, 297.0));
         // 10 × 10 cm drawn at (1, 2) cm: real size, 10 mm per unit, at (10, 20) mm.
-        let (at, scale) = Underlay::placement(&square(10.0), Point::new(1.0, 2.0), Units::Centimetres, lo, hi);
+        let (at, scale, _) = Underlay::placement(&square(10.0), Point::new(1.0, 2.0), Units::Centimetres, lo, hi);
         assert_eq!((at, scale), (Point::new(10.0, 20.0), 10.0));
         // A 4 × 4 inch square fits at real size: 25.4 mm per unit.
         assert_eq!(Underlay::placement(&square(4.0), Point::new(0.0, 0.0), Units::Inches, lo, hi).1, 25.4);
         // 2 m doesn't fit an A3 sheet: fitted, and its real scale is 1:10.
-        let (_, scale) = Underlay::placement(&square(2.97), Point::new(0.0, 0.0), Units::Metres, lo, hi);
+        let (_, scale, _) = Underlay::placement(&square(2.97), Point::new(0.0, 0.0), Units::Metres, lo, hi);
         let u = Underlay { scale, units: Units::Metres, ..underlay(square(2.97)) };
         assert!((u.real_scale() - 0.1).abs() < 1e-9, "{}", u.real_scale());
         assert_eq!(Units::from_insunits(4), Some(Units::Millimetres));

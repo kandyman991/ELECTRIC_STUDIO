@@ -3,6 +3,30 @@
 What has been checked with drawings made by other programs, and what hasn't. Kept apart from the
 tests because the files aren't ours to commit.
 
+## 2026-11-27: a real SPAC Automazione project
+
+A complete project made with SPAC Automazione (an Italian electrical CAD on AutoCAD's DWG
+engine), supplied by the owner; not committed. 18 DWG files: power, auxiliaries, CPU, inputs,
+outputs, signals, motors, terminal strips, tables, panel layout, and SPAC's own backup copies.
+
+All 18 import, in 0.1–3 s each. SPAC sheets are A3 frames (405 × 275 drawn from (10, 15) on
+paper from (0, 0)) and land at 1:1 on Electric Studio's sheet; a sheet taller than A3 and a
+1.4 m wide panel layout are shrunk to fit. The files give no `$INSUNITS`: millimetres are
+assumed and the import says so. A sheet drawn from its underlay alone matched the PDF of the
+same sheet: frame, grid, symbols, wire numbers, cross-references, title block text.
+
+Three problems this project found, fixed before this record:
+
+- The estimate of flattening (which refuses drawings before they are drawn) was 100–1500 ×
+  what is drawn, refusing the layout and terminal-strip sheets. It counted hidden attributes
+  (SPAC symbols carry many), entities on layers switched off or frozen, every arc and spline at
+  its worst case, and hatch patterns across the whole drawing. It now skips what the renderer
+  skips and counts curves as the renderer cuts them; on these drawings it is 1.6–6 × what is
+  drawn, and a test holds it at or above what is drawn.
+- Sheets were "fitted" (3.7 % enlarged) because Electric Studio's sheet doesn't start at
+  (0, 0). Placement now never enlarges: real size where drawn, or from the sheet's corner, or
+  centred; shrunk only if too big.
+
 ## 2026-11-27: LibreDWG test corpus
 
 The test data of [LibreDWG](https://github.com/LibreDWG/libredwg) (`test/test-data`, GPL; not
@@ -45,7 +69,6 @@ done
 
 ## Not yet checked
 
-- Drawings exported by electrical CAD programs (EPLAN and the like): none were at hand; the
-  owner doesn't use one. The corpus above covers AutoCAD-made DWG and DXF, the usual source.
+- Electrical CAD programs other than SPAC (EPLAN and the like): none at hand.
 - How an underlay looks against its source in the CAD program it came from (only import, sizes
   and units were checked, not a visual comparison).

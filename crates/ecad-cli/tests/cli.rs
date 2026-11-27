@@ -143,7 +143,7 @@ fn a_dwg_and_chosen_units_go_through_the_worker() {
     assert!(text(&o).contains("in mm, 1:1 as drawn"), "{}", text(&o));
     // Chosen units win over the file's.
     let o = ecad(&["import-dxf", &start, "#1", dwg.to_str().unwrap(), "--units", "inch"]);
-    assert!(text(&o).contains("in inch as chosen") && text(&o).contains("fitted"), "{}", text(&o));
+    assert!(text(&o).contains("in inch as chosen") && text(&o).contains("shrunk"), "{}", text(&o));
     let o = ecad(&["import-dxf", &start, "#1", dwg.to_str().unwrap(), "--units", "furlong"]);
     assert_eq!(o.status.code(), Some(2));
     assert!(text(&o).contains("unknown unit `furlong`"), "{}", text(&o));

@@ -2,7 +2,7 @@
 
 use crate::Editor;
 use ecad_model::geometry::Point;
-use ecad_model::underlay::{Underlay, Units, UnitsFrom};
+use ecad_model::underlay::{Placed, Underlay, Units, UnitsFrom};
 use ecad_model::{Command, PageId};
 use std::sync::Arc;
 
@@ -24,7 +24,8 @@ impl Editor {
     /// worker process when the program set one up (`ecad_view::worker`), so a hostile file
     /// can't take the editor down. `units` overrides the file's own (`$INSUNITS`); without
     /// either it is taken as millimetres, and the message says so. It is placed at its real
-    /// size where it was drawn if that is on the sheet, otherwise fitted to the sheet. A file
+    /// size where it was drawn, or on the sheet from its own sheet's corner, or centred; shrunk
+    /// only if too big (`Underlay::placement`). A file
     /// that fails leaves the page as it was. Says how it was placed.
     pub fn import_underlay(
         &mut self,
@@ -42,7 +43,7 @@ impl Editor {
         };
         let sheet = self.project.sheet;
         let (lo, hi) = (sheet.origin, Point::new(sheet.origin.x + sheet.width, sheet.origin.y + sheet.height));
-        let (at, scale) = Underlay::placement(&imported.shapes, imported.origin, units, lo, hi);
+        let (at, scale, placed) = Underlay::placement(&imported.shapes, imported.origin, units, lo, hi);
         let points = imported.shapes.points();
         let underlay = Underlay {
             source: name.to_owned(),
@@ -57,10 +58,11 @@ impl Editor {
         let label = format!("Underlay {name}");
         self.execute(&label, Command::SetUnderlay { page, underlay: Some(Box::new(underlay)) })
             .map_err(|e| e.to_string())?;
-        let how = if (real - 1.0).abs() < 1e-9 {
-            "1:1 as drawn".to_owned()
-        } else {
-            format!("fitted to the sheet at {}", ratio(real))
+        let how = match placed {
+            Placed::AsDrawn => "1:1 as drawn".to_owned(),
+            Placed::FromCorner => "1:1 on the sheet".to_owned(),
+            Placed::Centred => "1:1, centred on the sheet".to_owned(),
+            Placed::Fitted => format!("too big for the sheet: shrunk to {}", ratio(real)),
         };
         let from = if imported.space == "Model" { String::new() } else { format!(" (layout {})", imported.space) };
         let unit = match units_from {
@@ -137,11 +139,10 @@ mod tests {
         let page = e.page();
         let base = e.base([255, 255, 255]).unwrap().len();
         let message = e.import_underlay(page, &a_schematic_dxf(), "old-sheet.dxf", None).unwrap();
-        // Our own A3 page lies on the sheet as drawn.
-        assert!(
-            message.starts_with("Underlay old-sheet.dxf: ") && message.ends_with("in mm, 1:1 as drawn"),
-            "{message}"
-        );
+        // Another project's A3 page (its sheet elsewhere) lands corner to corner on ours, 1:1.
+        assert!(message.starts_with("Underlay old-sheet.dxf: ") && message.contains("in mm, 1:1"), "{message}");
+        let u = &e.project().underlays[&page];
+        assert_eq!((u.at, u.scale), (e.project().sheet.origin, 1.0));
         assert!(e.base([255, 255, 255]).unwrap().len() > base + 100);
         assert!(!e.checks().iter().any(|c| c.message.contains("underlay")), "not checked");
         e.show_underlay(page, false).unwrap();
@@ -170,7 +171,7 @@ mod tests {
         let mut e = editor();
         let page = e.page();
         let message = e.import_underlay(page, dxf.as_bytes(), "big.dxf", None).unwrap();
-        assert!(message.contains("fitted to the sheet at 1:"), "{message}");
+        assert!(message.contains("shrunk to 1:"), "{message}");
         assert!(e.import_underlay(page, b"not a drawing", "x.dxf", None).is_err());
     }
 
@@ -181,7 +182,7 @@ mod tests {
         // Our own DXF says mm; chosen as cm it is ten times the size, so fitted.
         let dxf = a_schematic_dxf();
         let m = e.import_underlay(page, &dxf, "a.dxf", Some(Units::Centimetres)).unwrap();
-        assert!(m.contains("in cm as chosen") && m.contains("fitted to the sheet at 1:"), "{m}");
+        assert!(m.contains("in cm as chosen") && m.contains("shrunk to 1:"), "{m}");
         let u = &e.project().underlays[&page];
         assert_eq!((u.units, u.units_from), (Units::Centimetres, UnitsFrom::Chosen));
         // A file that doesn't say: taken as mm, and the message says so.
