@@ -3,14 +3,20 @@
 //!
 //! ```text
 //! my-panel/
-//!   project.json          format version, name, pages
-//!   devices.json          all devices, sorted by tag
-//!   parts.json            the parts catalogue, sorted by part number
+//!   project.json          format version, name, pages (with sparse sort keys)
+//!   devices.json          all devices, sorted by tag; their products by id, number beside
+//!   products.json         the project's products (the parts catalogue), by id
 //!   cables.json           cables, sorted by tag
 //!   symbols/<id>.json     one file per symbol used by the project
 //!   pages/<page-id>.json  the functions and connections on that page
 //!   underlays/<page-id>.json  a drawing shown behind that page, if any (compact)
 //! ```
+//!
+//! Format 2 is written; format 1 is read and converted on load (docs/PLATFORM-ARCHITECTURE.md
+//! section 9): `parts.json` becomes `products.json` with ids from [`ProductId::for_number`],
+//! devices' parts are found by number, and the dense page order becomes sparse keys. The first
+//! save of a format 1 project writes format 2, which older versions can't open:
+//! [`format_of`] lets a program say so first.
 //!
 //! Loading replays everything through the model's commands, so a hand-edited file that breaks
 //! a rule (duplicate tag, wire to a missing point) is rejected with the file named.
@@ -19,8 +25,8 @@
 //! over someone else's save ([`save_checked`]): see [`store`].
 
 use ecad_model::{
-    Cable, Command, Connection, Device, Function, LocationBox, ModelError, Naming, Page, Part, Point, Project,
-    ProjectInfo, Sheet, SymbolDef,
+    Cable, Command, Connection, Device, DeviceId, Function, LocationBox, ModelError, Naming, PAGE_STEP, Page, Part,
+    PartRef, Point, ProductId, Project, ProjectInfo, Sheet, SymbolDef, SymbolId,
 };
 
 pub mod csv;
@@ -28,7 +34,8 @@ pub mod store;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-pub const FORMAT: u32 = 1;
+/// The format this program writes. It reads this and format 1.
+pub const FORMAT: u32 = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProjectError {
@@ -97,6 +104,81 @@ fn is_default_naming(n: &Naming) -> bool {
 
 fn is_default(info: &ProjectInfo) -> bool {
     *info == ProjectInfo::default()
+}
+
+/// A device as saved: its products by id, with each product's number beside it for people
+/// reading the file (format 1 had the number only).
+#[derive(Serialize, Deserialize)]
+struct DeviceFile {
+    id: DeviceId,
+    tag: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    description: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    parts: Vec<PartRefFile>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct PartRefFile {
+    /// Missing in format 1, which names the product by number only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    product: Option<ProductId>,
+    #[serde(default)]
+    number: String,
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    quantity: u32,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    per_strip: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    only: Option<SymbolId>,
+}
+
+fn one() -> u32 {
+    1
+}
+
+fn is_one(q: &u32) -> bool {
+    *q == 1
+}
+
+impl DeviceFile {
+    fn of(project: &Project, d: &Device) -> Self {
+        let parts = d
+            .parts
+            .iter()
+            .map(|r| PartRefFile {
+                product: Some(r.product),
+                number: project.parts.get(&r.product).map(|p| p.number.clone()).unwrap_or_default(),
+                quantity: r.quantity,
+                per_strip: r.per_strip,
+                only: r.only.clone(),
+            })
+            .collect();
+        DeviceFile { id: d.id, tag: d.tag.clone(), description: d.description.clone(), parts }
+    }
+
+    /// The device; a format 1 reference by number is the product [`ProductId::for_number`] gives it.
+    fn into_device(self) -> Device {
+        let parts = self
+            .parts
+            .into_iter()
+            .map(|r| PartRef {
+                product: r.product.unwrap_or_else(|| ProductId::for_number(&r.number)),
+                quantity: r.quantity,
+                per_strip: r.per_strip,
+                only: r.only,
+            })
+            .collect();
+        Device { parts, ..Device::new(self.id, &self.tag, &self.description) }
+    }
+}
+
+/// A format 1 catalogue entry: a part without an id (its number was unique).
+#[derive(Deserialize)]
+struct PartV1 {
+    number: String,
+    #[serde(flatten)]
+    rest: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -208,14 +290,15 @@ fn render(project: &Project) -> Result<Vec<(String, Vec<u8>)>> {
     };
     files.push(("project.json".to_owned(), render_json(Path::new("project.json"), &head)?));
 
-    let parts: Vec<&Part> = project.parts.values().collect();
-    files.push(("parts.json".to_owned(), render_json(Path::new("parts.json"), &parts)?));
+    let mut parts: Vec<&Part> = project.parts.values().collect();
+    parts.sort_by(|a, b| a.key().cmp(&b.key()).then(a.id.cmp(&b.id)));
+    files.push(("products.json".to_owned(), render_json(Path::new("products.json"), &parts)?));
 
     let mut cables: Vec<&Cable> = project.cables.values().collect();
     cables.sort_by(|a, b| a.tag.cmp(&b.tag));
     files.push(("cables.json".to_owned(), render_json(Path::new("cables.json"), &cables)?));
 
-    let mut devices: Vec<&Device> = project.devices.values().collect();
+    let mut devices: Vec<DeviceFile> = project.devices.values().map(|d| DeviceFile::of(project, d)).collect();
     devices.sort_by(|a, b| a.tag.cmp(&b.tag));
     files.push(("devices.json".to_owned(), render_json(Path::new("devices.json"), &devices)?));
 
@@ -310,7 +393,28 @@ pub fn load_checked(dir: &Path) -> Result<(Project, Fingerprint)> {
     Err(ProjectError::Busy(dir.to_owned()))
 }
 
-/// Read a project folder written by [`save`].
+/// The format of the project in `dir`, as its `project.json` says. A program saving a project
+/// whose format is older than [`FORMAT`] should say first that older versions won't open it.
+pub fn format_of(dir: &Path) -> Result<u32> {
+    #[derive(Deserialize)]
+    struct Head {
+        format: u32,
+    }
+    Ok(read_json::<Head>(&dir.join("project.json"))?.format)
+}
+
+/// What to tell a person before a save upgrades the project in `dir` to this format: `Some` when
+/// the folder holds a project of an older format (it then no longer opens in older versions).
+pub fn upgrade_note(dir: &Path) -> Option<String> {
+    let found = format_of(dir).ok()?;
+    (found < FORMAT).then(|| {
+        format!(
+            "this saves the project in format {FORMAT}; versions of Electric Studio that read only format {found} can't open it any more"
+        )
+    })
+}
+
+/// Read a project folder written by [`save`], in this format or format 1.
 pub fn load(dir: &Path) -> Result<Project> {
     // A save that stopped part way is finished (if it got as far as its journal) or undone.
     if dir.join(store::JOURNAL).exists() || store::has_staged(dir)? {
@@ -328,7 +432,16 @@ pub fn load(dir: &Path) -> Result<Project> {
     project.naming = head.naming;
     // Through the command, so a hand-edited file can't bring in settings the editor would refuse.
     project.apply(Command::SetWireLengthSettings(head.wire_lengths)).map_err(model(&path))?;
-    for page in head.pages {
+    let legacy = head.format < 2;
+    let mut pages = head.pages;
+    if legacy {
+        // Format 1's dense order becomes sparse keys, in the same order.
+        pages.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.name.cmp(&b.name)));
+        for (i, page) in pages.iter_mut().enumerate() {
+            page.order = PAGE_STEP * (i as u64 + 1);
+        }
+    }
+    for page in pages {
         project.add_page(page);
     }
     let sheet = head.sheet;
@@ -345,8 +458,17 @@ pub fn load(dir: &Path) -> Result<Project> {
     }
 
     // The catalogue comes before the devices that use it; projects saved before M3a have none.
-    let path = dir.join("parts.json");
-    if path.exists() {
+    let path = dir.join(if legacy { "parts.json" } else { "products.json" });
+    if path.exists() && legacy {
+        for part in read_json::<Vec<PartV1>>(&path)? {
+            let mut fields = part.rest;
+            fields.insert("id".into(), serde_json::to_value(ProductId::for_number(&part.number)).unwrap_or_default());
+            fields.insert("number".into(), part.number.into());
+            let part: Part = serde_json::from_value(fields.into())
+                .map_err(|source| ProjectError::Json { path: path.clone(), source })?;
+            project.apply(Command::AddPart(part)).map_err(model(&path))?;
+        }
+    } else if path.exists() {
         for part in read_json::<Vec<Part>>(&path)? {
             project.apply(Command::AddPart(part)).map_err(model(&path))?;
         }
@@ -361,8 +483,8 @@ pub fn load(dir: &Path) -> Result<Project> {
     }
 
     let path = dir.join("devices.json");
-    for d in read_json::<Vec<Device>>(&path)? {
-        project.apply(Command::AddDevice(d)).map_err(model(&path))?;
+    for d in read_json::<Vec<DeviceFile>>(&path)? {
+        project.apply(Command::AddDevice(d.into_device())).map_err(model(&path))?;
     }
 
     // Place every page's functions before any connection, then connect.
@@ -426,6 +548,91 @@ fn legacy_sheet(project: &Project) -> Sheet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn two_makers_products_with_one_number_save_and_load_by_id() {
+        let mut p = ecad_model::sample::start_circuit().unwrap();
+        let other = Part {
+            id: ProductId::new(),
+            manufacturer: "Other".into(),
+            ..p.part_by_number("EX-CT-24DC").unwrap().clone()
+        };
+        p.apply(Command::AddPart(other.clone())).unwrap();
+        let k1 = p.device_by_tag("-K1").unwrap().id;
+        let mut parts = p.device(k1).unwrap().parts.clone();
+        parts.push(PartRef::to(other.id, 2));
+        p.apply(Command::SetDeviceParts { id: k1, parts }).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        save(&p, dir.path()).unwrap();
+        assert!(!dir.path().join("parts.json").exists());
+        let devices = std::fs::read_to_string(dir.path().join("devices.json")).unwrap();
+        assert!(devices.contains(&format!("\"product\": \"{}\"", other.id.0)), "by id");
+        assert!(devices.contains("\"number\": \"EX-CT-24DC\""), "the number beside it");
+        let q = load(dir.path()).unwrap();
+        assert_eq!(q, p);
+        assert_eq!(q.parts_numbered("EX-CT-24DC").len(), 2);
+        assert_eq!(format_of(dir.path()).unwrap(), FORMAT);
+    }
+
+    #[test]
+    fn a_format_1_project_converts_on_load_and_is_saved_as_format_2() {
+        let p = ecad_model::sample::with_plc().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        save(&p, dir.path()).unwrap();
+        // Write it back as format 1 would have: parts.json without ids, devices by number,
+        // dense page order.
+        let root = dir.path();
+        let products: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(root.join("products.json")).unwrap()).unwrap();
+        let parts: Vec<serde_json::Value> = products
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| {
+                let mut v = v.clone();
+                v.as_object_mut().unwrap().remove("id");
+                v
+            })
+            .collect();
+        std::fs::write(root.join("parts.json"), serde_json::to_string_pretty(&parts).unwrap()).unwrap();
+        std::fs::remove_file(root.join("products.json")).unwrap();
+        let mut devices: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(root.join("devices.json")).unwrap()).unwrap();
+        for d in devices.as_array_mut().unwrap() {
+            for r in d.get_mut("parts").and_then(|v| v.as_array_mut()).into_iter().flatten() {
+                r.as_object_mut().unwrap().remove("product");
+            }
+        }
+        std::fs::write(root.join("devices.json"), serde_json::to_string_pretty(&devices).unwrap()).unwrap();
+        let mut head: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(root.join("project.json")).unwrap()).unwrap();
+        head["format"] = 1.into();
+        let n = head["pages"].as_array().unwrap().len();
+        for (i, page) in head["pages"].as_array_mut().unwrap().iter_mut().enumerate() {
+            page["order"] = (n - 1 - i).into();
+        }
+        std::fs::write(root.join("project.json"), serde_json::to_string_pretty(&head).unwrap()).unwrap();
+        assert_eq!(format_of(root).unwrap(), 1);
+        assert!(upgrade_note(root).is_some_and(|n| n.contains("format 2")));
+
+        let q = load(root).unwrap();
+        // Same products (ids from their numbers), same device parts, pages in format 1's order
+        // with sparse keys.
+        assert_eq!(q.parts, p.parts);
+        assert_eq!(q.devices, p.devices);
+        let names: Vec<_> = q.pages_in_order().iter().map(|pg| pg.name.clone()).collect();
+        let mut want: Vec<_> = p.pages_in_order().iter().map(|pg| pg.name.clone()).collect();
+        want.reverse();
+        assert_eq!(names, want);
+        assert!(q.pages.values().all(|pg| pg.order % PAGE_STEP == 0 && pg.order > 0));
+        // Converting twice gives the same project.
+        assert_eq!(load(root).unwrap(), q);
+        save(&q, root).unwrap();
+        assert_eq!(format_of(root).unwrap(), 2);
+        assert_eq!(upgrade_note(root), None);
+        assert!(!root.join("parts.json").exists(), "format 1's catalogue file is replaced");
+        assert_eq!(load(root).unwrap(), q);
+    }
 
     /// Two revisions of one project: `a`, then `b` with a page, its devices and wires gone
     /// and a device added, so a mix of their files would not load as either.
@@ -740,7 +947,7 @@ mod tests {
         let original = start_circuit().unwrap();
         assert_eq!(original.parts.len(), 3);
         save(&original, dir.path()).unwrap();
-        assert!(dir.path().join("parts.json").exists());
+        assert!(dir.path().join("products.json").exists());
         assert_eq!(load(dir.path()).unwrap(), original);
         // A project saved before M3a: no parts.json and no parts on devices.
         let mut old = original.clone();
@@ -749,7 +956,7 @@ mod tests {
         }
         old.parts.clear();
         save(&old, dir.path()).unwrap();
-        std::fs::remove_file(dir.path().join("parts.json")).unwrap();
+        std::fs::remove_file(dir.path().join("products.json")).unwrap();
         assert_eq!(load(dir.path()).unwrap(), old);
     }
 

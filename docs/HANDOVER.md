@@ -70,3 +70,24 @@ cargo test --workspace
 ## M7 acceptance closure (PR #35)
 
 Formal acceptance remains pending. Corrective work covers multi-level terminal report identity and completeness, strict benchmark comparison, prepared-fixture disk-cold open, allocation counting with DHAT, and controlled benchmark provenance. The first corrected-head CI allocation artifact and qualified Legion baseline must be retained. No M10 work until M7 is accepted. Track check/render scaling as a dedicated profiling follow-up, not a sandbox-timing acceptance gate.
+
+## M10 plan and state
+
+M10 (format 2: canonical connectivity) is implemented in four slices, each merged when CI is
+green; independent review comes at M10 acceptance (docs/ROADMAP.md).
+
+| Slice | Scope | State |
+| --- | --- | --- |
+| M10a | Format 2 groundwork: `FORMAT = 2`, format 1 read and converted on load, first-save note (`ecad_project::upgrade_note`); products by canonical id (`ProductId`, `products.json`, `PartRef.product`, two makers' same number coexist; BOM one line per product); sparse page sort keys (`PAGE_STEP`, `sparse_keys`, `SetPageKeys` for undo); the M7 conveyor committed as a format 1 fixture (`tests/acceptance/conveyor/format1`, written by `ecad new-sample` at e258a59) and shown to convert to the same project and drawings | This PR |
+| M10b | Terminals as entities (`terminals.json`, persistent `TerminalId`, designations on terminals, functions map points to terminals), typed PLC channel data on terminals, `Reassign` as rewiring (reported) | Next |
+| M10c | Nodes (`nodes.json`): junctions, potentials, interruptions stop being devices; node drawings; scoped names and explicit bindings; ambiguous format 1 mappings kept apart and reported | |
+| M10d | Wires (`wires.json`) with terminal or node ends, wire graphics in page files, undrawn wires; the M10 acceptance tests; docs | |
+
+Notes:
+- **Product ids** of format 1 projects and of the built-in samples are UUID v5 of the number
+  (`ProductId::for_number`), so converting twice gives the same ids and `PartRef::new(number)`
+  still names a sample's product. Products made in the app or imported from CSV get random
+  ids; imports match the catalogue by manufacturer and number.
+- **Retired files:** a save removes format 1's top-level `parts.json` (`store::RETIRED`).
+- **Page keys:** format 1's dense order becomes `PAGE_STEP * (i + 1)`. Samples built in code
+  may still use small keys; only the relative order matters.

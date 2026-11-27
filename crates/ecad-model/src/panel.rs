@@ -147,7 +147,7 @@ impl Project {
             self.functions_of(device).filter(|f| self.role(f.id).is_ok_and(|r| r == Role::Terminal)).collect();
         let (mut width, mut height) = (0.0, 0.0f64);
         for r in &d.parts {
-            let Some(part) = self.parts.get(&r.number) else { continue };
+            let Some(part) = self.parts.get(&r.product) else { continue };
             let (Some(w), Some(h)) = (part.width, part.height) else { continue };
             let per = match (&r.only, r.per_strip) {
                 (_, true) => 1,
@@ -231,16 +231,7 @@ mod tests {
     use crate::{Part, PartRef};
 
     fn part(number: &str, size: Option<(f64, f64)>) -> Part {
-        Part {
-            number: number.into(),
-            manufacturer: String::new(),
-            description: String::new(),
-            code: String::new(),
-            contacts: Vec::new(),
-            width: size.map(|s| s.0),
-            height: size.map(|s| s.1),
-            depth: None,
-        }
+        Part { width: size.map(|s| s.0), height: size.map(|s| s.1), ..Part::new(number) }
     }
 
     #[test]

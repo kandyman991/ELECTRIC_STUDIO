@@ -45,6 +45,13 @@ exit codes: 0 done, 1 check failed, 2 the command couldn't run";
 /// What `--only` can name.
 const PARTS: [&str; 5] = ["pdf", "dxf", "dwg", "png", "reports"];
 
+/// Say on stderr when a save is about to upgrade an older project's format.
+fn upgrade_note(dir: &str) {
+    if let Some(note) = ecad_project::upgrade_note(Path::new(dir)) {
+        eprintln!("note: {dir}: {note}");
+    }
+}
+
 fn load(dir: &Path) -> Result<Project, String> {
     ecad_project::load(dir).map_err(|e| format!("{}: {e}", dir.display()))
 }
@@ -216,6 +223,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             }
             if let Some(command) = import.command {
                 project.apply(command).map_err(|e| e.to_string())?;
+                upgrade_note(dir);
                 ecad_project::save(&project, Path::new(dir)).map_err(|e| e.to_string())?;
             }
             println!(
@@ -237,6 +245,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             let page = ecad_editor::script::find_page(&project, page)?;
             let mut editor = ecad_editor::Editor::new(project, page).map_err(|e| e.to_string())?;
             let message = editor.import_underlay_file(page, Path::new(file), units)?;
+            upgrade_note(dir);
             ecad_project::save_checked(editor.project(), Path::new(dir), Some(seen)).map_err(|e| e.to_string())?;
             println!("{message}");
             Ok(ExitCode::SUCCESS)
@@ -247,6 +256,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             let page = ecad_editor::script::find_page(&project, page)?;
             let mut editor = ecad_editor::Editor::new(project, page).map_err(|e| e.to_string())?;
             editor.remove_underlay(page)?;
+            upgrade_note(dir);
             ecad_project::save_checked(editor.project(), Path::new(dir), Some(seen)).map_err(|e| e.to_string())?;
             println!("removed the underlay");
             Ok(ExitCode::SUCCESS)

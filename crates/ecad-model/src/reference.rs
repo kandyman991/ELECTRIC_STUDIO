@@ -7,6 +7,7 @@
 //! Positions are in millimetres from the frame's bottom-left corner (the sheet's origin is set
 //! so the frame starts at 0, 0); the sheet has columns 0-7 and rows A-F like the original.
 
+use crate::ProductId;
 use crate::builder::{Builder, F};
 use crate::geometry::{Point, Rotation};
 use crate::library::BlackBox;
@@ -31,8 +32,9 @@ impl Builder {
         per_strip: &[(&str, u32, &str, &str)],
     ) -> Result<()> {
         for (number, _, manufacturer, description) in parts.iter().chain(per_strip) {
-            if !self.p.parts.contains_key(*number) {
+            if !self.p.parts.contains_key(&ProductId::for_number(number)) {
                 self.p.apply(Command::AddPart(Part {
+                    id: ProductId::for_number(number),
                     number: (*number).into(),
                     manufacturer: (*manufacturer).into(),
                     description: (*description).into(),
@@ -267,7 +269,7 @@ fn terminal_strips(b: &mut Builder) -> Result<()> {
         PartRef::per_strip("0383560000", 2),
         PartRef::per_strip("1608740000", 1),
     ];
-    parts.retain(|r| b.p.parts.contains_key(&r.number));
+    parts.retain(|r| b.p.parts.contains_key(&r.product));
     b.p.apply(Command::SetDeviceParts { id: x0, parts }).map(drop)
 }
 

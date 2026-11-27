@@ -1,0 +1,90 @@
+{
+  "id": "iec.contact_nc",
+  "description": "Normally closed contact",
+  "tag_prefix": "-S",
+  "role": {
+    "type": "Contact",
+    "kind": "NormallyClosed"
+  },
+  "category": "Contacts",
+  "graphics": [
+    {
+      "Line": {
+        "a": {
+          "x": 0.0,
+          "y": 8.0
+        },
+        "b": {
+          "x": 0.0,
+          "y": 3.0
+        }
+      }
+    },
+    {
+      "Line": {
+        "a": {
+          "x": 0.0,
+          "y": 3.0
+        },
+        "b": {
+          "x": 2.5,
+          "y": 3.0
+        }
+      }
+    },
+    {
+      "Line": {
+        "a": {
+          "x": 0.0,
+          "y": -3.0
+        },
+        "b": {
+          "x": 3.5,
+          "y": 4.0
+        }
+      }
+    },
+    {
+      "Line": {
+        "a": {
+          "x": 0.0,
+          "y": -3.0
+        },
+        "b": {
+          "x": 0.0,
+          "y": -8.0
+        }
+      }
+    },
+    {
+      "Line": {
+        "a": {
+          "x": -6.0,
+          "y": 0.0
+        },
+        "b": {
+          "x": 1.0,
+          "y": 0.0
+        }
+      }
+    }
+  ],
+  "connection_points": [
+    {
+      "name": "11",
+      "at": {
+        "x": 0.0,
+        "y": 8.0
+      },
+      "leaves": "Up"
+    },
+    {
+      "name": "12",
+      "at": {
+        "x": 0.0,
+        "y": -8.0
+      },
+      "leaves": "Down"
+    }
+  ]
+}

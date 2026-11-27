@@ -147,10 +147,11 @@ pub struct BomRow {
 }
 
 /// The bill of materials: every part used by a device, with the total quantity, sorted by part
-/// number. Parts of a terminal strip count once per terminal, once per terminal of one kind
+/// number, then manufacturer (two makers' parts with one number are two lines). Parts of a terminal strip count once per terminal, once per terminal of one kind
 /// (`only`), or once for the strip.
 pub fn bom(project: &Project) -> Vec<BomRow> {
-    let mut rows: std::collections::BTreeMap<&str, BomRow> = std::collections::BTreeMap::new();
+    let mut rows: std::collections::BTreeMap<(String, String, ecad_model::ProductId), BomRow> =
+        std::collections::BTreeMap::new();
     for d in project.devices.values() {
         let terminals = project.terminals_of(d.id);
         for r in &d.parts {
@@ -163,9 +164,10 @@ pub fn bom(project: &Project) -> Vec<BomRow> {
                 }
                 (None, false) => (terminals.len() as u32).max(1),
             };
-            let part = project.parts.get(&r.number);
-            let row = rows.entry(&r.number).or_insert_with(|| BomRow {
-                number: r.number.clone(),
+            let part = project.parts.get(&r.product);
+            let (number, maker) = part.map(|p| (p.number.clone(), p.manufacturer.to_lowercase())).unwrap_or_default();
+            let row = rows.entry((number.clone(), maker, r.product)).or_insert_with(|| BomRow {
+                number,
                 manufacturer: part.map(|p| p.manufacturer.clone()).unwrap_or_default(),
                 description: part.map(|p| p.description.clone()).unwrap_or_default(),
                 quantity: 0,
@@ -872,17 +874,7 @@ mod tests {
         })
         .unwrap();
         for number in ["EX-PE-4", "EX-END"] {
-            p.apply(ecad_model::Command::AddPart(ecad_model::Part {
-                number: number.into(),
-                manufacturer: String::new(),
-                description: String::new(),
-                code: String::new(),
-                contacts: Vec::new(),
-                width: None,
-                height: None,
-                depth: None,
-            }))
-            .unwrap();
+            p.apply(ecad_model::Command::AddPart(ecad_model::Part::new(number))).unwrap();
         }
         let parts = vec![
             ecad_model::PartRef::per_terminal_of("EX-TB-4", 1, "iec.terminal"),

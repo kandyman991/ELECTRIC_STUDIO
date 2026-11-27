@@ -141,7 +141,7 @@ fn copy_commands(base: &Project, k: usize) -> Result<Vec<Command>> {
         let mut page = page.clone();
         page.id = page_id(page.id);
         page.name = format!("{}.{}", k + 1, page.name);
-        page.order += k32 * pages_per_copy;
+        page.order += u64::from(k32 * pages_per_copy) * ecad_model::PAGE_STEP;
         out.push(Command::AddPage(page));
     }
     for d in base.devices.values() {

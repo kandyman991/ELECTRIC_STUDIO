@@ -1,0 +1,84 @@
+{
+  "id": "iec.junction",
+  "description": "Junction",
+  "tag_prefix": "J",
+  "role": {
+    "type": "Single"
+  },
+  "bridged": true,
+  "hide_tag": true,
+  "hide_point_labels": true,
+  "category": "Wiring",
+  "graphics": [
+    {
+      "Circle": {
+        "center": {
+          "x": 0.0,
+          "y": 0.0
+        },
+        "radius": 0.2
+      }
+    },
+    {
+      "Circle": {
+        "center": {
+          "x": 0.0,
+          "y": 0.0
+        },
+        "radius": 0.4
+      }
+    },
+    {
+      "Circle": {
+        "center": {
+          "x": 0.0,
+          "y": 0.0
+        },
+        "radius": 0.6
+      }
+    },
+    {
+      "Circle": {
+        "center": {
+          "x": 0.0,
+          "y": 0.0
+        },
+        "radius": 0.8
+      }
+    }
+  ],
+  "connection_points": [
+    {
+      "name": "1",
+      "at": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "leaves": "Up"
+    },
+    {
+      "name": "2",
+      "at": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "leaves": "Down"
+    },
+    {
+      "name": "3",
+      "at": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "leaves": "Left"
+    },
+    {
+      "name": "4",
+      "at": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "leaves": "Right"
+    }
+  ]
+}

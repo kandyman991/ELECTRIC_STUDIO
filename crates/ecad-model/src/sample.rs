@@ -77,14 +77,9 @@ pub fn start_circuit() -> Result<Project> {
 /// A small made-up catalogue for the samples (not real order numbers).
 pub fn catalogue() -> Vec<Part> {
     let part = |number: &str, description: &str| Part {
-        number: number.into(),
         manufacturer: "Example".into(),
         description: description.into(),
-        code: String::new(),
-        contacts: Vec::new(),
-        width: None,
-        height: None,
-        depth: None,
+        ..Part::new(number)
     };
     vec![
         part("EX-CT-24DC", "Contactor 3 kW, 24 V DC coil, 1 NO auxiliary"),
@@ -196,14 +191,9 @@ pub fn with_terminals() -> Result<Project> {
     let mut p = with_potentials()?;
     let strip = DeviceId::from_u128(0x10a);
     p.apply(Command::AddPart(Part {
-        number: "EX-TB-4".into(),
         manufacturer: "Example".into(),
         description: "Feed-through terminal 4 mm²".into(),
-        code: String::new(),
-        contacts: Vec::new(),
-        width: None,
-        height: None,
-        depth: None,
+        ..Part::new("EX-TB-4")
     }))?;
     p.add_device(Device { parts: vec![PartRef::new("EX-TB-4", 1)], ..Device::new(strip, "-X2", "Field connections") })?;
     let symbol = SymbolId::new("iec.terminal");
@@ -491,7 +481,7 @@ pub fn library_overview() -> Result<Project> {
             name: n.to_string(),
             description: title.into(),
             subtitle: String::new(),
-            order: n,
+            order: n.into(),
         }))?;
         Ok(id)
     };
