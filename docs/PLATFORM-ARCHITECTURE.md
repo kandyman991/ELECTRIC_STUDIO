@@ -32,6 +32,10 @@ Principles:
 - One source of truth per fact; everything else is derived and regenerated.
 - No speculative abstraction: each concept enters when a milestone needs it, and the
   conveyor acceptance project exercises it.
+- **Stable across the machine's life.** Initial engineering, manufacturing, commissioning,
+  maintenance, extensions and retrofits happen in the same project. Adding or changing
+  equipment never changes unrelated objects or drawings (section 12, a foundational
+  invariant).
 - **AI-ready, AI-independent.** All engineering works without AI. An optional assistant
   (local first, external providers later) uses the same typed queries and validated
   operations as every workspace, and can't bypass them (section 11).
@@ -79,7 +83,16 @@ At `main` (06b34fb, after M6) the workspace is about 22 000 lines of Rust in ten
    one typed catalogue (section 11.2).
 8. **History doesn't record who made a change.** An edit by an MCP client and an edit by hand
    look the same afterwards.
-9. **No stable content hash.** The fingerprint uses `DefaultHasher`, which is fine within a
+9. **Edits change unrelated objects.** Four places break the stability invariant of section
+   12:
+   - with one number per potential, connecting two potentials renumbers the existing wires
+     of one of them (`number_for_new_wire`);
+   - new tags, terminal numbers and PLC channels take the lowest free number, so a deleted
+     `-K2` comes back as the next new device;
+   - inserting or moving a page rewrites the `order` of every page (`ReorderPages`);
+   - a page inserted between 3 and 4 can't be called `3a`; it takes the next free number.
+10. **No baselines.** A released or as-built state exists only as an export or a git commit.
+11. **No stable content hash.** The fingerprint uses `DefaultHasher`, which is fine within a
    run but not stable across Rust versions. Revisions and generation need a stable hash.
 
 ## 3. Canonical engineering model
@@ -142,6 +155,11 @@ Rules:
 | Part | (library id, manufacturer, order number), compared without case. In a project's catalogue, the order number as today | Library moves (the library id is a UUID in `library.json`) |
 | Symbol, template, module | Namespaced string: `iec.coil`, `<library>.<name>` | Library moves |
 | Library | UUID in its `library.json` | Folder renames, network paths |
+| Baseline | UUID, plus its name and kind (`Released 1`, `As-built`) | Never changes; its content is immutable |
+
+Ids (UUIDs) are never reused. Human-facing identifiers (tags, wire and cable numbers, terminal
+designations, PLC addresses, page names) follow the numbering policy of section 12.2: never
+changed as a side effect, never reused unless the policy allows it.
 
 ### 4.2 Ownership
 
@@ -170,6 +188,9 @@ Rules:
   computed on save.
 - A project copy records its **source**: library id, item key and the revision it was taken
   at.
+- **A project copy is pinned.** It never changes because the library changed. Updating it
+  is an explicit operation with a preview (section 12.5), so a released machine keeps the
+  component revisions it was built with.
 - "Update from library" is a three-way comparison per field. The base is the copy's source
   revision, "theirs" is the library's current revision and "ours" is the project copy.
   - Fields only the library changed are updated.
@@ -179,9 +200,8 @@ Rules:
   rule stays for importing manufacturer lists into a library.
 - Where a value came from an assistant or an import is the separate *provenance* of section
   11.4.
-- Project files themselves are versioned by the user's tools (git, backups). The project
-  keeps no revision history beyond undo, and the title block's revision list stays
-  documentation.
+- **Project revisions** are baselines (section 12.4): immutable snapshots inside the project
+  folder, with no git needed. Git or backups still work on the folder as before.
 
 ### 4.5 Connectivity (the central change)
 
@@ -228,6 +248,9 @@ my-machine/
   cables.json, parts.json, symbols/   as today (+ source/revision of copies)
   templates/<id>.json copies of templates used                new
   instances.json      template and module instances, parameters, generation state   new
+  numbering.json      numbering policy, reserved and retired identifiers           new
+  baselines/<id>.json baseline manifests: name, kind, date, by, file hashes        new
+  baselines/objects/  the baselines' files, by SHA-256, written once              new
   pages/<id>.json     drawings, wire graphics, boxes, layout items, annotations
   underlays/<id>.json as today
 ```
@@ -306,6 +329,11 @@ drawings, arranged in a deterministic order on the sheet's grid: by section, the
 instance, then tag. A new page starts when a template doesn't fit. This keeps generation
 explainable, testable and stable.
 
+Generation is **incremental by default** (section 12.3). It draws only what is missing or
+explicitly asked for, and puts new content on new pages inserted after the section's pages.
+It never moves or renumbers what is already drawn. Regenerating existing content is a
+separate operation with its own scope and preview.
+
 ### 6.2 Determinism
 
 Generation is a pure function `(model, generation settings) -> commands`:
@@ -339,6 +367,9 @@ there now, and what would be generated now.
 | User changed it | No longer produces it | Kept, marked orphaned, listed |
 | — | New item | Added |
 
+- This table applies when a person regenerates existing content, which is an explicit
+  operation with a scope (a page, a section, a template instance). Ordinary generation only
+  adds what is missing (section 12.3).
 - Regeneration is one command batch, so one undo step. It shows a preview (a dry run listing
   additions, updates, kept changes and conflicts) before it applies.
 - **Detach** turns a generated item into a manual one, so the generator never touches it
@@ -379,7 +410,9 @@ export, and DXF/DWG import (underlays). The rules stay as they are:
 - CADCraft's own editing engine isn't used.
 
 Schematic pages, cabinet layouts, machine layouts, template drawings and generated pages all
-render through it. Product footprints and front views come from manufacturer DXF through
+render through it. Layout editing follows section 12: new devices arrive in the "not placed
+yet" list, and are placed by a person or into free space on request. Existing positions and
+routes never move to make room. Lack of space is a check, not a rearrangement. Product footprints and front views come from manufacturer DXF through
 the same reader as underlays. A machine drawing from mechanical CAD is an underlay on a
 machine-layout page.
 
@@ -399,6 +432,10 @@ editing geometry in CAD), they need adding here (decision D11).
 | PLC channel data | `properties` keys become typed fields, read from the old keys | File format yes |
 | Parts | #32's fields plus source/revision; old files read unchanged | No |
 | Stable hash | New, for revisions and generation; the folder fingerprint stays as it is | No |
+| Page order | Sparse keys; format 1's dense order is converted on read | File format yes |
+| Numbering policy, reservations, retired list | New `numbering.json`; a project without it numbers as today until its first released baseline | No |
+| Per-potential wire numbers on joining | No longer renumbers existing wires; reports `wire-numbers-differ` instead | **Behaviour yes,** on purpose (section 12.2) |
+| Baselines | New; a project starts with none | No |
 
 - Format 2 is written only after a format 1 project is saved. The first save tells the user
   the project will no longer open in older versions.
@@ -423,6 +460,10 @@ editing geometry in CAD), they need adding here (decision D11).
 | An assistant edits around the rules | No AI-only path; every operation goes through `apply` and the checks; proposals with new errors can't be applied; safety-related changes need a person |
 | AI-suggested data passes as verified | Provenance on facts; the `unverified-data` check; release export refuses unverified safety-related data |
 | Confidential data leaves the machine | Local provider by default; external only by project setting; excluded fields; audit log |
+| An operation changes more than it should | Declared scope plus the stability test on every operation; the conveyor retrofit in CI |
+| Baselines grow the project folder | Content-addressed and shared between baselines; underlays by hash; a baseline only adds changed files |
+| Sparse page order and page-name insertion confuse old tools | Format 2 only; the format 1 reader converts dense order |
+| Retirement makes numbering feel stuck | Policy per kind; reuse allowed before the first release; explicit renumbering always available with a preview |
 | AI infrastructure grows ahead of need | Only the registry, change sets and provenance are built before inference. Each also serves people, CLI or generation |
 
 Dependencies: M7 comes before M10; M8 before M11; M9 before M11 and M12; M10 before M12; M12 before
@@ -498,7 +539,12 @@ ChangeSet {
   against the current project.
 - **Reject** or **edit** before applying. A person can drop single operations.
 - **Not only for AI.** The same mechanism is the dry run of a library update (M9), the
-  preview of regeneration (M13) and an import's `--dry-run`. It is built once, for those.
+  preview of regeneration (M13), an import's `--dry-run`, and every global operation of
+  section 12. Its report is the change-impact analysis of section 12.5, built once for all of
+  them.
+- **Scope.** An assistant's change set is scoped like any operation: it can't contain a global
+  operation (renumbering, reordering, regeneration of existing content, layout optimisation)
+  unless a person authorises that operation separately.
 
 ### 11.4 Actors and provenance
 
@@ -573,6 +619,160 @@ They use the layers above and need nothing new in the core:
 All of them produce change sets with suggested provenance. None writes to the model
 directly.
 
+## 12. Incremental engineering and as-built preservation
+
+**Foundational invariant: an operation changes the objects it names, and data derived from
+them, and nothing else.** Adding or modifying equipment in an existing project must not change
+unrelated engineering objects or their drawings. This holds for the whole life of a machine:
+initial engineering, release for manufacturing, commissioning, as-built, maintenance,
+extensions and retrofits.
+
+### 12.1 What is preserved
+
+Unless a person runs an explicit global operation, these never change as a side effect:
+
+- device identities and reference designations;
+- wire and cable numbers;
+- terminal designations;
+- PLC addresses and network assignments;
+- page identities and page names (numbers);
+- symbol positions and orientations;
+- cabinet and machine layout positions;
+- wire and cable routes (bends, duct paths);
+- selected component revisions (pinned project copies, section 4.4);
+- manual modifications, including those to generated content (section 6.3).
+
+**Derived data does change, as it must:** cross-references, contact mirrors, potentials, the
+BOM, reports and generated documentation pages. It is regenerated from the model and never
+stored as truth.
+
+How it is enforced:
+
+- **Operations declare their scope:** the entities they may change.
+- **A stability test** applies an operation and compares the project before and after by id.
+  Anything changed outside the scope and outside derived data fails. It runs in the
+  conveyor acceptance test and on every new operation.
+- **Global operations are separate and explicit.** Each is its own operation in the registry
+  (section 11.2), never part of another, always previewed (section 12.5), and authorised by a
+  person:
+  - renumbering (wires, devices, terminals, PLC channels, pages);
+  - reordering pages;
+  - regenerating existing content;
+  - optimising a layout;
+  - updating library revisions.
+
+### 12.2 Numbering
+
+- **New objects get an available identifier without touching existing ones.**
+- **A numbering policy per kind**: device tags per prefix, wire numbers (per wire or per
+  potential), cable numbers, terminal numbers per strip, PLC channels per card, page names.
+  - *Strategy:* next after the highest (default once a baseline exists), or the lowest free.
+  - *Format:* today's tag and wire formats, with `{page}` and so on.
+  - *Range:* where numbering starts.
+- **Reserved identifiers:** single values or ranges kept free (spare terminals, PLC
+  addresses for a planned extension, `-K10…-K19` for a future section). Allocation skips them;
+  using one is a deliberate choice.
+- **Retired identifiers:** when an object is removed, its identifier is recorded as retired,
+  with the baseline it was last in. After a released or as-built baseline, a retired
+  identifier isn't reused unless the policy allows it, and reuse is reported in the change
+  report. Before any release, reuse is allowed by default, as today.
+- **Per-potential wire numbers:** joining two numbered potentials no longer renumbers either.
+  The wire takes the number of the side it starts from, and the existing
+  `wire-numbers-differ` check reports the mismatch. Making them agree is the explicit
+  renumbering operation.
+- **Pages:**
+  - Inserting a page never renames others. The new page is named by the policy: after `3`
+    it becomes `3a` (or `3.1`), and after `3a` it becomes `3b`.
+  - The page order is a sparse key, so an insertion writes only the new page. Today's
+    `ReorderPages`, which writes every page, becomes the explicit reorder operation.
+- **Stored in `numbering.json`:** the policy, reservations and the retired list.
+
+### 12.3 Incremental generation
+
+Generation (section 6) inserts and updates locally:
+
+- **Only what is missing or explicitly affected:**
+  - template instances and devices not drawn yet;
+  - undrawn wires;
+  - items the user names.
+- **Unaffected pages are untouched:** byte-identical page files. Their derived cross-reference
+  texts may change on screen and in exports, since they are computed, not stored.
+- **New content goes on new pages,** inserted after the last page of its section, named by the
+  page policy, never renumbering existing pages. Placing it into free space on an existing
+  page is an option a person chooses for that run.
+- **Existing circuit instances are preserved** when machine functions are added: a new
+  template instance is new, and an existing one is regenerated only on request.
+- **Connections to existing potentials** use the new page's own potential or interruption
+  points, so no existing page gains symbols. Cross-references on existing pages are derived.
+- **Problems are reported, not redesigned:**
+  - no free terminal, PLC channel or address in range;
+  - no room on a plate or rail;
+  - a potential conflict;
+  - an electrical inconsistency.
+  Each is a check result in the preview. Nothing is rearranged to make it fit.
+
+### 12.4 Baselines and revisions
+
+A **baseline** is an immutable snapshot of the project, made by a person at a stage of the
+machine's life:
+
+| Kind | When |
+| --- | --- |
+| Draft | Any time, for comparison |
+| Released | Release for manufacturing |
+| As-built | After commissioning, as the machine really is |
+| Revision | Maintenance or retrofit releases after that |
+
+- **Contents:** every project file at that moment (structure, devices, wires, pages, layouts,
+  pinned library copies, numbering). Settings and underlays are included by hash.
+- **Storage, inside the project folder:**
+  - `baselines/<id>.json` holds name, kind, index (matching the title block revision),
+    date, by, note and the SHA-256 of every file;
+  - `baselines/objects/` holds each file content once, by hash, shared between baselines,
+    written once and never rewritten;
+  - integrity is checked on load: a file that doesn't match its hash marks the baseline
+    damaged.
+- **Without git** or any other tool. Git still works on the folder as before, and baselines
+  diff cleanly too.
+- **Read-only use:** a baseline opens as a read-only project (the same loader) for viewing,
+  exporting the released documents again, and comparing.
+- **Modifications after a baseline** are normal edits, always comparable with it (12.5). A
+  released baseline also switches the numbering policy to "no reuse of retired identifiers".
+- **The title block's revision list** gains an optional link to its baseline.
+- **Not PLM:** no approval workflows, branches, merges, check-in or check-out. One project
+  line with snapshots along it.
+
+### 12.5 Change impact analysis
+
+One engine compares two states of a project by stable id: before and after an operation or
+change set, or a baseline and now. It reports by engineering meaning, not by file:
+
+| Category | Examples |
+| --- | --- |
+| Equipment | Devices added, removed, modified (tag, part, location, section, requirement) |
+| Circuits and connections | Wires added or removed, ends moved, potentials merged or split |
+| Terminal strips, cables, PLC | Terminals added or removed, wires moved between terminals, cable cores reassigned, PLC channels and addresses changed |
+| Pages and layouts | Pages added; pages whose drawing changed; layout items added or moved |
+| BOM | Quantities and parts added, removed, changed |
+| Physical work | Relabel (an existing object's tag, wire number or terminal designation changed), rewire (an existing wire's ends changed), relocate (an existing device moved to another location or plate position), replace (part changed) |
+| Compatibility | New check errors and warnings: requirement not met, no space, potential conflict |
+
+- **Uses:** the preview of every change set (11.3) and every global operation, and
+  `ecad change-report <project> --since <baseline>` as a document (CSV, then a generated
+  page in M14).
+- **Proof of the invariant:** unrelated objects appear in no category. That is what the
+  stability test (12.1) checks.
+
+### 12.6 Removal and replacement
+
+- **Removing equipment** removes its device, drawings, wires to it and layout item, in one
+  operation and one undo step. Nothing else is renumbered. Its identifiers are retired, and
+  the gaps it leaves stay. Terminals and channels it used become free, subject to the
+  retirement policy.
+- **Replacing equipment** keeps the device: same id, tag, drawings, wires and layout position.
+  Its part changes, and the impact analysis reports what physically changes: new terminals
+  missing on the drawings, a larger footprint than the space, a different rating.
+
 ## Decisions to make
 
 Each has a proposed default, used unless the review decides otherwise.
@@ -600,3 +800,10 @@ Each has a proposed default, used unless the review decides otherwise.
 | D19 | What is safety-related | **Safety-marked sections, safety product classes, and items a person marks** |
 | D20 | External providers | **Off by default,** per-project opt-in, with excluded fields and an audit log |
 | D21 | Where assistant conversations are kept | **Outside the project folder** (user data), never in git with the project unless exported on purpose |
+| D22 | Allocation strategy | **Lowest free until the first released baseline, then next after the highest;** per kind, configurable |
+| D23 | Reuse of retired identifiers | **Not after a released baseline,** unless the policy allows it; reuse reported |
+| D24 | New generated content | **On new inserted pages;** free space on existing pages only when a person chooses it per run |
+| D25 | Inserted page names | **Letter suffix** (`3a`, `3b`), configurable to `3.1` |
+| D26 | Baseline storage | **Inside the project folder,** content-addressed (`baselines/objects`); no git needed |
+| D27 | Baseline content | **Every project file,** underlays by hash; no partial baselines |
+| D28 | Cross-references on unaffected pages | **Derived, may change** (they describe the new content); stored page files stay byte-identical |

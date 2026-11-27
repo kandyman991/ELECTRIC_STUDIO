@@ -25,6 +25,7 @@ potentials, cross-references, terminals, PLC channels, cables, parts, checks and
 | 6. Layouts | Cabinet (plate and door) and machine layout on shared CAD | Plate layout with rectangles, rails, ducts, wire lengths through ducts | No door or machine layout, no real outlines, no field cable routes | M15 |
 | 7. Documentation and validation | Synchronised document set; consistency across layers | CSV reports; drawing-level checks | No generated pages; no requirement, structure or product checks | M14, with checks added in each milestone |
 | Reuse | Functional modules (machine units) | Nothing | Missing | M16 |
+| Lifecycle stability | Edits that change only what they name; numbering policy with reserved and retired identifiers; page insertion; baselines (released, as-built); change impact reports; incremental generation | Explicit "renumber all"; undo; saves all or nothing | Joining potentials renumbers wires; lowest-free reuse; page insert rewrites every page's order; no baselines or change reports | S0, S1, then the rules in M10, M13 and M15 |
 | AI readiness | One typed query and operation interface; change sets with preview; actors and provenance; safety approval rules; a replaceable local provider | MCP server with typed tools over the editor's operations, read-only unless `--write`, with undo | No proposals or previews, no actor or provenance record, no safety rules, operations defined in three places | AI0, provenance in M8–M14, AI1–AI5 |
 
 Also needed by the workflow (from the audit in PLATFORM-ARCHITECTURE.md section 2): stable

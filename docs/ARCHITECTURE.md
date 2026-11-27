@@ -133,6 +133,7 @@ machine wiring rules. ANSI/NFPA 79 later.
 
 | Decision | Status |
 | --- | --- |
+| Incremental engineering and as-built preservation: an operation changes only what it names; numbering never changes as a side effect; baselines and change impact without git (docs/PLATFORM-ARCHITECTURE.md section 12) | Proposed (2026-11-27), under review, foundational |
 | Machine-centric platform: structure, requirements, products, devices, connectivity and representations as separate layers; schematic-first stays fully supported (docs/PLATFORM-ARCHITECTURE.md, docs/ROADMAP.md) | Proposed (2026-11-27), under review |
 | Separate product from HMI Studio, with no direct tag exchange: HMI tags come in from TIA Portal, which gets them from the TIA tag table | Decided (2026-11-27) |
 | CADCraft crates as libraries, not a fork | Decided |
