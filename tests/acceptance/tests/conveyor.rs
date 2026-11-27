@@ -429,10 +429,7 @@ fn multi_level_terminal_reports_include_every_wired_point() {
     for (number, sensor) in [("1", "-B1"), ("3", "-B2")] {
         let levels: Vec<_> = rows.iter().filter(|r| r.strip == "-X3" && r.terminal == number).collect();
         assert_eq!(levels.len(), 2);
-        for (row, potential, a, b, core) in [
-            (levels[0], "L+", "1", "2", "BN"),
-            (levels[1], "M", "3", "4", "BU"),
-        ] {
+        for (row, potential, a, b, core) in [(levels[0], "L+", "1", "2", "BN"), (levels[1], "M", "3", "4", "BU")] {
             assert_eq!(row.potential, potential);
             assert_eq!((row.inside_point.as_str(), row.outside_point.as_str()), (a, b));
             assert_eq!(row.bridge_points, format!("{a}|{b}"));

@@ -333,7 +333,8 @@ pub fn terminal_diagram(project: &Project) -> Vec<TerminalRow> {
 }
 
 pub fn terminal_diagram_csv(rows: &[TerminalRow]) -> String {
-    let mut out = String::from("strip,terminal,inside,outside,potential,location,inside_point,outside_point,bridge_points\n");
+    let mut out =
+        String::from("strip,terminal,inside,outside,potential,location,inside_point,outside_point,bridge_points\n");
     for r in rows {
         let fields = [
             &r.strip,

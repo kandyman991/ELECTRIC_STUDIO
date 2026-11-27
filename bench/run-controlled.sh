@@ -40,6 +40,7 @@ if [ -n "$underlay" ]; then
   export ECAD_BENCH_ASSET_SHA256=$(sha256sum -- "$underlay" | cut -d' ' -f1)
 else
   export ECAD_BENCH_ASSET_SHA256=generated
+  export ECAD_BENCH_CONTROLLED=exploratory
 fi
 
 conditions() {
@@ -72,8 +73,13 @@ wait_idle() {
 }
 args=(--size "$size")
 [ -z "$underlay" ] || args+=(--underlay "$underlay")
-fixtures=$(mktemp -d)
+fixtures=$(mktemp -d "$out/fixtures.XXXXXX")
 trap 'rm -rf -- "$fixtures"' EXIT
+filesystem=$(findmnt -T "$fixtures" -no FSTYPE)
+case "$filesystem" in
+  tmpfs|ramfs) echo "fixture filesystem is memory-backed; use a disk checkout" >&2; exit 1 ;;
+esac
+echo "fixture filesystem: $filesystem" > "$out/filesystem.txt"
 
 # All disk fixtures exist before eviction. Do not copy, hash, load or rewrite the
 # fixture between eviction and the first timed read.

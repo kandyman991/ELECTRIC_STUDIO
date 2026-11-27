@@ -54,13 +54,14 @@ cache drop and reads an existing fixture without preloading it. The first sample
 the remaining samples in that file are warm opens. Each process suite reports process-first
 (after setup) and warm iterations for all workloads; it is not a disk-cold suite.
 
-Results in `bench/results/`: `conditions.txt`, `disk-cold-<project>-<n>.json`,
+Fixtures are prepared on the checkout filesystem, not `/tmp`, and memory-backed filesystems are refused.
+Results in `bench/results/`: `conditions.txt`, `filesystem.txt`, `disk-cold-<project>-<n>.json`,
 `process-<n>.json`, and `COMPLETE` only after successful completion. The asset's SHA-256,
 exact revision, power, toolchain and machine conditions are recorded; no asset is committed.
 For acceptance use full size, at least three repeats, cache eviction, a representative
 non-confidential real DXF/DWG, mains power and no other work on the machine. A generated
 asset is useful for exploration but does not demonstrate the real-asset workload. A forced,
-smoke, no-eviction or short run is marked exploratory. Check power/load/conditions throughout
+smoke, generated-asset, no-eviction or short run is marked exploratory. Check power/load/conditions throughout
 before promoting a result. Compare same-machine process suites with `ecad-bench compare`;
 it reports warm median and range, and peak RSS. Retain the disk-cold repetitions separately
 and report their first-sample median and spread. Do not mix disk-cold and process-first samples.

@@ -274,11 +274,21 @@ fn compare(results: &Value, baseline: &Value) -> Result<ExitCode, String> {
     }
     let same_machine = baseline["machine"]["label"].is_string()
         && [
-            "label", "profile", "os", "arch", "cpu", "cores", "kernel", "governor", "onAc", "rustc", "assetSha256",
+            "label",
+            "profile",
+            "os",
+            "arch",
+            "cpu",
+            "cores",
+            "kernel",
+            "governor",
+            "onAc",
+            "rustc",
+            "assetSha256",
             "controlled",
         ]
-            .iter()
-            .all(|field| baseline["machine"][*field] == results["machine"][*field]);
+        .iter()
+        .all(|field| baseline["machine"][*field] == results["machine"][*field]);
     let mut mismatches = 0;
     for (k, r) in actual {
         let b = base.get(&k).ok_or_else(|| format!("{k}: missing baseline"))?;
@@ -287,9 +297,8 @@ fn compare(results: &Value, baseline: &Value) -> Result<ExitCode, String> {
             println!("{k}: counts differ\n  got  {}\n  want {}", r["counts"], b["counts"]);
         }
         if same_machine && r["counts"] == b["counts"] {
-            let t = |v: &Value| {
-                v["timesNs"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect::<Vec<_>>()
-            };
+            let t =
+                |v: &Value| v["timesNs"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect::<Vec<_>>();
             let (current, previous) = (t(r), t(b));
             let warm = current.get(1..).unwrap_or_default();
             let now = median(warm);
