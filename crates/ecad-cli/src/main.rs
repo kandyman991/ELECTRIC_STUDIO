@@ -3,6 +3,8 @@
 //! Exit codes: 0 done; 1 `check` found errors (or, with `--strict`, warnings); 2 the command
 //! couldn't run (bad arguments, a project that doesn't load, a file that can't be written).
 
+mod library;
+
 use ecad_model::Project;
 use ecad_view::Formats;
 use std::path::{Path, PathBuf};
@@ -34,6 +36,29 @@ usage:
       read in a separate worker process.
   ecad remove-underlay <project-dir> <page>
       Take a page's underlay away.
+  ecad import-parts <project-dir> <list.csv|.xlsx> [reading options] [--dry-run]
+      Put a parts list into the project's own catalogue (see reading options below).
+  ecad library new <library-dir> [--name <name>]
+      Make a components library: parts shared by every project, by manufacturer.
+  ecad library import <library-dir> <list.csv|.xlsx> [reading options] [--dry-run]
+      Import a manufacturer's or your own parts list (CSV, Excel .xlsx/.xlsm/.xls, .ods).
+      A part already there gets what the list has and keeps the rest.
+  ecad library search <library-dir> <words>... [--limit <n>] [--json]
+      Parts with every word in their number, maker, description, code, class or data.
+  ecad library show <library-dir> <number> [--manufacturer <name>] [--json]
+  ecad library add <project-dir> <library-dir> <number>... [--manufacturer <name>] [--dry-run]
+      Copy parts into the project's catalogue (or bring the copies there up to date).
+  ecad library update <project-dir> <library-dir> [--dry-run]
+      Bring every part of the project's catalogue up to date from the library.
+  reading options, for a parts list:
+      --manufacturer <name>  for rows that don't name one (a maker's own price list)
+      --sheet <name>         the workbook sheet (default: the first with a header)
+      --header-row <n>       the header's row (default: found in the first 30)
+      --map <field>=<title>  a column with its own title, e.g. --map number=\"Cod. Art.\";
+                             fields: number, manufacturer, description, code, contacts,
+                             width, height, depth, size, class, datasheet (repeatable)
+      --data <titles>        only these other columns become technical data
+      --no-data              none do (default: every other column does)
   ecad new-sample <project-dir> [start|contacts|potentials|terminals|plc|power|library|reference]
       Write a sample project (default: start).
   ecad demo <out-dir>
@@ -49,26 +74,57 @@ fn load(dir: &Path) -> Result<Project, String> {
     ecad_project::load(dir).map_err(|e| format!("{}: {e}", dir.display()))
 }
 
-/// The arguments, split into positionals and `--flags` (with the value of `--only`).
+/// Options that take a value, with what to say when it is missing.
+const VALUED: [(&str, &str); 9] = [
+    ("--only", "a list, e.g. --only pdf,reports"),
+    ("--units", "a unit: mm, cm, m, inch or feet"),
+    ("--manufacturer", "a name, e.g. --manufacturer \"Phoenix Contact\""),
+    ("--sheet", "a sheet name"),
+    ("--header-row", "a row number"),
+    ("--map", "a column, e.g. --map number=\"Codice articolo\""),
+    ("--data", "column titles, e.g. --data \"Rated current,Coil voltage\""),
+    ("--name", "a name"),
+    ("--limit", "a number"),
+];
+/// Options on their own.
+const SWITCHES: [&str; 4] = ["--json", "--strict", "--no-data", "--dry-run"];
+
+/// The arguments, split into positionals and `--options` (with their values, in order).
 struct Args {
     positional: Vec<String>,
-    json: bool,
-    strict: bool,
-    only: Option<String>,
-    units: Option<String>,
+    options: Vec<(&'static str, Option<String>)>,
+}
+
+impl Args {
+    fn has(&self, name: &str) -> bool {
+        self.options.iter().any(|(n, _)| *n == name)
+    }
+
+    fn value(&self, name: &str) -> Option<&str> {
+        self.values(name).into_iter().next()
+    }
+
+    fn values(&self, name: &str) -> Vec<&str> {
+        self.options.iter().filter(|(n, _)| *n == name).filter_map(|(_, v)| v.as_deref()).collect()
+    }
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
-    let mut out = Args { positional: Vec::new(), json: false, strict: false, only: None, units: None };
+    let mut out = Args { positional: Vec::new(), options: Vec::new() };
     let mut it = args.iter();
     while let Some(a) = it.next() {
-        match a.as_str() {
-            "--json" => out.json = true,
-            "--strict" => out.strict = true,
-            "--only" => out.only = Some(it.next().ok_or("--only needs a list, e.g. --only pdf,reports")?.clone()),
-            "--units" => out.units = Some(it.next().ok_or("--units needs a unit: mm, cm, m, inch or feet")?.clone()),
-            flag if flag.starts_with("--") => return Err(format!("unknown option `{flag}`")),
-            _ => out.positional.push(a.clone()),
+        if let Some((name, need)) = VALUED.iter().find(|(n, _)| n == a) {
+            let v = it.next().ok_or_else(|| format!("{name} needs {need}"))?;
+            if *name != "--map" && out.has(name) {
+                return Err(format!("{name} given twice"));
+            }
+            out.options.push((name, Some(v.clone())));
+        } else if let Some(name) = SWITCHES.iter().find(|n| *n == a) {
+            out.options.push((name, None));
+        } else if a.starts_with("--") {
+            return Err(format!("unknown option `{a}`"));
+        } else {
+            out.positional.push(a.clone());
         }
     }
     Ok(out)
@@ -167,11 +223,15 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
     }
     let a = parse(args)?;
     let flags = |allowed: &[&str]| -> Result<(), String> {
-        for (set, name) in
-            [(a.json, "--json"), (a.strict, "--strict"), (a.only.is_some(), "--only"), (a.units.is_some(), "--units")]
-        {
-            if set && !allowed.contains(&name) {
-                return Err(format!("{name} doesn't apply to `{}`", a.positional.first().map_or("", String::as_str)));
+        let command: Vec<&str> = a.positional.iter().take(2).map(String::as_str).collect();
+        let command = if command.first() == Some(&"library") {
+            command.join(" ")
+        } else {
+            command[..command.len().min(1)].join(" ")
+        };
+        for (name, _) in &a.options {
+            if !allowed.contains(name) {
+                return Err(format!("{name} doesn't apply to `{command}`"));
             }
         }
         Ok(())
@@ -180,11 +240,11 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
     match p.as_slice() {
         ["check", dir] => {
             flags(&["--json", "--strict"])?;
-            check(&load(Path::new(dir))?, a.json, a.strict)
+            check(&load(Path::new(dir))?, a.has("--json"), a.has("--strict"))
         }
         ["export", dir, out] => {
             flags(&["--only"])?;
-            let (formats, reports) = selection(a.only.as_deref())?;
+            let (formats, reports) = selection(a.value("--only"))?;
             export(&load(Path::new(dir))?, Path::new(out), formats, reports)?;
             Ok(ExitCode::SUCCESS)
         }
@@ -226,7 +286,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         }
         ["import-dxf", dir, page, file] => {
             flags(&["--units"])?;
-            let units = match a.units.as_deref() {
+            let units = match a.value("--units") {
                 None => None,
                 Some(u) => Some(
                     ecad_model::underlay::Units::parse(u)
@@ -251,6 +311,35 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             println!("removed the underlay");
             Ok(ExitCode::SUCCESS)
         }
+        ["import-parts", dir, file] => {
+            flags(&[&library::READING[..], &["--dry-run"]].concat())?;
+            library::import_into_project(dir, file, &library::reading(&a)?, a.has("--dry-run"))
+        }
+        ["library", "new", dir] => {
+            flags(&["--name"])?;
+            library::new(dir, a.value("--name"))
+        }
+        ["library", "import", dir, file] => {
+            flags(&[&library::READING[..], &["--dry-run"]].concat())?;
+            library::import(dir, file, &library::reading(&a)?, a.has("--dry-run"))
+        }
+        ["library", "search", dir, words @ ..] if !words.is_empty() => {
+            flags(&["--limit", "--json"])?;
+            library::search(dir, words, a.value("--limit"), a.has("--json"))
+        }
+        ["library", "show", dir, number] => {
+            flags(&["--manufacturer", "--json"])?;
+            library::show(dir, number, a.value("--manufacturer"), a.has("--json"))
+        }
+        ["library", "add", project, dir, numbers @ ..] if !numbers.is_empty() => {
+            flags(&["--manufacturer", "--dry-run"])?;
+            library::add(project, dir, numbers, a.value("--manufacturer"), a.has("--dry-run"))
+        }
+        ["library", "update", project, dir] => {
+            flags(&["--dry-run"])?;
+            library::update(project, dir, a.has("--dry-run"))
+        }
+        ["library", ..] => Err(format!("wrong arguments for `library`\n\n{USAGE}")),
         ["new-sample", dir, rest @ ..] if rest.len() <= 1 => {
             flags(&[])?;
             use ecad_model::sample;
@@ -282,8 +371,18 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         }
         [] => Err(format!("no command\n\n{USAGE}")),
         [cmd, ..]
-            if ["check", "export", "report", "import-tia", "import-dxf", "remove-underlay", "new-sample", "demo"]
-                .contains(cmd) =>
+            if [
+                "check",
+                "export",
+                "report",
+                "import-tia",
+                "import-dxf",
+                "remove-underlay",
+                "import-parts",
+                "new-sample",
+                "demo",
+            ]
+            .contains(cmd) =>
         {
             Err(format!("wrong arguments for `{cmd}`\n\n{USAGE}"))
         }

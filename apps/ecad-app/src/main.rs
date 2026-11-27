@@ -1333,10 +1333,15 @@ impl App {
         egui::Window::new("Parts catalogue").open(&mut open).default_size([640.0, 420.0]).show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if ui
-                    .button("Import CSV…")
-                    .on_hover_text("Columns: part number, manufacturer, description, internal code; , or ; separated")
+                    .button("Import list…")
+                    .on_hover_text(
+                        "A manufacturer's price list or your own, as CSV or Excel. Columns are found by their titles \
+                         (order number, manufacturer, description, code...); the others become technical data",
+                    )
                     .clicked()
-                    && let Some(path) = rfd::FileDialog::new().add_filter("CSV", &["csv", "txt"]).pick_file()
+                    && let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Parts list", &["csv", "txt", "xlsx", "xlsm", "xls", "ods"])
+                        .pick_file()
                 {
                     events.push(UiEvent::ImportParts { path });
                 }
@@ -1382,14 +1387,11 @@ impl App {
                         {
                             events.push(UiEvent::UpdatePart {
                                 part: ecad_editor::Part {
-                                    number: part.number.clone(),
+                                    // Everything else (contacts, size, technical data) as it is.
                                     manufacturer: buf.0.trim().to_owned(),
                                     description: buf.1.trim().to_owned(),
                                     code: buf.2.trim().to_owned(),
-                                    contacts: part.contacts.clone(),
-                                    width: part.width,
-                                    height: part.height,
-                                    depth: part.depth,
+                                    ..part.clone()
                                 },
                             });
                         }
@@ -1429,6 +1431,7 @@ impl App {
                             width: None,
                             height: None,
                             depth: None,
+                            ..Default::default()
                         },
                     });
                     self.new_part = Default::default();

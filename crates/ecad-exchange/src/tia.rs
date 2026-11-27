@@ -265,7 +265,7 @@ fn check_size(bytes: &[u8]) -> Result<()> {
     check_size_within(bytes, MAX_FILE, MAX_UNPACKED)
 }
 
-fn check_size_within(bytes: &[u8], max_file: usize, max_unpacked: u64) -> Result<()> {
+pub(crate) fn check_size_within(bytes: &[u8], max_file: usize, max_unpacked: u64) -> Result<()> {
     if bytes.len() > max_file {
         return Err(ExchangeError::Read(format!("the file is over {} MB", max_file >> 20)));
     }

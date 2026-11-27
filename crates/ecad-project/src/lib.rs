@@ -23,7 +23,7 @@ use ecad_model::{
     ProjectInfo, Sheet, SymbolDef,
 };
 
-pub mod csv;
+pub mod library;
 pub mod store;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -46,6 +46,12 @@ pub enum ProjectError {
     Changed(PathBuf),
     #[error("{0}: another program is saving this project right now; try again")]
     Busy(PathBuf),
+    #[error("{0}: not a components library: {1}")]
+    NotALibrary(PathBuf, &'static str),
+    #[error("{0}: {1}")]
+    InvalidLibrary(PathBuf, String),
+    #[error("{0}: this is a components library, not a project")]
+    IsALibrary(PathBuf),
     #[error("{path}: over {limit} MB, too big to read")]
     TooBig { path: PathBuf, limit: usize },
 }
@@ -260,6 +266,9 @@ pub fn save(project: &Project, dir: &Path) -> Result<()> {
 /// [`fingerprint`]): another program's save in between is refused with
 /// [`ProjectError::Changed`], and the folder is left alone. Returns the new fingerprint.
 pub fn save_checked(project: &Project, dir: &Path, expected: Option<Fingerprint>) -> Result<Fingerprint> {
+    if library::is_library(dir) {
+        return Err(ProjectError::IsALibrary(dir.to_owned()));
+    }
     let files = render(project)?;
     for d in [dir.to_owned(), dir.join("pages"), dir.join("symbols"), dir.join("underlays")] {
         std::fs::create_dir_all(&d).map_err(io(&d))?;

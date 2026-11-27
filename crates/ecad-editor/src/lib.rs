@@ -321,32 +321,10 @@ impl Editor {
     /// Add new parts and update existing ones (by part number) in one undoable step. Returns
     /// how many were added and how many changed.
     pub fn import_parts(&mut self, parts: Vec<Part>) -> Result<(usize, usize), ModelError> {
-        let (mut added, mut updated) = (0, 0);
-        let mut cmds = Vec::new();
-        for mut part in parts {
-            // A catalogue without contact blocks or sizes doesn't wipe the ones already entered.
-            if let Some(existing) = self.project.parts.get(&part.number) {
-                if part.contacts.is_empty() {
-                    part.contacts = existing.contacts.clone();
-                }
-                if part.width.is_none() && part.height.is_none() {
-                    (part.width, part.height, part.depth) = (existing.width, existing.height, existing.depth);
-                }
-            }
-            match self.project.parts.get(&part.number) {
-                None => {
-                    added += 1;
-                    cmds.push(Command::AddPart(part));
-                }
-                Some(existing) if *existing != part => {
-                    updated += 1;
-                    cmds.push(Command::UpdatePart(part));
-                }
-                Some(_) => {}
-            }
-        }
-        if !cmds.is_empty() {
-            self.execute(&format!("Import {} parts", added + updated), Command::Batch(cmds))?;
+        let t = ecad_model::parts_library::import_into(&self.project, parts)?;
+        let (added, updated) = (t.added.len(), t.updated.len());
+        if let Some(command) = t.command {
+            self.execute(&format!("Import {} parts", added + updated), command)?;
         }
         Ok((added, updated))
     }

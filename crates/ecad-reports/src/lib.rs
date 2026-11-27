@@ -739,6 +739,7 @@ mod tests {
                 width: None,
                 height: None,
                 depth: None,
+                ..Default::default()
             }))
             .unwrap();
         }

@@ -1019,13 +1019,28 @@ impl Session {
     }
 
     fn import_parts(&mut self, path: &Path) {
-        let result = std::fs::read_to_string(path)
-            .map_err(|e| format!("{}: {e}", path.display()))
-            .and_then(|text| ecad_project::csv::read_parts(&text).map_err(|e| format!("{}: {e}", path.display())))
-            .and_then(|parts| self.editor.import_parts(parts).map_err(|e| e.to_string()));
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let result = ecad_project::read_bounded(path, ecad_exchange::parts::MAX_FILE)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| {
+                ecad_exchange::parts::read_parts(&bytes, &name, &ecad_exchange::parts::Options::default())
+                    .map_err(|e| format!("{}: {e}", path.display()))
+            })
+            .and_then(|list| {
+                let counts = self.editor.import_parts(list.parts).map_err(|e| e.to_string())?;
+                Ok((counts, list.skipped))
+            });
         self.message = Some(match result {
-            Ok((0, 0)) => "Nothing new to import: the catalogue already has these parts".into(),
-            Ok((added, updated)) => format!("Imported {added} new parts, updated {updated}"),
+            Ok(((0, 0), skipped)) if skipped.is_empty() => {
+                "Nothing new to import: the catalogue already has these parts".into()
+            }
+            Ok(((added, updated), skipped)) => {
+                let mut text = format!("Imported {added} new parts, updated {updated}");
+                if !skipped.is_empty() {
+                    text += &format!("; {} rows left out: {}", skipped.len(), first_few(&skipped));
+                }
+                text
+            }
             Err(e) => format!("Import failed: {e}"),
         });
     }

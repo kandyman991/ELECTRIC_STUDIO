@@ -513,6 +513,8 @@ pub enum ModelError {
     SymbolInUse(String, String),
     #[error("part number must not be empty")]
     EmptyPartNumber,
+    #[error("part `{0}`: {1}")]
+    InvalidPart(String, String),
     #[error("quantity must be at least 1")]
     ZeroQuantity,
     #[error("{0}:{1} already exists")]
@@ -1273,6 +1275,7 @@ impl Project {
                 if part.number.is_empty() {
                     return Err(ModelError::EmptyPartNumber);
                 }
+                part.check().map_err(|e| ModelError::InvalidPart(part.number.clone(), e))?;
                 if self.parts.contains_key(&part.number) {
                     return Err(ModelError::DuplicatePart(part.number));
                 }
@@ -1281,6 +1284,7 @@ impl Project {
                 Ok(Command::RemovePart(number))
             }
             Command::UpdatePart(part) => {
+                part.check().map_err(|e| ModelError::InvalidPart(part.number.clone(), e))?;
                 let slot =
                     self.parts.get_mut(&part.number).ok_or_else(|| ModelError::UnknownPart(part.number.clone()))?;
                 let old = std::mem::replace(slot, part);
