@@ -137,7 +137,7 @@ pub(super) fn command(p: &Project, name: &str, args: &Value) -> Result<Command, 
             if p.pages.len() <= 1 {
                 return Err("the last page cannot be removed".into());
             }
-            Command::RemovePage(record.id)
+            Command::Batch(p.removal(vec![Command::RemovePage(record.id)]).map_err(|e| e.to_string())?)
         }
         "add_device_exact" => {
             let record: Device = decode(args)?;
@@ -203,6 +203,10 @@ pub(super) fn command(p: &Project, name: &str, args: &Value) -> Result<Command, 
             {
                 return Err("invalid symbol id".into());
             }
+            ecad_project::state::check_path(&format!("symbols/{}.json", record.id.0))?;
+            if p.symbols.keys().any(|id| id.0.eq_ignore_ascii_case(&record.id.0)) {
+                return Err("symbol id already exists (case-insensitive)".into());
+            }
             let points: std::collections::BTreeSet<_> = record.connection_points.iter().map(|p| &p.name).collect();
             if points.len() != record.connection_points.len()
                 || points.iter().any(|name| name.trim().is_empty())
@@ -225,6 +229,9 @@ pub(super) fn command(p: &Project, name: &str, args: &Value) -> Result<Command, 
         }
         "set_mounting_plate" => {
             let record: MountingPlate = decode(args)?;
+            if p.panels.contains_key(&record.page) {
+                return Err("an existing mounting plate must be modified through the reviewed layout editor".into());
+            }
             Command::SetPanel { page: record.page, panel: Some(record.panel) }
         }
         "add_panel_item" => {
@@ -262,7 +269,7 @@ pub(super) const ADD_PAGE_EXACT: Def = Def {
 pub(super) const REMOVE_EMPTY_PAGE: Def = Def {
     name: "remove_empty_page",
     title: "Remove empty page",
-    description: "Remove an empty page by id; never remove the last page.",
+    description: "Remove an empty page by id and retire its name; never remove the last page.",
     class: Class::Global,
     args: &[Arg {
         name: "record",
@@ -518,7 +525,7 @@ pub(super) const ASSIGN_DEVICE_PARTS: Def = Def {
 pub(super) const SET_MOUNTING_PLATE: Def = Def {
     name: "set_mounting_plate",
     title: "Set mounting plate",
-    description: "Set the dimensions of a page's mounting plate.",
+    description: "Create a mounting plate on a page; does not replace an existing plate.",
     class: Class::Edit,
     args: &[Arg {
         name: "record",

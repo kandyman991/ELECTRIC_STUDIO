@@ -144,13 +144,27 @@ object and journal integrity work explains the extra cost; workflow-only speedup
 measured by the normal-save workload. See #51 for profiling; #39 remains mandatory before
 production release.
 
-Original roadmap audit: the pilot and a four-operation proposal are not the full conveyor
-build through the registry required by the AI0 acceptance row. The registry does not yet
-cover all the fixture's operations (custom symbols, parts, panel layout and more). The
-explicit forty-operation and -F3 cases have been added to the corrective branch, but still
-need exact-head CI. AI0 acceptance remains blocked on the full registry-build criterion,
-unless the owner explicitly revises its scope; do not claim that the pilot substitutes
-for it.
+Original roadmap audit: the pilot and four-operation proposal did not cover the complete
+conveyor, forty-operation and -F3 cases. PR #50 now adds 21 explicit identity-preserving
+construction operations to the same registry, with strict nested record schemas and domain
+validation. They cover pages, devices, nodes, drawings, wires, symbols, catalogue parts,
+cables, location boxes, mounting plates, panel items, sheet and title metadata. No arbitrary
+Command or privileged fixture-specific tool is exposed. Operations remain proposals for MCP;
+global operations and safety changes require their separate confirmations. Empty-page removal
+retires its name; initial product assignment and mounting-plate creation cannot silently
+replace existing engineering data.
+
+`tests/acceptance/tests/registry_conveyor.rs` captures the forward steps of the existing
+reference builder, translates every step to the public named operations (fails on an
+unmapped step), independently replays the registry, and submits the identical full sequence
+via MCP from an otherwise empty project with an IEC library and one starter page. The
+starter page is removed through S0 retirement and explicitly reclaimed within the proposal.
+The test requires no pre-approval writes, refuses CLI approval and missing confirmations,
+then checks one atomic app apply, byte-exact canonical and graphical files against the
+original conveyor, a consumed approval and audit record, one undo and byte-exact saved
+restoration with a later revision. Separate forty-operation and -F3 regressions remain.
+These are implemented acceptance tests; final exact-head CI is required to establish their
+outcomes. AI0 acceptance takes effect only upon verified closure and merge of PR #50.
 
 Known limitations and review points (AI0):
 

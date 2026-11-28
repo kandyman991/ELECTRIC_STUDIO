@@ -109,6 +109,9 @@ fn full_conveyor_registry_and_assistant_build_match_the_reference_byte_for_byte(
         operations(step, &target, &mut ops);
     }
     ops.push(record("remove_empty_page", json!({ "id": starter })));
+    // Removal retires identifiers under S0. This starter is deliberately never installed;
+    // explicitly reclaim its name to reproduce the original conveyor numbering state.
+    ops.push(json!({ "op": "reclaim", "args": { "identifiers": "page:0" } }));
 
     // Independently replay the same operations through the public typed registry.
     let mut replay = seed.clone();
@@ -233,4 +236,19 @@ fn construction_records_do_not_accept_raw_commands_or_unknown_nested_fields() {
     assert!(registry::lower(&p, "place_drawing_exact", &invalid).is_err());
     assert!(registry::find("apply_command").is_none());
     assert!(registry::find("set_automation").is_none());
+}
+
+#[test]
+fn explicit_construction_preserves_reserved_and_retired_page_identifiers() {
+    let mut p = ecad_model::sample::start_circuit().unwrap();
+    let page = PageId::new();
+    let add = json!({ "record": { "id": page, "name": "temporary", "order": ecad_model::PAGE_STEP * 10 } });
+    let lowered = registry::lower(&p, "add_page_exact", &add).unwrap();
+    p.apply(Command::Batch(lowered.commands)).unwrap();
+    let lowered = registry::lower(&p, "remove_empty_page", &json!({ "record": { "id": page } })).unwrap();
+    p.apply(Command::Batch(lowered.commands)).unwrap();
+    assert!(p.numbering.retired.contains_key(&ecad_model::Identifier::Page { name: "temporary".into() }));
+    assert!(registry::lower(&p, "add_page_exact", &add).is_err());
+    let last = *p.pages.keys().next().unwrap();
+    assert!(registry::lower(&p, "remove_empty_page", &json!({ "record": { "id": last } })).is_err());
 }
