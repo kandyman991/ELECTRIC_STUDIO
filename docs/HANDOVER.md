@@ -11,16 +11,15 @@ merged PR.
 - **Review policy:** milestone-based. Implementation slices are merged once CI is green. Independent
   review happens when a milestone is ready for formal acceptance, or when a significant
   architectural issue needs a decision.
-- **Current milestone:** S0, stable numbering: **implemented, awaiting independent milestone
-  review** (S0a #44, S0b #45, S0c #46; see "S0 plan and state" below). Not accepted; AI0 does
-  not start until the review is complete.
+- **Current milestone:** AI0, engineering interface. The S0 acceptance decision below takes
+  effect when the corrective PR passes all required checks on its final head and merges.
   - M10 format 2 canonical connectivity (M10a #37, M10b #38, M10c #40, M10b′ and M10d #41)
     formally accepted on 28 Nov 2026; corrective PR #42 merged at `6e223ec`.
     R1–R8 and R7.1/R7.2/R8.1 closed; [final acceptance evidence](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/42#issuecomment-7236646425).
   - M7a (PR #33) and M7b (PR #34) merged; corrective PR #35 merged at `e258a59`.
   - M7 formally accepted on 27 Nov 2026 with R5 (controlled Legion wall-clock and peak RSS)
     explicitly deferred by the owner, not passed. All six exact-head CI jobs passed at `90d6dfb`.
-  - **Next:** independent review of S0 for formal acceptance.
+  - **Next:** AI0 implementation under the engineering-interface contract in the roadmap.
   - **Outstanding pre-release gate:** qualified D41 Legion benchmark ([#39](https://github.com/kandyman991/ELECTRIC_STUDIO/issues/39)) when access returns;
     retain recorded conditions and cold/warm timing and RSS evidence before first production release.
 - **On hold:** PR #32 (component library, draft), reused in M9 after reconciliation (D13).
@@ -86,7 +85,7 @@ independent review comes at S0 acceptance.
 | --- | --- | --- |
 | S0a (PR #44) | `ecad_model::numbering`: identifiers, policies (sequential default, lowest free), `Reserve`/`Unreserve`, `Retire`/`Reclaim`, `SetNumberingPolicies`, `SetCapacity`; explicit assignments of reserved or retired identifiers refused at every assignment point; `Project::removal` retires what a removal frees, in the same transaction, and the editor's deletions use it; resource-aware allocation of tags, wires, strip terminals, PLC channels and addresses, cable cores, page names; `insert_page` with a key between neighbours; `numbering.json` | Merged |
 | S0b (PR #45) | Joining keeps both numbers (`wire-numbers-differ`); `ecad_model::renumber` (preview, stale check, one undo step) for wires, devices, a strip's terminals, pages, in the app (preview dialog), the CLI (`ecad renumber … [--apply]`) and MCP (read-only `preview_renumbering`); CLI `numbering`, `reserve`, `unreserve`, `retire`, `reclaim` with identifier ranges; MCP `numbering`; `ReplaceDevice` | Merged |
-| S0c (PR #46) | Retrofit acceptance (`tests/acceptance/tests/retrofit.rs`), adversarial tests, benchmarks, documentation | This PR |
+| S0c (PR #46) | Retrofit acceptance (`tests/acceptance/tests/retrofit.rs`), adversarial tests, benchmarks, documentation | Merged |
 
 Acceptance criteria (ROADMAP S0 row and the task's criteria):
 
@@ -101,6 +100,16 @@ Acceptance criteria (ROADMAP S0 row and the task's criteria):
 | Explicit renumbering with preview and confirmation; ids preserved | `numbering.rs` `renumbering_is_previewed_confirmed_and_keeps_every_identity` (stale preview refused, exact undo), session test, CLI and MCP tests |
 | Persistence, exact undo/redo, rollback, conflicting records refused | `numbering_json_round_trips_and_conflicting_records_are_refused`, `numbering_commands_undo_and_redo_exactly`, `conflicting_allocations_and_interrupted_transactions_change_nothing` |
 | Format 1 migration and format 2 compatibility | conversion test asserts equal pages and empty numbering; format 2 projects without `numbering.json` load with the defaults |
+
+### Independent S0 acceptance decision
+
+Reviewed the cumulative changes from M10 through S0c against D22–D25 and the matrix above.
+The corrective PR covers removal of owners with scoped numbering, PLC slot bounds,
+whole-family page renumbering, staging-name conflicts, strip-only renumbering, derived wire
+numbers blocked by reservations, and counter and address-range boundaries. Its regression
+tests extend the conveyor acceptance suite. The PR discussion records the verified head and
+hosted job results. On verified merge, S0 is formally accepted and AI0 development is authorized.
+The qualified Legion benchmark remains a pre-release gate under issue #39.
 
 Known limitations and review points (S0):
 - **Retirement is by removal operation**, not by the low-level `RemoveDevice`/`Disconnect`

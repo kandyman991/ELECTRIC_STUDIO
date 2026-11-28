@@ -717,16 +717,14 @@ impl Editor {
     /// Apply a renumbering previewed on the current project, as one undo step; refused if
     /// the project changed since.
     pub fn apply_renumbering(&mut self, r: &ecad_model::renumber::Renumbering) -> Result<(), ModelError> {
-        if self.project.content_hash()? != r.base {
-            return Err(ModelError::StalePreview);
-        }
+        let command = self.project.renumbering_command(r)?;
         let label = match r.scope {
             ecad_model::renumber::Scope::Wires => "Renumber all wires".to_owned(),
             ecad_model::renumber::Scope::Devices => "Renumber all devices".to_owned(),
             ecad_model::renumber::Scope::Pages => "Renumber all pages".to_owned(),
             ecad_model::renumber::Scope::Terminals(d) => format!("Renumber {}", self.project.device(d)?.tag),
         };
-        self.execute(&label, Command::Batch(r.commands.clone()))
+        self.execute(&label, command)
     }
 
     /// Number every wire again from the project's wire format, page by page: preview and

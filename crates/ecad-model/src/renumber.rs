@@ -35,12 +35,19 @@ pub struct Change {
 pub struct Renumbering {
     pub scope: Scope,
     pub changes: Vec<Change>,
-    pub commands: Vec<Command>,
+    commands: Vec<Command>,
     /// The content hash of the project it was previewed on.
-    pub base: String,
+    base: String,
 }
 
 /// A sortable drawing position: page order, column, top to bottom, left to right.
+fn temporary(mut name: String, allowed: impl Fn(&str) -> bool) -> String {
+    while !allowed(&name) {
+        name.push('~');
+    }
+    name
+}
+
 type Place = (usize, u32, i64, i64);
 
 impl Project {
@@ -48,7 +55,7 @@ impl Project {
         let f = self.function(f).ok()?;
         let page = pages.get(&f.page).copied().unwrap_or(usize::MAX);
         let mm = |v: f64| (v * 1000.0).round() as i64;
-        Some((page, self.sheet.column_of(f.position), -mm(f.position.y), mm(f.position.x)))
+        Some((page, self.sheet.column_of(f.position), mm(f.position.y).saturating_neg(), mm(f.position.x)))
     }
 
     fn page_index(&self) -> BTreeMap<PageId, usize> {
@@ -69,10 +76,14 @@ impl Project {
     /// Apply a previewed renumbering, as one transaction; refused if the project changed
     /// since the preview. Returns the command that undoes it.
     pub fn apply_renumbering(&mut self, r: &Renumbering) -> Result<Command> {
+        self.apply(self.renumbering_command(r)?)
+    }
+
+    pub fn renumbering_command(&self, r: &Renumbering) -> Result<Command> {
         if self.content_hash()? != r.base {
             return Err(ModelError::StalePreview);
         }
-        self.apply(Command::Batch(r.commands.clone()))
+        Ok(Command::Batch(r.commands.clone()))
     }
 
     fn wire_renumbering(&self) -> (Vec<Change>, Vec<Command>) {
@@ -155,7 +166,13 @@ impl Project {
         // Through temporary names, so no two devices share a tag on the way.
         let mut commands: Vec<Command> = renames
             .iter()
-            .map(|(id, _, _)| Command::RenameDevice { id: *id, tag: format!("~renumbering~{}", id.0) })
+            .map(|(id, _, _)| Command::RenameDevice {
+                id: *id,
+                tag: temporary(format!("~renumbering~{}", id.0), |tag| {
+                    let key = Identifier::Tag { tag: tag.into() };
+                    self.available(&key) && !self.in_use(&key)
+                }),
+            })
             .collect();
         commands.extend(renames.iter().map(|(id, _, tag)| Command::RenameDevice { id: *id, tag: tag.clone() }));
         let changes = renames.into_iter().map(|(_, from, to)| Change { what: from.clone(), from, to }).collect();
@@ -164,11 +181,14 @@ impl Project {
 
     fn terminal_renumbering(&self, strip: DeviceId) -> Result<(Vec<Change>, Vec<Command>)> {
         let tag = self.device(strip)?.tag.clone();
+        if !self.functions_of(strip).any(|f| matches!(self.role(f.id), Ok(crate::Role::Terminal))) {
+            return Err(ModelError::BadIdentifier(format!("{tag} has no drawn strip terminals")));
+        }
         let pages = self.page_index();
         // Each numbered group with a drawing that shows it; undrawn groups keep their numbers.
         let mut groups: BTreeMap<crate::connectivity::GroupId, (Place, FunctionId, String)> = BTreeMap::new();
         let mut fixed: BTreeSet<String> = BTreeSet::new();
-        for t in self.terminals.values().filter(|t| t.device == strip && !t.point.is_empty()) {
+        for t in self.terminals.values().filter(|t| t.device == strip && !t.point.is_empty() && t.channel.is_none()) {
             let shown = self
                 .functions_of(strip)
                 .filter(|f| f.terminals.values().any(|id| *id == t.id))
@@ -193,6 +213,9 @@ impl Project {
         for (_, f, old) in ordered {
             let number = loop {
                 n += 1;
+                if self.numbering.capacities.get(&strip).is_some_and(|cap| n > u64::from(*cap)) {
+                    return Err(ModelError::Exhausted(format!("{tag} has no free terminal left")));
+                }
                 let d = n.to_string();
                 if !fixed.contains(&d)
                     && self.available(&Identifier::Terminal { device: strip, designation: d.clone() })
@@ -211,7 +234,16 @@ impl Project {
         };
         let mut commands: Vec<Command> = renames
             .iter()
-            .map(|(f, _, _)| Command::SetDesignations { id: *f, designations: all(*f, &format!("~{}", f.0)) })
+            .map(|(f, _, _)| Command::SetDesignations {
+                id: *f,
+                designations: all(
+                    *f,
+                    &temporary(format!("~{}", f.0), |designation| {
+                        let key = Identifier::Terminal { device: strip, designation: designation.into() };
+                        self.available(&key) && !self.in_use(&key)
+                    }),
+                ),
+            })
             .collect();
         commands.extend(renames.iter().map(|(f, _, d)| Command::SetDesignations { id: *f, designations: all(*f, d) }));
         let changes =
@@ -226,15 +258,27 @@ impl Project {
             .copied()
             .filter(|p| !p.name.is_empty() && p.name.bytes().all(|b| b.is_ascii_digit()))
             .collect();
-        let others: BTreeSet<&str> =
-            order.iter().filter(|p| !numeric.iter().any(|q| q.id == p.id)).map(|p| p.name.as_str()).collect();
+        let mut families: BTreeMap<&str, Vec<&str>> = numeric.iter().map(|p| (p.name.as_str(), Vec::new())).collect();
+        let mut fixed = BTreeSet::new();
+        for p in &order {
+            let end = p.name.find(|c: char| !c.is_ascii_digit()).unwrap_or(p.name.len());
+            let (root, suffix) = p.name.split_at(end);
+            if let Some(suffixes) = families.get_mut(root) {
+                suffixes.push(suffix);
+            } else {
+                fixed.insert(p.name.as_str());
+            }
+        }
         let mut roots: BTreeMap<String, String> = BTreeMap::new();
         let mut n = 0u64;
         for p in &numeric {
             let name = loop {
                 n += 1;
                 let s = n.to_string();
-                if !others.contains(s.as_str()) && self.available(&Identifier::Page { name: s.clone() }) {
+                if families[p.name.as_str()].iter().all(|suffix| {
+                    let name = format!("{s}{suffix}");
+                    !fixed.contains(name.as_str()) && self.available(&Identifier::Page { name })
+                }) {
                     break s;
                 }
             };
@@ -250,14 +294,15 @@ impl Project {
                 renames.push((p.id, p.name.clone(), name));
             }
         }
-        // Renamed pages may not land on a name kept by a page that isn't renamed.
-        let kept: BTreeSet<&str> =
-            order.iter().filter(|p| !renames.iter().any(|(id, _, _)| *id == p.id)).map(|p| p.name.as_str()).collect();
-        renames
-            .retain(|(_, _, to)| !kept.contains(to.as_str()) && self.available(&Identifier::Page { name: to.clone() }));
         let mut commands: Vec<Command> = renames
             .iter()
-            .map(|(id, _, _)| Command::RenamePage { id: *id, name: format!("~renumbering~{}", id.0) })
+            .map(|(id, _, _)| Command::RenamePage {
+                id: *id,
+                name: temporary(format!("~renumbering~{}", id.0), |name| {
+                    let key = Identifier::Page { name: name.into() };
+                    self.available(&key) && !self.in_use(&key)
+                }),
+            })
             .collect();
         commands.extend(renames.iter().map(|(id, _, name)| Command::RenamePage { id: *id, name: name.clone() }));
         let changes =

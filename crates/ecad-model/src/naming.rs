@@ -229,7 +229,9 @@ impl Project {
         // A channel's own end may not be on a potential yet (no wire): count it too.
         let mut points: Vec<ConnectionRef> = sides.iter().flat_map(|p| p.points.iter().cloned()).collect();
         points.extend([from.clone(), to.clone()]);
-        let name = name.or_else(|| self.plc_number_of(&points));
+        let name = name
+            .or_else(|| self.plc_number_of(&points))
+            .filter(|n| self.available(&crate::Identifier::Wire { number: n.clone() }));
         let existing =
             sides.iter().find_map(|p| p.connections.iter().find_map(|c| self.wire_number(*c).map(str::to_owned)));
         name.or(existing).unwrap_or_else(|| self.next_wire_number(page))
@@ -285,7 +287,9 @@ impl Project {
         groups.sort_by(|a, b| first(&a.1).partial_cmp(&first(&b.1)).unwrap_or(std::cmp::Ordering::Equal));
         for (name, ids) in groups {
             let page = first(&ids).map(|p| p.3).unwrap_or_default();
-            let number = name.unwrap_or_else(|| scratch.next_wire_number(page));
+            let number = name
+                .filter(|n| scratch.available(&crate::Identifier::Wire { number: n.clone() }))
+                .unwrap_or_else(|| scratch.next_wire_number(page));
             for id in ids {
                 if let Some(c) = scratch.connections.get_mut(&id) {
                     c.wire_number = Some(number.clone());
