@@ -131,6 +131,9 @@ fn same_contents(path: &Path, bytes: &[u8]) -> bool {
 
 /// The names of files in `dir` (one level), `None` if it doesn't exist.
 fn names_in(dir: &Path) -> Result<Vec<String>> {
+    if std::fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(ProjectError::Canonical { path: dir.to_owned(), reason: "unsafe directory link".into() });
+    }
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -186,6 +189,37 @@ fn staged(name: &str) -> String {
     format!("{name}{STAGED}")
 }
 
+fn validate_replace(dir: &Path, name: &str) -> Result<()> {
+    let managed = name == crate::state::MANIFEST
+        || (name.ends_with(".json")
+            && !name.starts_with('.')
+            && match name.split_once('/') {
+                None => true,
+                Some((sub, file)) => {
+                    !file.starts_with('.')
+                        && !file.contains('/')
+                        && (SUBDIRS.contains(&sub) || crate::state::WORKFLOW.contains(&sub))
+                }
+            });
+    if !managed {
+        return Err(ProjectError::Canonical { path: dir.join(name), reason: "unmanaged journal target".into() });
+    }
+    for path in [name.to_owned(), staged(name)] {
+        crate::state::check_on_disk(dir, &path)
+            .map_err(|reason| ProjectError::Canonical { path: dir.join(path), reason })?;
+    }
+    Ok(())
+}
+
+fn validate_delete(dir: &Path, name: &str) -> Result<()> {
+    validate_replace(dir, name)?;
+    if RETIRED.contains(&name) || SUBDIRS.iter().any(|sub| name.starts_with(&format!("{sub}/"))) {
+        Ok(())
+    } else {
+        Err(ProjectError::Canonical { path: dir.join(name), reason: "unmanaged journal deletion".into() })
+    }
+}
+
 /// Write `files` (path inside the folder, contents) as the project, deleting other project
 /// files in `pages/` and `symbols/`. The caller holds the [`Lock`].
 pub(crate) fn commit(dir: &Path, files: &[(String, Vec<u8>)]) -> Result<()> {
@@ -197,6 +231,12 @@ pub(crate) fn commit(dir: &Path, files: &[(String, Vec<u8>)]) -> Result<()> {
                 && !keep.contains(n.as_str())
         })
         .collect();
+    for (name, _) in files {
+        validate_replace(dir, name)?;
+    }
+    for name in &delete {
+        validate_delete(dir, name)?;
+    }
     // Unchanged files needn't move: fewer steps, and the same revision either way.
     let mut replace = Vec::new();
     for (name, bytes) in files {
@@ -224,6 +264,9 @@ pub(crate) fn commit(dir: &Path, files: &[(String, Vec<u8>)]) -> Result<()> {
 /// Write `files` (path inside the folder, contents) as one step, deleting nothing: a restore
 /// of single files. The caller holds the [`Lock`].
 pub(crate) fn commit_partial(dir: &Path, files: &[(String, Vec<u8>)]) -> Result<()> {
+    for (name, _) in files {
+        validate_replace(dir, name)?;
+    }
     let mut replace = Vec::new();
     for (name, bytes) in files {
         if let Some(parent) = dir.join(name).parent() {
@@ -247,6 +290,13 @@ pub(crate) fn commit_partial(dir: &Path, files: &[(String, Vec<u8>)]) -> Result<
 
 /// Carry out a written journal; safe to repeat.
 fn apply(dir: &Path, journal: &Journal) -> Result<()> {
+    // Recovery must validate the entire journal before the first filesystem mutation.
+    for name in &journal.replace {
+        validate_replace(dir, name)?;
+    }
+    for name in &journal.delete {
+        validate_delete(dir, name)?;
+    }
     for name in &journal.replace {
         let from = dir.join(staged(name));
         if from.exists() {
@@ -268,6 +318,8 @@ fn apply(dir: &Path, journal: &Journal) -> Result<()> {
 /// the [`Lock`].
 pub fn recover(dir: &Path) -> Result<()> {
     let path = dir.join(JOURNAL);
+    crate::state::check_on_disk(dir, JOURNAL)
+        .map_err(|reason| ProjectError::Canonical { path: path.clone(), reason })?;
     match std::fs::read(&path) {
         Ok(bytes) => {
             let journal: Journal =
@@ -307,5 +359,26 @@ impl Lock {
             Err(std::fs::TryLockError::WouldBlock) => Err(ProjectError::Busy(dir.to_owned())),
             Err(std::fs::TryLockError::Error(e)) => Err(io(&path)(e)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recovery_refuses_an_unsafe_journal_before_any_mutation() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("project");
+        std::fs::create_dir(&dir).unwrap();
+        let outside = root.path().join("outside.json");
+        std::fs::write(&outside, "keep").unwrap();
+        std::fs::write(dir.join("project.json.ecad-new"), "new").unwrap();
+        let journal = Journal { replace: vec!["project.json".into()], delete: vec!["../outside.json".into()] };
+        std::fs::write(dir.join(JOURNAL), serde_json::to_vec(&journal).unwrap()).unwrap();
+        let _lock = Lock::take(&dir).unwrap();
+        assert!(recover(&dir).is_err());
+        assert_eq!(std::fs::read_to_string(outside).unwrap(), "keep");
+        assert!(!dir.join("project.json").exists());
     }
 }
