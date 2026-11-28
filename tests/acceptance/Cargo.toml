@@ -15,6 +15,7 @@ ecad-reports = { workspace = true }
 ecad-project = { workspace = true }
 ecad-view = { workspace = true }
 ecad-editor = { workspace = true }
+ecad-mcp = { path = "../../crates/ecad-mcp" }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 png = { workspace = true }

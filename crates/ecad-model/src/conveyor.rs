@@ -184,6 +184,12 @@ pub fn conveyor() -> Result<Project> {
     outputs(&mut b)?;
     inputs(&mut b)?;
     cabinet_layout(&mut b)?;
+    // The emergency stop and the safety relay are safety-related (section 11.5, AI0).
+    for tag in ["-S0", "-K3"] {
+        if let Some(d) = b.p.device_by_tag(tag).map(|d| d.id) {
+            b.p.apply(Command::SetSafetyRelated { device: d, related: true })?;
+        }
+    }
     let pages: Vec<PageId> = b.p.pages.keys().copied().collect();
     for page in pages {
         for cmd in b.p.tidy_wires(page) {

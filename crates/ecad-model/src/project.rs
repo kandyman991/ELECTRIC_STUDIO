@@ -10,7 +10,7 @@ use crate::parts::{Part, PartRef};
 use crate::sheet::Sheet;
 use crate::symbol::{ContactKind, IoKind, Role, SymbolDef, SymbolId};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 /// The gap between the sort keys of pages added in a row, so a page fits between any two.
@@ -687,6 +687,14 @@ pub enum Command {
     /// Explicitly allow retired identifiers to be used again.
     Reclaim(Vec<crate::numbering::Identifier>),
     SetNumberingPolicies(crate::numbering::Policies),
+    /// Mark a device safety-related, or unmark it (a person's act: assistants can't weaken a
+    /// safety classification, D19).
+    SetSafetyRelated {
+        device: DeviceId,
+        related: bool,
+    },
+    /// Set which operation classes trusted automation may apply (a person's act, D42).
+    SetAutomation(crate::policy::Automation),
     /// Replace a device's products, keeping its identity, with explicit terminal
     /// reconciliation (D23): the terminals whose designation changes, by id. Distinct from
     /// removal: nothing is retired, dropped or reconnected.
@@ -730,6 +738,8 @@ pub enum ModelError {
     NumberingInUse(String),
     #[error("the project changed since this was previewed: preview it again")]
     StalePreview,
+    #[error("{0} is marked safety-related: unmark it with its removal")]
+    SafetyRelated(String),
     #[error("{0}: a terminal group is renamed whole or not at all")]
     InvalidReconciliation(String),
     #[error("no page {0:?}")]
@@ -936,6 +946,12 @@ pub struct Project {
     /// Rails, ducts and device footprints on the plates.
     #[serde(default)]
     pub panel_items: BTreeMap<PanelItemId, crate::panel::PanelItem>,
+    /// Devices a person marked safety-related (D19, section 11.5); `project.json`.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub safety_related: BTreeSet<DeviceId>,
+    /// Which operation classes trusted automation may apply (D42); `project.json`.
+    #[serde(default, skip_serializing_if = "crate::policy::Automation::is_empty")]
+    pub automation: crate::policy::Automation,
     /// Numbering policies, reserved and retired identifiers, bounded resources (S0,
     /// `numbering.json`).
     #[serde(default, skip_serializing_if = "crate::numbering::Numbering::is_empty")]
@@ -1718,6 +1734,9 @@ impl Project {
                 if self.numbering.names_device(id) {
                     return Err(ModelError::NumberingInUse(tag));
                 }
+                if self.safety_related.contains(&id) {
+                    return Err(ModelError::SafetyRelated(tag));
+                }
                 let d = self.devices.remove(&id).ok_or(ModelError::NoDevice(id))?;
                 Ok(Command::AddDevice(d))
             }
@@ -2384,6 +2403,17 @@ impl Project {
             | Command::SetNumberingPolicies(_)
             | Command::SetCapacity { .. }) => self.apply_numbering(cmd),
             Command::ReplaceDevice { id, parts, designations } => self.apply_replace(id, parts, designations),
+            Command::SetSafetyRelated { device, related } => {
+                self.device(device)?;
+                let was = self.safety_related.contains(&device);
+                if related {
+                    self.safety_related.insert(device);
+                } else {
+                    self.safety_related.remove(&device);
+                }
+                Ok(Command::SetSafetyRelated { device, related: was })
+            }
+            Command::SetAutomation(a) => Ok(Command::SetAutomation(std::mem::replace(&mut self.automation, a))),
             Command::Batch(cmds) => {
                 let mut undo = Vec::with_capacity(cmds.len());
                 for cmd in cmds {

@@ -20,8 +20,11 @@ pub use session::{
 };
 pub use view::Viewport;
 
+pub mod change;
+pub mod registry;
 pub mod script;
 pub mod session;
+pub mod task;
 mod underlay;
 pub use underlay::ratio;
 pub mod view;
@@ -184,6 +187,11 @@ pub struct Editor {
     /// Increases on every model change and page switch: what the drawing depends on.
     scene: u64,
     status: String,
+    /// When recording (an operation lowered on a scratch copy, AI0): the commands executed.
+    recorded: Option<Vec<Command>>,
+    /// What was done since the last save, by label (`Undo: …` for undone steps), for the
+    /// change record a save writes.
+    actions: Vec<String>,
 }
 
 fn snap(p: Point, grid: f64) -> Point {
@@ -243,7 +251,29 @@ impl Editor {
             checks: std::cell::RefCell::new(None),
             scene: 0,
             status: String::new(),
+            recorded: None,
+            actions: Vec::new(),
         })
+    }
+
+    /// Start recording the commands executed from now on (for [`crate::registry::lower`]).
+    pub fn record_commands(&mut self) {
+        self.recorded = Some(Vec::new());
+    }
+
+    /// The commands executed since [`Self::record_commands`].
+    pub fn take_recorded(&mut self) -> Vec<Command> {
+        self.recorded.take().unwrap_or_default()
+    }
+
+    /// Apply `cmds` as one undo step labelled `label`.
+    pub fn run(&mut self, label: &str, cmds: Vec<Command>) -> Result<(), ModelError> {
+        self.execute(label, Command::Batch(cmds))
+    }
+
+    /// What was done since the last save (labels; undone steps as `Undo: …`).
+    pub fn actions(&self) -> &[String] {
+        &self.actions
     }
 
     // ---- state for the shell ----
@@ -280,6 +310,7 @@ impl Editor {
     }
     pub fn mark_saved(&mut self) {
         self.saved_at = Some(self.history.depth());
+        self.actions.clear();
     }
     /// The last message for the user (an error, or what undo/redo did).
     pub fn status(&self) -> &str {
@@ -968,6 +999,7 @@ impl Editor {
     pub fn undo(&mut self) -> Result<Option<String>, ModelError> {
         let label = self.history.undo(&mut self.project)?;
         if let Some(l) = &label {
+            self.actions.push(format!("Undo: {l}"));
             self.changed(format!("Undid: {l}"));
         }
         self.forget_missing();
@@ -978,6 +1010,7 @@ impl Editor {
     pub fn redo(&mut self) -> Result<Option<String>, ModelError> {
         let label = self.history.redo(&mut self.project)?;
         if let Some(l) = &label {
+            self.actions.push(format!("Redo: {l}"));
             self.changed(format!("Redid: {l}"));
         }
         self.forget_missing();
@@ -1518,7 +1551,12 @@ impl Editor {
 
     fn execute(&mut self, label: &str, cmd: Command) -> Result<(), ModelError> {
         let depth = self.history.depth();
+        let copy = self.recorded.is_some().then(|| cmd.clone());
         self.history.execute(&mut self.project, label, cmd)?;
+        if let (Some(rec), Some(cmd)) = (self.recorded.as_mut(), copy) {
+            rec.push(cmd);
+        }
+        self.actions.push(label.to_owned());
         if self.saved_at.is_some_and(|m| depth < m) {
             self.saved_at = None;
         }

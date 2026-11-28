@@ -62,6 +62,11 @@ struct App {
     new_part: (String, String, String, String),
     title: String,
     close_sent: bool,
+    /// The proposals window (AI0 review panel) and its separate confirmations.
+    show_proposals: bool,
+    confirm_safety: bool,
+    confirm_global: bool,
+    acknowledge_incomplete: bool,
 }
 
 /// Edit buffers for the current page's number and content.
@@ -287,6 +292,18 @@ impl App {
             if ui.selectable_label(self.show_cables, "Cables").on_hover_text("Cables and their types").clicked() {
                 self.show_cables = !self.show_cables;
             }
+            let pending = frame.proposals.iter().filter(|p| p.status == ecad_editor::change::Status::Pending).count();
+            let label = if pending > 0 { format!("Proposals ({pending})") } else { "Proposals".to_owned() };
+            if ui
+                .selectable_label(self.show_proposals, label)
+                .on_hover_text("Change sets prepared by assistants (MCP) and automation: review, approve or reject them here")
+                .clicked()
+            {
+                self.show_proposals = !self.show_proposals;
+                if self.show_proposals {
+                    self.send(UiEvent::RefreshProposals);
+                }
+            }
             let errors = frame.checks.iter().filter(|c| c.severity == "error").count();
             let warnings = frame.checks.len() - errors;
             let label = match (errors, warnings) {
@@ -406,7 +423,16 @@ impl App {
                 terminal,
                 plc,
                 location,
+                safety_related,
             }) => {
+                let mut marked = *safety_related;
+                if ui
+                    .checkbox(&mut marked, "Safety-related")
+                    .on_hover_text("Changes that reach it need a separate confirmation (D19)")
+                    .changed()
+                {
+                    events.push(UiEvent::SetSafetyRelated { related: marked });
+                }
                 if self.fields.owner.is_empty() {
                     self.fields.owner = tag.clone();
                 }
@@ -1235,6 +1261,32 @@ impl App {
                 }
             });
             ui.small("New devices and wires follow the naming; existing tags, numbers and pages are never renumbered unless you confirm a renumbering.");
+            ui.add_space(6.0);
+            ui.strong("Engineering interface");
+            ui.small("Which operation classes trusted CLI automation may apply with --apply. Global operations (renumbering) and safety-related changes are never included: they need a reviewed change set.");
+            ui.horizontal(|ui| {
+                for class in ecad_model::policy::AutomationClass::ALL {
+                    let mut on = frame.automation.contains(&class);
+                    if ui.checkbox(&mut on, class.label()).changed() {
+                        let mut classes: Vec<_> = frame.automation.iter().copied().filter(|c| *c != class).collect();
+                        if on {
+                            classes.push(class);
+                        }
+                        events.push(UiEvent::SetAutomation { classes });
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                if ui.button("Verify project folder").on_hover_text("Compare the files with the committed manifest").clicked() {
+                    events.push(UiEvent::VerifyProject);
+                }
+                if ui.button("Release check").on_hover_text("The shared release validation").clicked() {
+                    events.push(UiEvent::ReleaseCheck);
+                }
+            });
+            if let Some(r) = &frame.release {
+                ui.label(r.summary());
+            }
             ui.separator();
             ui.strong("Wire lengths");
             let lengths = &mut f.wire_lengths;
@@ -1490,6 +1542,134 @@ impl App {
         }
     }
 
+    /// The review panel (AI0): the trusted, application-controlled interface where a person
+    /// approves the exact proposal they reviewed (D32).
+    fn proposals_window(&mut self, ctx: &egui::Context, frame: &Frame) {
+        let mut open = self.show_proposals;
+        let mut events = Vec::new();
+        egui::Window::new("Proposals").open(&mut open).default_size([640.0, 480.0]).show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("Refresh").clicked() {
+                    events.push(UiEvent::RefreshProposals);
+                }
+                ui.small(format!("Committed revision {}", frame.committed));
+            });
+            egui::ScrollArea::vertical().id_salt("proposal-list").max_height(140.0).show(ui, |ui| {
+                for p in &frame.proposals {
+                    ui.horizontal(|ui| {
+                        if ui.button("Review").clicked() {
+                            events.push(UiEvent::ReviewProposal { id: p.id.clone() });
+                        }
+                        ui.label(format!("{:?}", p.status));
+                        ui.strong(&p.title);
+                        ui.small(&p.actor);
+                    });
+                }
+                if frame.proposals.is_empty() {
+                    ui.label("No proposals. Assistants (MCP) and `ecad prepare` put them here.");
+                }
+            });
+            let Some(r) = &frame.review else { return };
+            ui.separator();
+            ui.heading(&r.title);
+            ui.label(format!("By {}", r.actor));
+            if !r.rationale.is_empty() {
+                ui.label(format!("Why: {}", r.rationale));
+            }
+            ui.small(format!("Hash {}", r.hash));
+            ui.small(format!("Prepared at {}", r.base));
+            if let Some(stale) = &r.stale {
+                ui.colored_label(ERROR, format!("Stale: {stale}"));
+            }
+            for op in &r.operations {
+                ui.monospace(op);
+            }
+            egui::ScrollArea::vertical().id_salt("affected").max_height(160.0).show(ui, |ui| {
+                egui::Grid::new("affected-grid").striped(true).show(ui, |ui| {
+                    for (what, before, after) in &r.affected {
+                        ui.label(what);
+                        ui.label(format!("{before} → {after}"));
+                        ui.end_row();
+                    }
+                });
+            });
+            ui.label(format!("Pages: {}", if r.pages.is_empty() { "none".to_owned() } else { r.pages.join(", ") }));
+            if !r.other.is_empty() {
+                ui.label(format!("Also: {}", r.other.join(", ")));
+            }
+            ui.label(format!("Checks: {}", r.checks));
+            for c in &r.new_checks {
+                ui.colored_label(WARNING, format!("new: {c}"));
+            }
+            for c in &r.safety_direct {
+                ui.colored_label(ERROR, format!("Safety (direct): {c}"));
+            }
+            for c in &r.safety_indirect {
+                ui.colored_label(WARNING, format!("Safety (indirect): {c}"));
+            }
+            if r.needs_safety_confirmation {
+                ui.checkbox(&mut self.confirm_safety, "I confirm the safety impact separately (Electric Studio documents safety circuits; it doesn't validate them)");
+            }
+            if r.needs_global_confirmation {
+                ui.checkbox(&mut self.confirm_global, "I authorise this global operation (renumbering) separately");
+            }
+            ui.horizontal(|ui| {
+                let can = r.stale.is_none() && r.status == ecad_editor::change::Status::Pending;
+                if ui.add_enabled(can, egui::Button::new("Approve and apply")).on_hover_text("Applied as one step, with its approval and change record; one undo reverts it").clicked() {
+                    events.push(UiEvent::ApproveProposal { confirm_safety: self.confirm_safety, confirm_global: self.confirm_global });
+                }
+                if r.cli && ui.add_enabled(can, egui::Button::new("Approve for the CLI")).on_hover_text("Issue an approval that `ecad apply --expect` consumes once").clicked() {
+                    events.push(UiEvent::ApproveForCli { confirm_safety: self.confirm_safety, confirm_global: self.confirm_global });
+                }
+                if ui.add_enabled(r.status == ecad_editor::change::Status::Pending, egui::Button::new("Reject")).clicked() {
+                    events.push(UiEvent::RejectProposal);
+                }
+                if ui.button("Close").clicked() {
+                    events.push(UiEvent::CloseReview);
+                }
+            });
+        });
+        self.show_proposals = open;
+        for e in events {
+            if !matches!(e, UiEvent::RefreshProposals | UiEvent::CloseReview) {
+                self.confirm_safety = false;
+                self.confirm_global = false;
+            }
+            self.send(e);
+        }
+    }
+
+    /// Outside changes found at opening (D43): restore the committed files or accept them.
+    fn reconcile(&mut self, ui: &mut egui::Ui, r: &ecad_editor::session::ReconcileInfo) {
+        ui.colored_label(ERROR, format!("Changed outside Electric Studio: {}", r.summary));
+        if let Some(i) = &r.impact {
+            ui.label(format!("Compared with the last commit: {i}"));
+        }
+        if let Some(e) = &r.unloadable {
+            ui.label(format!("The files on disk don't load: {e}. Showing the last commit."));
+        }
+        ui.horizontal(|ui| {
+            if ui
+                .button("Restore the committed files")
+                .on_hover_text("What is there now is moved to .ecad/quarantine, never deleted")
+                .clicked()
+            {
+                self.send(UiEvent::RestoreCommitted);
+            }
+            if r.incomplete {
+                ui.checkbox(&mut self.acknowledge_incomplete, "The comparison is incomplete; accept anyway");
+            }
+            if r.unloadable.is_none()
+                && ui
+                    .button("Accept the changes")
+                    .on_hover_text("A new revision, recorded as external and unknown; open approvals are revoked")
+                    .clicked()
+            {
+                self.send(UiEvent::AcceptOutsideChanges { acknowledge_incomplete: self.acknowledge_incomplete });
+            }
+        });
+    }
+
     fn prompt(&mut self, ctx: &egui::Context, question: &str) {
         let mut answer = None;
         egui::Modal::new(egui::Id::unique("unsaved-changes")).show(ctx, |ui| {
@@ -1649,8 +1829,22 @@ impl eframe::App for App {
         let before = self.panels_frame();
         egui::Panel::top("tools").show(ui, |ui| self.toolbar(ui, &before));
         egui::Panel::bottom("status").show(ui, |ui| {
-            ui.label(if before.status.is_empty() { "Ready".to_owned() } else { before.status.clone() });
+            ui.horizontal(|ui| {
+                ui.label(if before.status.is_empty() { "Ready".to_owned() } else { before.status.clone() });
+                if let Some(t) = &before.task {
+                    let f = if t.total > 0 { t.done as f32 / t.total as f32 } else { 0.0 };
+                    ui.add(egui::ProgressBar::new(f).desired_width(160.0).text(format!("{}: {}", t.title, t.what)));
+                    if ui.button("Cancel").clicked() {
+                        self.send(UiEvent::CancelTask);
+                    }
+                    ctx.request_repaint();
+                }
+            });
         });
+        if let Some(r) = &before.reconcile {
+            let r = r.clone();
+            egui::Panel::top("reconcile").show(ui, |ui| self.reconcile(ui, &r));
+        }
         if self.show_checks {
             egui::Panel::bottom("checks").resizable(true).default_size(150.0).show(ui, |ui| self.checks(ui, &before));
         }
@@ -1685,6 +1879,9 @@ impl eframe::App for App {
             }
             if let Some(r) = &frame.renumbering {
                 self.renumbering(&ctx, r);
+            }
+            if self.show_proposals {
+                self.proposals_window(&ctx, &frame);
             }
             if frame.close && !self.close_sent {
                 self.close_sent = true;
@@ -1743,6 +1940,10 @@ fn main() -> eframe::Result {
                 new_part: Default::default(),
                 title: String::new(),
                 close_sent: false,
+                show_proposals: false,
+                confirm_safety: false,
+                confirm_global: false,
+                acknowledge_incomplete: false,
             }))
         }),
     )

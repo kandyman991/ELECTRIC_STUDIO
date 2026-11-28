@@ -5,6 +5,7 @@
 //! tags, wire numbers, terminal and channel numbers, PLC addresses and symbols, wires to a point
 //! that is already wired.
 
+pub mod release;
 use ecad_model::{ConnectionId, ConnectionRef, FunctionId, PageId, Point, Project, Role};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};

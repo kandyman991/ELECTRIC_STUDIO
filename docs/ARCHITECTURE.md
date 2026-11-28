@@ -131,6 +131,91 @@ Every change is one undo step. Deleting a page takes its plate and items with it
 CADCraft's own editing engine is not used: it treats the drawing as the source of truth, which
 is the opposite of this design. Only its drawing, rendering and file output are used.
 
+## Engineering interface (AI0)
+
+One registry, `ecad_editor::registry`, defines the typed queries and operations that the
+editor's scripted paths, the CLI (`ecad run`, `ecad prepare`, `ecad operations`) and the MCP
+server share. The MCP tools are generated from it.
+
+Each operation has a class: query, edit, numbering, import, global or safety. It is lowered on
+a scratch copy of the project into the model `Command`s it would execute, so a proposal stores
+exactly what applying it will run.
+
+Consequential edits go through `ecad_editor::change`:
+
+1. `prepare` builds a `ChangeSet` with its actor, base revision, operations, scope and
+   commands. Its hash covers all of these.
+2. `preview` compares before and after. It reports the affected devices, terminals and wires
+   with their old and new identifiers, the pages, the check delta, and the direct and indirect
+   safety impact. The safety impact covers devices marked safety-related, devices sharing an
+   unnamed potential with a safety terminal, and cables carrying one.
+3. Approval happens in the app only. It is bound to the proposal hash, the committed revision,
+   the scope and the preview digest.
+4. The apply is transactional: the change, the consumed approval and the change record are
+   committed together under the folder lock.
+
+Actors are assigned by trusted host code:
+
+- the app records a person, by OS user;
+- the CLI records the OS user, host, command line and version;
+- MCP records an assistant, by the client's claimed name and version and a session id;
+- outside changes are recorded as External.
+
+### Committed state (D43)
+
+`.ecad/state.json` is the committed manifest:
+
+- the project identity and generation;
+- the engineering content digest, a hash of the canonical rendered files;
+- SHA-256 and size for every engineering and workflow file (`proposals/`, `approvals/`,
+  `changes/`).
+
+It is committed in the same store transaction as the files. `.ecad/objects/` keeps the last
+committed contents, addressed by hash.
+
+A revision is `project@generation:content`. Its generation advances only when the content
+changes, so content that returns to an earlier value is still a later revision.
+
+The manifest is verified at open, preview, apply and save:
+
+- Unsafe paths are refused: absolute paths, `..`, devices, case collisions and symlinks.
+- Changed, missing, damaged and added files are reported and block applying and saving until
+  a person reconciles them. The person either restores the committed files, with the changed
+  ones quarantined, or accepts the changes as a new generation, recorded as External, which
+  revokes outstanding approvals.
+- Unexpected files are listed and ignored.
+- A folder without a manifest is adopted as generation 1. Its files stay byte for byte as they
+  are: a format 1 project stays format 1 until a person saves it.
+
+### Entry points
+
+Everything that changes a project, and how it routes:
+
+| Entry point | Changes | Route |
+|---|---|---|
+| Desktop app: canvas, inspector, panels, dialogs (`UiEvent`s such as `PointerUp`, `Key`, `Rename`, `AddPage`, `RenumberTerminal`, `ConfirmRenumbering`, `ImportTiaTags`, `ImportUnderlay`, `SetSafetyRelated`, `SetAutomation`) | Edits, numbering, imports | `Session` → `Editor` → `Command`s with undo; a person's save commits them under the manifest with an Edits change record (actor: the person, steps: the undo labels) |
+| Desktop app: Proposals (`ReviewProposal`, `ApproveProposal`, `ApproveForCli`, `RejectProposal`) | Applies proposals | Review; then apply as one undo step and one commit with the consumed approval and a ChangeSet record, or an approval for `ecad apply`, or a Rejection record |
+| Desktop app: reconciliation (`AcceptOutsideChanges`, `RestoreCommitted`), `VerifyProject` (cancellable task), `ReleaseCheck` | Reconciles the folder | `state::accept` / `state::restore`, with records |
+| `ecad check`, `export`, `report`, `numbering`, `renumber` (preview), `operations`, `proposals`, `preview`, `revision`, `verify` | Nothing | Read only |
+| `ecad import-tia`, `import-dxf`, `remove-underlay`, `reserve`, `unreserve`, `retire`, `reclaim`, `run <operation>` | With `--apply` only | Scoped trusted automation: the class must be in the project's automation scope (set in the app); global and safety-impact changes are refused; Automation record. Without `--apply`, a dry run |
+| `ecad renumber --apply` | Refused | Global: `ecad prepare` then `ecad apply` |
+| `ecad prepare`, `ecad apply <id> --expect <revision>` | Proposal, then apply | `change::save_proposal`; `change::apply_approved`, which consumes an app-issued CLI approval atomically; refusals recorded |
+| `ecad new-sample` | Writes a new folder | Creates a project; not an edit of an existing one |
+| MCP server (`ecad-mcp`) | Proposals only | Queries; `prepare_*`, `prepare_change`; `--write` refused |
+| `ecad_editor::script` | — | Name lookups used by the registry; no separate edit path |
+| Scripts in the repository (`bench/run-controlled.sh`, `tests/acceptance/ambiguous/make.py`, `crates/ecad-mcp/tests/client/check.py`) | Test and benchmark folders only | Not product entry points; `check.py` uses the MCP server |
+
+### Trust boundary (D31)
+
+This is application-level enforcement inside Electric Studio, not a security boundary:
+
+- A program with write access to the folder can change any file. Electric Studio detects such
+  a change at its next open, preview, apply or save, and refuses to build on it until a person
+  reconciles it.
+- Actors are recorded as each interface asserts them. There is no enterprise authentication.
+- An agent that controls the desktop itself (clicking the app's buttons) is outside the
+  boundary.
+
 ## Project files
 
 A project is a folder of pretty-printed JSON: `project.json`, `devices.json`,
@@ -154,7 +239,8 @@ machine wiring rules. ANSI/NFPA 79 later.
 | Milestones M0 to M6 with an MVP gate after M4 | Decided |
 | UI technology: egui, a thin shell (`apps/ecad-app`) over `ecad-editor` | Decided in M1b (docs/UI-DECISION.md) |
 | Project files: a folder of JSON files | Implemented in M1a |
-| MCP server (`ecad-mcp`): stdio, hand-written JSON-RPC (no async runtime); read only unless `--write`; edits through `ecad_editor::script`, one undo step each, saved only on `save` | Implemented in M6b (docs/MCP.md) |
+| MCP server (`ecad-mcp`): stdio, hand-written JSON-RPC (no async runtime); tools generated from the engineering registry; queries and proposals only, approval in the app (`--write` removed) | M6b; proposal-only since AI0 (docs/MCP.md) |
+| Engineering interface: one registry, change sets approved in the app, CLI authority classes, committed manifest and retained contents, change records | Implemented in AI0 (above) |
 | Project saves: all-or-nothing (staged files, a journal as the commit point, recovery on open), one saver at a time (`.ecad-lock`), refused over someone else's save (folder fingerprint) — in the editor and the MCP server alike | Implemented in M6b (`ecad_project::store`) |
 | Licence and business model | *Open*, no licence until the owner decides |
 | IEC first; Windows and Linux first | *Open*, proposed |

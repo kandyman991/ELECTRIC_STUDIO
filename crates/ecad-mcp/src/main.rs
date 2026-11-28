@@ -1,5 +1,5 @@
-//! `ecad-mcp <project-dir> [--write]`: an MCP server over stdio for one project. See the
-//! crate docs.
+//! `ecad-mcp <project-dir>`: an MCP server over stdio for one project: queries, and change sets
+//! prepared as proposals for a person to approve in the app. See the crate docs.
 
 use std::io::{BufRead, Write};
 use std::path::Path;
@@ -9,9 +9,10 @@ const USAGE: &str = "\
 ecad-mcp: an MCP server for one Electric Studio project, over stdin/stdout
 
 usage:
-  ecad-mcp <project-dir> [--write]
-      Serve the project. Read tools only, unless --write: then edit tools too, with undo;
-      changes reach the folder only when the client calls `save`.
+  ecad-mcp <project-dir>
+      Serve the project: query tools, and prepare_ tools that store a change set as a
+      proposal; a person reviews and approves it in the Electric Studio app. There is no
+      write mode: --write was removed (D32).
   ecad-mcp --help | --version";
 
 fn main() -> ExitCode {
@@ -29,13 +30,18 @@ fn main() -> ExitCode {
         println!("ecad-mcp {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
-    let writable = args.iter().any(|a| a == "--write");
+    if args.iter().any(|a| a == "--write") {
+        eprintln!(
+            "ecad-mcp: --write was removed (D32): MCP clients query, prepare and preview; a person approves changes in the app"
+        );
+        return ExitCode::from(2);
+    }
     let dirs: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
-    let (Some(dir), true) = (dirs.first(), dirs.len() == 1 && args.len() == dirs.len() + usize::from(writable)) else {
+    let (Some(dir), true) = (dirs.first(), dirs.len() == 1 && args.len() == 1) else {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     };
-    let mut server = match ecad_mcp::Server::open(Path::new(dir), writable) {
+    let mut server = match ecad_mcp::Server::open(Path::new(dir)) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("ecad-mcp: {e}");
@@ -43,7 +49,7 @@ fn main() -> ExitCode {
         }
     };
     // stdout carries only protocol messages; anything for a person goes to stderr.
-    eprintln!("ecad-mcp: serving {dir}{}", if writable { " (edits allowed)" } else { " (read only)" });
+    eprintln!("ecad-mcp: serving {dir} (queries and proposals; approval in the app)");
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout().lock();
     for line in stdin.lock().lines() {
@@ -53,9 +59,6 @@ fn main() -> ExitCode {
         {
             break;
         }
-    }
-    if server.editor().is_dirty() {
-        eprintln!("ecad-mcp: closed with unsaved changes; the project folder is as it was last saved");
     }
     ExitCode::SUCCESS
 }

@@ -143,6 +143,9 @@ fn format_2_refuses_missing_or_duplicate_canonical_records() {
         ecad_project::save(&p, root).unwrap();
         std::fs::remove_file(root.join(file)).unwrap();
         assert!(ecad_project::load(root).is_err(), "{file}");
+        // A save over a folder changed outside Electric Studio is refused (D43); restore it.
+        assert!(matches!(ecad_project::save(&p, root), Err(ecad_project::ProjectError::External { .. })));
+        assert_eq!(ecad_project::state::restore(root).unwrap(), [file]);
     }
     ecad_project::save(&p, root).unwrap();
     let path = root.join("wires.json");
@@ -150,6 +153,7 @@ fn format_2_refuses_missing_or_duplicate_canonical_records() {
     wires.push(wires[0].clone());
     std::fs::write(&path, serde_json::to_vec(&wires).unwrap()).unwrap();
     assert!(ecad_project::load(root).is_err(), "duplicate wire id");
+    ecad_project::state::restore(root).unwrap();
     ecad_project::save(&p, root).unwrap();
     let path = root.join("terminals.json");
     let mut terminals: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
