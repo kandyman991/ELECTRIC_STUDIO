@@ -53,7 +53,7 @@ pub struct NodeId(pub Uuid);
 pub struct GroupId(pub Uuid);
 
 /// One end of a wire: a terminal or a node.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", content = "id", rename_all = "camelCase")]
 pub enum Endpoint {
     Terminal(TerminalId),
@@ -471,6 +471,13 @@ pub(crate) fn netlist_of(project: &Project, c: &Connectivity) -> Netlist {
             }
         }
     }
+    // Wires not drawn yet join their ends all the same (D1).
+    for w in project.undrawn.values() {
+        if let (Some(&a), Some(&b)) = (index.get(&w.from), index.get(&w.to)) {
+            sets.join(a, b);
+            wire_at.push((w.id, a));
+        }
+    }
     for b in &c.bridges {
         if let (Some(&x), Some(&y)) = (index.get(&Endpoint::Terminal(b.a)), index.get(&Endpoint::Terminal(b.b))) {
             sets.join(x, y);
@@ -544,6 +551,47 @@ mod tests {
         let id = f.id;
         p.place(f).unwrap();
         id
+    }
+
+    // ---- M10d: wires ----
+
+    #[test]
+    fn a_wire_drawn_later_keeps_its_id_and_its_nets() {
+        let mut p = sample::start_circuit().unwrap();
+        let w2 = p.connections.values().find(|c| c.wire_number.as_deref() == Some("W2")).unwrap().clone();
+        let nets = |p: &Project| -> Vec<Vec<Endpoint>> { p.netlist().nets.into_iter().map(|n| n.endpoints).collect() };
+        let drawn_nets = nets(&p);
+        let c = p.connectivity();
+        let (from, to) = (c.endpoint(&w2.from).unwrap(), c.endpoint(&w2.to).unwrap());
+        p.apply(Command::Disconnect(w2.id)).unwrap();
+        let wire = crate::Wire { id: w2.id, from, to, wire_number: w2.wire_number.clone(), spec: w2.spec.clone() };
+        p.apply(Command::AddWire(wire.clone())).unwrap();
+        assert_eq!(nets(&p), drawn_nets, "the same nets, drawn or not");
+        assert_eq!(p.apply(Command::AddWire(wire.clone())).unwrap_err(), ModelError::DuplicateId(w2.id.0));
+        // Drawn between points that don't show its ends: refused.
+        assert_eq!(
+            p.apply(Command::DrawWire {
+                id: w2.id,
+                from: w2.to.clone(),
+                to: ConnectionRef::new(sample::K1_COIL, "A2")
+            })
+            .unwrap_err(),
+            ModelError::WireDrawnElsewhere(w2.id.0)
+        );
+        let undo = p.apply(Command::DrawWire { id: w2.id, from: w2.from.clone(), to: w2.to.clone() }).unwrap();
+        assert!(p.undrawn.is_empty());
+        assert_eq!(p.connection(w2.id).unwrap().wire_number, w2.wire_number, "same id, number and make");
+        assert_eq!(nets(&p), drawn_nets);
+        p.apply(undo).unwrap();
+        assert_eq!(p.undrawn[&w2.id], wire);
+        // Ends must exist and differ.
+        let bad = crate::Wire { id: ConnectionId::new(), from, to: from, wire_number: None, spec: Default::default() };
+        assert_eq!(p.apply(Command::AddWire(bad)).unwrap_err(), ModelError::BadWireEnds);
+        // A terminal a wire not drawn yet ends on stays when its drawing goes.
+        let Endpoint::Terminal(t) = to else { panic!("{to:?}") };
+        p.apply(Command::Unplace(sample::K1_COIL)).unwrap();
+        assert!(p.terminals.contains_key(&t), "undrawn, still the wire's end");
+        assert_eq!(p.apply(Command::RemoveTerminal(t)).unwrap_err(), ModelError::TerminalInUse(t.0));
     }
 
     // ---- M10c: nodes ----

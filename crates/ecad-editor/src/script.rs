@@ -99,6 +99,28 @@ impl Editor {
         placed.map_err(|e| e.to_string())
     }
 
+    /// Add a wire between the terminals or nodes two drawn points show, without drawing it
+    /// (D1): undoable, like any edit.
+    pub fn script_add_wire(&mut self, from: &str, to: &str, number: Option<&str>) -> Result<ConnectionId, String> {
+        let a = find_point(&self.project, from)?;
+        let b = find_point(&self.project, to)?;
+        let c = self.project.connectivity();
+        let (Some(from_end), Some(to_end)) = (c.endpoint(&a), c.endpoint(&b)) else {
+            return Err("those points show no terminal or node".into());
+        };
+        let id = ConnectionId::new();
+        let wire = ecad_model::Wire {
+            id,
+            from: from_end,
+            to: to_end,
+            wire_number: number.map(str::to_owned),
+            spec: Default::default(),
+        };
+        self.execute(&format!("Add wire {from} to {to} (not drawn)"), Command::AddWire(wire))
+            .map_err(|e| e.to_string())?;
+        Ok(id)
+    }
+
     /// Draw a wire between two free points (`-S1:14`, `-K1:A1`).
     pub fn script_connect(&mut self, from: &str, to: &str) -> Result<ConnectionId, String> {
         let a = find_point(&self.project, from)?;

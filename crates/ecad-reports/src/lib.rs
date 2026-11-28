@@ -89,6 +89,39 @@ pub fn wire_list(project: &Project) -> Result<Vec<WireListRow>, ModelError> {
         })
         .collect::<Result<Vec<_>, _>>()
         .map(|mut rows| {
+            // Wires not drawn yet (D1): their ends, and "not drawn" for a route.
+            for w in project.undrawn.values() {
+                let (from_tag, from_point) = project.describe_end(&w.from);
+                let (to_tag, to_point) = project.describe_end(&w.to);
+                let (cable, core) = w
+                    .spec
+                    .cable
+                    .as_ref()
+                    .map(|k| (project.cables.get(&k.cable).map(|c| c.tag.clone()).unwrap_or_default(), k.core.clone()))
+                    .unwrap_or_default();
+                let potential = potentials
+                    .iter()
+                    .find(|p| p.connections.contains(&w.id))
+                    .and_then(|p| p.name())
+                    .unwrap_or_default();
+                rows.push(WireListRow {
+                    wire: w.wire_number.clone().unwrap_or_default(),
+                    potential,
+                    from_tag,
+                    from_point,
+                    to_tag,
+                    to_point,
+                    from_terminal_point: String::new(),
+                    to_terminal_point: String::new(),
+                    cross_section: w.spec.cross_section.clone(),
+                    colour: w.spec.colour.clone(),
+                    cable,
+                    core,
+                    length: String::new(),
+                    route: "not drawn".into(),
+                    length_basis: String::new(),
+                });
+            }
             rows.sort_by(|a, b| a.wire.cmp(&b.wire));
             rows
         })

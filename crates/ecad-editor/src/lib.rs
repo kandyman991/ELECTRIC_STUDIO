@@ -436,6 +436,7 @@ impl Editor {
         let nodes_going: Vec<ecad_model::NodeId> = nodes
             .into_iter()
             .filter(|n| self.project.functions.values().all(|f| f.node != Some(*n) || f.page == page))
+            .filter(|n| !self.project.wire_uses(ecad_model::Endpoint::Node(*n)))
             .collect();
         let mut devices: Vec<DeviceId> = on_page.iter().filter(|f| f.node.is_none()).map(|f| f.device).collect();
         devices.sort();
@@ -565,7 +566,7 @@ impl Editor {
         let node = self.project.nodes.get(&old).ok_or(ModelError::NoNode(old.0))?;
         let target = self.project.node_by_name(node.kind, name, &node.scope)?.id;
         let mut cmds = vec![Command::Rebind { id: f, node: target }];
-        if self.project.drawings_of_node(old).count() == 1 {
+        if self.project.drawings_of_node(old).count() == 1 && !self.project.wire_uses(ecad_model::Endpoint::Node(old)) {
             cmds.push(Command::RemoveNode(old));
         }
         self.execute(&format!("Bind {} to {}", node.name, name.trim()), Command::Batch(cmds))
@@ -963,7 +964,8 @@ impl Editor {
         let mut cmds = vec![Command::Unplace(f)];
         // A node goes with its last drawing.
         if let Some(n) = func.node {
-            if self.project.drawings_of_node(n).count() == 1 {
+            // ... unless a wire not drawn yet ends on it.
+            if self.project.drawings_of_node(n).count() == 1 && !self.project.wire_uses(ecad_model::Endpoint::Node(n)) {
                 cmds.push(Command::RemoveNode(n));
             }
             return self.execute(&label, Command::Batch(cmds));

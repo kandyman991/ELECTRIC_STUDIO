@@ -147,11 +147,21 @@ fn edits_need_write_and_are_saved_only_on_save() {
     let (undone, _) = call(&mut s, "undo", json!({}));
     assert!(undone["undid"].as_str().unwrap().starts_with("Draw wire"));
     call(&mut s, "redo", json!({}));
+    // A wire between two points' terminals, not drawn: listed as such, saved in wires.json.
+    let (added, failed) =
+        call(&mut s, "add_wire", json!({ "from": format!("{other}:A2"), "to": "M:1", "number": "W77" }));
+    assert!(!failed && added["drawn"] == false, "{added}");
+    let (wires, _) = call(&mut s, "list_wires", json!({}));
+    let w77 = wires["wires"].as_array().unwrap().iter().find(|w| w["wire"] == "W77").unwrap().clone();
+    assert_eq!(w77["drawn"], false);
+    let (nodes, _) = call(&mut s, "list_devices", json!({}));
+    assert!(nodes["nodes"].as_array().unwrap().iter().any(|n| n["name"] == "M" && n["kind"] == "potential"));
     call(&mut s, "edit_device", json!({ "tag": tag, "new_tag": "-K10", "description": "Added over MCP" }));
     let (saved, failed) = call(&mut s, "save", json!({}));
     assert!(!failed, "{saved}");
     let back = ecad_project::load(dir.path()).unwrap();
     assert_eq!(back.device_by_tag("-K10").unwrap().description, "Added over MCP");
+    assert_eq!(back.undrawn.values().filter(|w| w.wire_number.as_deref() == Some("W77")).count(), 1);
     let (o, _) = call(&mut s, "project_overview", json!({}));
     assert_eq!(o["unsaved_changes"], false);
 }

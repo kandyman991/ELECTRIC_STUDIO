@@ -173,6 +173,14 @@ pub fn list(writable: bool) -> Vec<Value> {
                 Effect::Adds,
             ),
             tool(
+                "add_wire",
+                "Add wire (not drawn)",
+                "Add a wire between the terminals or nodes two points show (TAG:POINT as drawn), without drawing it: it is in the wire list, netlist and checks as not drawn yet.",
+                json!({ "from": string("One end, like -S1:14"), "to": string("The other end, like -K1:A1"), "number": string("Its wire number, if any") }),
+                &["from", "to"],
+                Effect::Adds,
+            ),
+            tool(
                 "delete_wire",
                 "Delete wire",
                 "Delete the wire at a connection point.",
@@ -274,6 +282,11 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Result<Value, Stri
             let id = server.editor.script_connect(required(args, "from")?, required(args, "to")?)?;
             let wire = server.editor.project().connection(id).ok().and_then(|c| c.wire_number.clone());
             changed(server, json!({ "wire": wire }))
+        }
+        "add_wire" => {
+            let id =
+                server.editor.script_add_wire(required(args, "from")?, required(args, "to")?, text(args, "number"))?;
+            changed(server, json!({ "wire": id.0.to_string(), "drawn": false }))
         }
         "delete_wire" => {
             let wire = server.editor.script_disconnect(required(args, "at")?)?;
@@ -454,6 +467,7 @@ fn list_wires(p: &Project, device: Option<&str>) -> Result<Value, String> {
                 "cable": r.cable,
                 "core": r.core,
                 "length_mm": r.length,
+                "drawn": r.route != "not drawn",
             })
         })
         .collect();

@@ -1,7 +1,8 @@
 # Roadmap: machine-centric platform
 
 **Status: architecture approved and merged (PR #31, 27 Nov 2026), all decisions D1–D43
-resolved. M7 accepted with owner-approved deferred Legion validation (27 Nov 2026); M10 authorized.** Pairs with
+resolved. M7 accepted with owner-approved deferred Legion validation (27 Nov 2026); M10
+implemented, awaiting independent milestone review.** Pairs with
 [PLATFORM-ARCHITECTURE.md](PLATFORM-ARCHITECTURE.md).
 
 ## Where things stand
@@ -10,7 +11,7 @@ resolved. M7 accepted with owner-approved deferred Legion validation (27 Nov 202
 | --- | --- |
 | M0–M6 (foundation, editor, multi-page, parts and reports, checks and output, MVP gate, panel layout, integrations) | Merged |
 | M7 model foundations | M7a (PR #33, derived connectivity, netlist, content hash) merged; M7b (conveyor acceptance project, benchmark harness) complete; PR #35 merged after all six exact-head CI jobs passed; **accepted with R5 deferred to the first production release** |
-| M10 format 2 | In progress: M10a (#37) and M10b (#38) merged; M10c next |
+| M10 format 2 | Implemented: M10a (#37), M10b (#38), M10c (#40), M10b′ and M10d (#41); **awaiting independent milestone review** (not accepted; S0 waits) |
 | Components library (PR #32) | Draft, **on hold** (D13). Its compatible parts are reused in M9 |
 
 The earlier proposals in GAPS.md (library, annotations, generated pages, symbols, layouts,

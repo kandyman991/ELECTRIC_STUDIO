@@ -372,6 +372,20 @@ pub struct Connection {
     pub bend: Option<f64>,
 }
 
+/// A wire not drawn yet (D1): it joins two ends, terminals or nodes, and appears in the wire
+/// list, the netlist and the checks; drawing it ([`Command::DrawWire`]) makes it a drawn
+/// [`Connection`] with the same id.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Wire {
+    pub id: ConnectionId,
+    pub from: crate::Endpoint,
+    pub to: crate::Endpoint,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wire_number: Option<String>,
+    #[serde(default, flatten)]
+    pub spec: WireSpec,
+}
+
 /// What a wire is made of.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WireSpec {
@@ -568,6 +582,17 @@ pub enum Command {
         #[serde(default)]
         terminals: BTreeMap<String, TerminalId>,
     },
+    /// A wire not drawn yet, between two terminals or nodes (D1).
+    AddWire(Wire),
+    /// Remove a wire that isn't drawn.
+    RemoveWire(ConnectionId),
+    /// Draw a wire not drawn yet, between drawn points that show its ends: it keeps its id,
+    /// number and make.
+    DrawWire {
+        id: ConnectionId,
+        from: ConnectionRef,
+        to: ConnectionRef,
+    },
     /// A node (D1): a junction, potential or interruption, drawn or not yet.
     AddNode(NodeEntry),
     /// Remove a node no drawing shows.
@@ -692,6 +717,12 @@ pub enum ModelError {
     UnknownTag(String),
     #[error("there is no cable `{0}`")]
     UnknownCable(String),
+    #[error("wire {0} is not in the project, or is drawn")]
+    NoUndrawnWire(Uuid),
+    #[error("a wire's two ends must differ and exist")]
+    BadWireEnds,
+    #[error("those points don't show wire {0}'s ends")]
+    WireDrawnElsewhere(Uuid),
     #[error("node {0} is not in the project")]
     NoNode(Uuid),
     #[error("node {0} is shown by a drawing")]
@@ -794,6 +825,9 @@ pub struct Project {
     /// The junctions, potentials and interruptions (D1), by id.
     #[serde(default)]
     pub nodes: BTreeMap<NodeId, NodeEntry>,
+    /// Wires not drawn yet (D1), by id. Drawn wires are [`Project::connections`].
+    #[serde(default)]
+    pub undrawn: BTreeMap<ConnectionId, Wire>,
     /// The physical connection points of the devices (D2), by id.
     #[serde(default)]
     pub terminals: BTreeMap<TerminalId, TerminalEntry>,
@@ -1178,6 +1212,22 @@ impl Project {
         f.terminals.get(point).and_then(|t| self.terminals.get(t)).map_or(point, |t| t.designation.as_str())
     }
 
+    /// Whether a wire not drawn yet ends on `e`.
+    pub fn wire_uses(&self, e: crate::Endpoint) -> bool {
+        self.undrawn.values().any(|w| w.from == e || w.to == e)
+    }
+
+    /// `(tag or name, designation)` of a wire's end, drawn or not.
+    pub fn describe_end(&self, e: &crate::Endpoint) -> (String, String) {
+        match e {
+            crate::Endpoint::Terminal(t) => match self.terminals.get(t) {
+                Some(t) => (self.device(t.device).map(|d| d.tag.clone()).unwrap_or_default(), t.designation.clone()),
+                None => (String::new(), String::new()),
+            },
+            crate::Endpoint::Node(n) => (self.nodes.get(n).map(|n| n.name.clone()).unwrap_or_default(), String::new()),
+        }
+    }
+
     /// A PLC channel drawing's typed data: on the terminal of its first point.
     pub fn channel_of(&self, f: &Function) -> Option<&ChannelData> {
         f.terminals.values().filter_map(|t| self.terminals.get(t)).find_map(|t| t.channel.as_ref())
@@ -1293,7 +1343,8 @@ impl Project {
         }
         for t in f.terminals.values() {
             let shown = self.functions.values().any(|g| g.terminals.values().any(|u| u == t));
-            if !shown {
+            // A terminal a wire not drawn yet ends on stays, undrawn.
+            if !shown && !self.wire_uses(crate::Endpoint::Terminal(*t)) {
                 self.terminals.remove(t);
             }
         }
@@ -1538,7 +1589,7 @@ impl Project {
                 Ok(Command::Mirror { id, to: old })
             }
             Command::Connect(c) => {
-                if self.connections.contains_key(&c.id) {
+                if self.connections.contains_key(&c.id) || self.undrawn.contains_key(&c.id) {
                     return Err(ModelError::DuplicateId(c.id.0));
                 }
                 self.check_connection(&c)?;
@@ -1552,12 +1603,18 @@ impl Project {
             }
             Command::SetWireNumber { id, number } => {
                 let number = number.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty());
-                self.connection(id)?;
+                if !self.undrawn.contains_key(&id) {
+                    self.connection(id)?;
+                }
                 if let Some(n) = &number {
                     self.check_wire_number(n, Some(id))?;
                 }
-                let c = self.connections.get_mut(&id).ok_or(ModelError::NoConnection(id))?;
-                let old = std::mem::replace(&mut c.wire_number, number);
+                // Drawn or not, renumbering changes no end (D1).
+                let slot = match self.connections.get_mut(&id) {
+                    Some(c) => &mut c.wire_number,
+                    None => &mut self.undrawn.get_mut(&id).ok_or(ModelError::NoConnection(id))?.wire_number,
+                };
+                let old = std::mem::replace(slot, number);
                 Ok(Command::SetWireNumber { id, number: old })
             }
             Command::AddPage(page) => {
@@ -1685,6 +1742,46 @@ impl Project {
                     terminals: old_terminals,
                 })
             }
+            Command::AddWire(w) => {
+                if self.connections.contains_key(&w.id) || self.undrawn.contains_key(&w.id) {
+                    return Err(ModelError::DuplicateId(w.id.0));
+                }
+                let exists = |e: &crate::Endpoint| match e {
+                    crate::Endpoint::Terminal(t) => self.terminals.contains_key(t),
+                    crate::Endpoint::Node(n) => self.nodes.contains_key(n),
+                };
+                if w.from == w.to || !exists(&w.from) || !exists(&w.to) {
+                    return Err(ModelError::BadWireEnds);
+                }
+                let w = Wire { wire_number: w.wire_number.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty()), ..w };
+                if let Some(n) = &w.wire_number {
+                    self.check_wire_number(n, Some(w.id))?;
+                }
+                let id = w.id;
+                self.undrawn.insert(id, w);
+                Ok(Command::RemoveWire(id))
+            }
+            Command::RemoveWire(id) => {
+                let w = self.undrawn.remove(&id).ok_or(ModelError::NoUndrawnWire(id.0))?;
+                Ok(Command::AddWire(w))
+            }
+            Command::DrawWire { id, from, to } => {
+                let w = self.undrawn.get(&id).cloned().ok_or(ModelError::NoUndrawnWire(id.0))?;
+                let c = self.connectivity();
+                let ends = (c.endpoint(&from), c.endpoint(&to));
+                if ends != (Some(w.from), Some(w.to)) && ends != (Some(w.to), Some(w.from)) {
+                    return Err(ModelError::WireDrawnElsewhere(id.0));
+                }
+                self.undrawn.remove(&id);
+                let drawn =
+                    Connection { id, from, to, wire_number: w.wire_number.clone(), spec: w.spec.clone(), bend: None };
+                if let Err(e) = self.check_connection(&drawn) {
+                    self.undrawn.insert(id, w);
+                    return Err(e);
+                }
+                self.connections.insert(id, drawn);
+                Ok(Command::Batch(vec![Command::Disconnect(id), Command::AddWire(w)]))
+            }
             Command::AddNode(n) => {
                 if self.nodes.contains_key(&n.id) {
                     return Err(ModelError::DuplicateId(n.id.0));
@@ -1695,7 +1792,7 @@ impl Project {
                 Ok(Command::RemoveNode(id))
             }
             Command::RemoveNode(id) => {
-                if self.functions.values().any(|f| f.node == Some(id)) {
+                if self.functions.values().any(|f| f.node == Some(id)) || self.wire_uses(crate::Endpoint::Node(id)) {
                     return Err(ModelError::NodeInUse(id.0));
                 }
                 let n = self.nodes.remove(&id).ok_or(ModelError::NoNode(id.0))?;
@@ -1726,7 +1823,9 @@ impl Project {
                 Ok(Command::RemoveTerminal(id))
             }
             Command::RemoveTerminal(id) => {
-                if self.functions.values().any(|f| f.terminals.values().any(|t| *t == id)) {
+                if self.functions.values().any(|f| f.terminals.values().any(|t| *t == id))
+                    || self.wire_uses(crate::Endpoint::Terminal(id))
+                {
                     return Err(ModelError::TerminalInUse(id.0));
                 }
                 let t = self.terminals.remove(&id).ok_or(ModelError::NoTerminal(id.0))?;
@@ -2177,10 +2276,9 @@ impl Project {
         if self.naming.wire_numbering == crate::WireNumbering::PerPotential {
             return Ok(());
         }
-        match self.connections.values().find(|c| c.wire_number.as_deref() == Some(number)) {
-            Some(c) if Some(c.id) != except => Err(ModelError::DuplicateWireNumber(number.to_owned())),
-            _ => Ok(()),
-        }
+        let drawn = self.connections.values().any(|c| Some(c.id) != except && c.wire_number.as_deref() == Some(number));
+        let undrawn = self.undrawn.values().any(|w| Some(w.id) != except && w.wire_number.as_deref() == Some(number));
+        if drawn || undrawn { Err(ModelError::DuplicateWireNumber(number.to_owned())) } else { Ok(()) }
     }
 
     fn check_connection(&self, c: &Connection) -> Result<()> {
