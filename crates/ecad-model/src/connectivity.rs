@@ -172,11 +172,47 @@ pub struct Node {
     pub drawings: Vec<ConnectionRef>,
 }
 
-/// An explicit electrical joint inside a device.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+/// An explicit electrical joint inside a device, between two of its terminals (R7): canonical
+/// and persistent (`bridges.json`), independent of any drawing. `a < b`; the pair is its
+/// identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Bridge {
     pub a: TerminalId,
     pub b: TerminalId,
+}
+
+impl Bridge {
+    /// The bridge between `x` and `y`, in canonical order.
+    pub fn new(x: TerminalId, y: TerminalId) -> Self {
+        if x < y { Bridge { a: x, b: y } } else { Bridge { a: y, b: x } }
+    }
+}
+
+/// The internal bridges a symbol's drawing depicts between the terminals it shows: all points
+/// of a bridged symbol (a strip terminal's sides) and each of its bridge groups (one level of a
+/// multi-level terminal, a black box's joined terminals), each chained in symbol point order,
+/// as M7 derived them. Levels are never joined to each other.
+pub(crate) fn symbol_bridges(sym: &SymbolDef, shows: &BTreeMap<String, TerminalId>) -> Vec<Bridge> {
+    let ordered: Vec<(&str, TerminalId)> =
+        sym.connection_points.iter().filter_map(|cp| shows.get(&cp.name).map(|t| (cp.name.as_str(), *t))).collect();
+    let mut groups: Vec<Vec<TerminalId>> = Vec::new();
+    if sym.bridged {
+        groups.push(ordered.iter().map(|(_, t)| *t).collect());
+    }
+    for g in &sym.bridges {
+        groups.push(ordered.iter().filter(|(n, _)| g.iter().any(|x| x == n)).map(|(_, t)| *t).collect());
+    }
+    let mut out = Vec::new();
+    for g in groups {
+        for w in g.windows(2) {
+            if w[0] != w[1] {
+                out.push(Bridge::new(w[0], w[1]));
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// A mapping that can't be decided from the drawings, kept apart and reported.
@@ -326,23 +362,6 @@ impl Project {
                 c.terminals
                     .insert(id, Terminal { id, device: f.device, group, designation, point, kind, drawings: vec![r] });
             }
-            // Explicit joints: all points of a bridged symbol (a strip terminal's sides), and a
-            // symbol's bridge groups (a black box's joined terminals, one level of a terminal).
-            let mut groups: Vec<Vec<TerminalId>> = Vec::new();
-            if sym.bridged {
-                groups.push(mine.iter().map(|(_, t)| *t).collect());
-            }
-            for g in &sym.bridges {
-                groups.push(mine.iter().filter(|(n, _)| g.contains(n)).map(|(_, t)| *t).collect());
-            }
-            for g in groups {
-                for w in g.windows(2) {
-                    if w[0] != w[1] {
-                        let (a, b) = if w[0] < w[1] { (w[0], w[1]) } else { (w[1], w[0]) };
-                        c.bridges.push(Bridge { a, b });
-                    }
-                }
-            }
         }
         // Terminals no drawing shows yet: endpoints all the same.
         for t in self.terminals.values() {
@@ -353,19 +372,37 @@ impl Project {
                     .entry(t.group)
                     .or_default()
                     .push(t.id);
+                // Typed from the canonical record, not from a drawing (R8): a channel is a PLC
+                // channel, a point of a group a strip terminal's.
+                let kind = match &t.channel {
+                    Some(ch) => TerminalKind::PlcChannel(PlcChannel {
+                        kind: ch.kind,
+                        address_text: ch.address.clone(),
+                        address: crate::plc_address::canonical(&ch.address),
+                        symbol: ch.symbol.clone(),
+                        comment: ch.comment.clone(),
+                    }),
+                    None if !t.point.is_empty() => TerminalKind::Strip,
+                    None => TerminalKind::Device,
+                };
                 slot.insert(Terminal {
                     id: t.id,
                     device: t.device,
                     group: t.group,
                     designation: t.designation.clone(),
                     point: t.point.clone(),
-                    kind: TerminalKind::Device,
+                    kind,
                     drawings: Vec::new(),
                 });
             }
         }
-        c.bridges.sort();
-        c.bridges.dedup();
+        // Internal bridges are canonical (R7): stored, never derived from a drawing.
+        c.bridges = self
+            .bridges
+            .iter()
+            .filter(|b| c.terminals.contains_key(&b.a) && c.terminals.contains_key(&b.b))
+            .copied()
+            .collect();
         // Nodes no drawing shows yet; junctions drawn more than once.
         for n in self.nodes.values() {
             c.nodes.entry(n.id).or_insert_with(|| Node {

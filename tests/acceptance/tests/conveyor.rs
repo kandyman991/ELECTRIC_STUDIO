@@ -473,6 +473,9 @@ fn the_format_1_conveyor_converts_to_the_same_project() {
     assert_eq!(a.devices, built.devices);
     assert_eq!(a.functions, built.functions);
     assert_eq!(a.connections, built.connections);
+    assert_eq!(a.terminals, built.terminals, "the same canonical terminals");
+    assert!(!a.bridges.is_empty());
+    assert_eq!(a.bridges, built.bridges, "deterministic canonical bridges (R7)");
     assert_eq!(a.connectivity(), built.connectivity(), "the same terminals and nodes, same ids");
     assert_eq!(a.netlist(), built.netlist());
     let order = |p: &Project| p.pages_in_order().iter().map(|pg| pg.id).collect::<Vec<_>>();

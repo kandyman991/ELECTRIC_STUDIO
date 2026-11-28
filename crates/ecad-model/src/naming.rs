@@ -171,8 +171,16 @@ impl Project {
         })
     }
 
+    pub fn wire_number(&self, id: ConnectionId) -> Option<&str> {
+        self.connections
+            .get(&id)
+            .and_then(|c| c.wire_number.as_deref())
+            .or_else(|| self.undrawn.get(&id).and_then(|w| w.wire_number.as_deref()))
+    }
+
     fn wire_number_taken(&self, number: &str) -> bool {
         self.connections.values().any(|c| c.wire_number.as_deref() == Some(number))
+            || self.undrawn.values().any(|w| w.wire_number.as_deref() == Some(number))
     }
 
     /// The first free number from the wire format on `page`.
@@ -202,14 +210,13 @@ impl Project {
         let mut points: Vec<ConnectionRef> = sides.iter().flat_map(|p| p.points.iter().cloned()).collect();
         points.extend([from.clone(), to.clone()]);
         let name = name.or_else(|| self.plc_number_of(&points));
-        let existing = sides.iter().find_map(|p| {
-            p.connections.iter().find_map(|c| self.connection(*c).ok().and_then(|c| c.wire_number.clone()))
-        });
+        let existing =
+            sides.iter().find_map(|p| p.connections.iter().find_map(|c| self.wire_number(*c).map(str::to_owned)));
         let number = name.or(existing).unwrap_or_else(|| self.next_wire_number(page));
         let renumber = sides
             .iter()
             .flat_map(|p| p.connections.iter())
-            .filter(|c| self.connection(**c).ok().and_then(|c| c.wire_number.as_deref()) != Some(number.as_str()))
+            .filter(|c| self.wire_number(**c) != Some(number.as_str()))
             .copied()
             .collect::<BTreeSet<_>>()
             .into_iter()
@@ -242,14 +249,18 @@ impl Project {
         // Clear first, so new numbers can reuse old ones.
         let mut scratch = self.clone();
         let mut cmds = Vec::new();
-        for id in self.connections.keys() {
+        for id in self.connections.keys().chain(self.undrawn.keys()) {
             cmds.push(Command::SetWireNumber { id: *id, number: None });
             if let Some(c) = scratch.connections.get_mut(id) {
                 c.wire_number = None;
+            } else if let Some(w) = scratch.undrawn.get_mut(id) {
+                w.wire_number = None;
             }
         }
         let mut groups: Vec<(Option<String>, Vec<ConnectionId>)> = match self.naming.wire_numbering {
-            WireNumbering::PerWire => self.connections.keys().map(|c| (None, vec![*c])).collect(),
+            WireNumbering::PerWire => {
+                self.connections.keys().chain(self.undrawn.keys()).map(|c| (None, vec![*c])).collect()
+            }
             WireNumbering::PerPotential => self
                 .potentials()
                 .into_iter()
@@ -267,6 +278,8 @@ impl Project {
             for id in ids {
                 if let Some(c) = scratch.connections.get_mut(&id) {
                     c.wire_number = Some(number.clone());
+                } else if let Some(w) = scratch.undrawn.get_mut(&id) {
+                    w.wire_number = Some(number.clone());
                 }
                 cmds.push(Command::SetWireNumber { id, number: Some(number.clone()) });
             }

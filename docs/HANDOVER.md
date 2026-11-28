@@ -11,9 +11,10 @@ merged PR.
 - **Review policy:** milestone-based. Implementation slices are merged once CI is green. Independent
   review happens when a milestone is ready for formal acceptance, or when a significant
   architectural issue needs a decision.
-- **Current milestone:** M10, format 2 canonical connectivity: **implemented, awaiting
-  independent milestone review** (M10a #37, M10b #38, M10c #40, M10b′ and M10d #41). Not
-  accepted; S0 does not start until the review is complete.
+- **Current milestone:** M10, format 2 canonical connectivity: implemented (M10a #37, M10b
+  #38, M10c #40, M10b′ and M10d #41); review findings R1–R8 corrected in **PR #42**
+  (`m10-acceptance-corrections`, not merged), **awaiting the final corrective review**. Not
+  accepted; S0 does not start until that review authorizes closure.
   - M7a (PR #33) and M7b (PR #34) merged; corrective PR #35 merged at `e258a59`.
   - M7 formally accepted on 27 Nov 2026 with R5 (controlled Legion wall-clock and peak RSS)
     explicitly deferred by the owner, not passed. All six exact-head CI jobs passed at `90d6dfb`.
@@ -97,15 +98,46 @@ Notes:
 - **Page keys:** format 1's dense order becomes `PAGE_STEP * (i + 1)`. Samples built in code
   may still use small keys; only the relative order matters.
 
+M10 acceptance corrections (PR #42, findings in
+[the review](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/42#issuecomment-7234132366)):
+
+| Finding | Resolution | Evidence |
+|---|---|---|
+| R1 canonical record integrity | Format 2 requires `terminals.json`, `nodes.json`, `wires.json`, `bridges.json`, `products.json`; duplicate ids, missing product ids, foreign page ownership, mixed legacy/canonical wire graphics and out-of-order bridge ends are refused; save refuses unresolved wire ends (`BadWireEnds`) | `wires.rs` `format_2_refuses_missing_or_duplicate_canonical_records`, `bridges.rs` `bridges_json_is_required_and_validated_on_load` |
+| R2 exact terminal restoration | `RestoreDrawing` inverse snapshots terminal entries and the bridges touching them; undo, redo and failed transactions restore them exactly | `terminal_records_survive_unplace_and_undo_without_reconstruction`, `a_failed_batch_rolls_back_terminals_and_bridges_exactly` |
+| R3 undrawn wire resources | Undrawn wires reserve cable cores and numbers (`check_core`, `SetWireSpec`, `RemoveCable`) | `undrawn_wire_reserves_cable_core_and_number` |
+| R4 checks and reports cover undrawn wires | Wire numbering, potential clashes and the cable list include them | `undrawn_wire_short_is_reported_as_an_electrical_error` |
+| R5 canonical PLC identity | `check_plc` by terminal identity, `plc_channels_of` deduplicated, `next_address` reserves every terminal's channel, drawn or not | `undrawn_plc_channels_and_strip_terminals_stay_typed_and_reported` |
+| R6 physical group consistency | `check_terminal_point` (point unique per group), whole-group renumbering including undrawn points, `RemoveDevice` refuses remaining terminals | `renumber_includes_undrawn_points_of_the_same_physical_group` |
+| R7 canonical bridges | `Project.bridges` in `bridges.json`; drawings only depict; repeated representations cannot add; drawing removal keeps surviving bridges; `AddBridge`/`RemoveBridge` explicit; format 1 conversion yields deterministic bridges equal to the built project; the temporary `BridgeInUse` safeguard is removed | `bridges.rs`, `deleting_a_bridge_drawing_keeps_the_bridges_of_surviving_undrawn_terminals`, `the_format_1_conveyor_converts_to_the_same_project` |
+| R8 remaining coverage | Undrawn terminals typed from their record (PLC channel, strip point); PLC I/O list and terminal diagram list undrawn channels and strip terminals as "not drawn" with what their wires reach; graphical-only edits never change drawn wire ends, `Rebind`/`Reassign` do | `bridges.rs` `graphical_operations_never_change_drawn_wire_ends`, `reassigning_a_drawing_creates_the_new_devices_bridges_and_keeps_the_old_ones` |
+
 Known limitations and review points (M10):
+- **Bridges are canonical** and only change through `AddBridge`/`RemoveBridge`, through placing
+  a drawing that creates the terminals it bridges, or with the terminals they join. A terminal
+  can't be removed while bridged. There is no editor panel for bridges yet (script/model only).
+- **Saving refuses a project with unresolved drawn wire ends** (R1), rather than writing
+  something load would reject.
+- **Undrawn report rows** identify canonical physical points and bridge components, with
+  `not drawn` in the location column for points lacking representations. When no complete
+  symbol representation supplies inside/outside order, the two legacy columns are ordered
+  point slots, not inferred cabinet/field sides. Drawn and undrawn wires are aggregated by
+  terminal identity across repeated representations.
+- **Bridge mutation consistency:** removing a depicted bridge is refused until its
+  representation is reconciled; save validates the same invariant as load. Detaching a
+  drawing retains any bridge component touching a surviving terminal, including intermediate
+  points without direct wires. Only wholly unused components are discarded.
+- Format 2 was not released before M10 acceptance; interim development snapshots without
+  `bridges.json` are refused, not silently reconstructed. Preserve the format 1 source for
+  deterministic migration.
 - **Node drawings are `Function`s** with `device: DeviceId::NONE` (nil, omitted on disk) and
   `node: Some(id)`, rather than a separate `NodeDrawing` type: routing, rendering, selection
   and editing work unchanged. Code that needs a device checks `f.node` first.
 - **A drawn wire's ends are not stored twice in memory:** they are read from its graphics
   through the persistent terminal and node maps, which renumbering, moving and re-routing
   never change; `wires.json` stores them, and load verifies they agree.
-- **Wire numbering** (`renumber_all_wires`, per-potential numbering) applies to drawn wires;
-  an undrawn wire keeps the number it is given.
+- **Wire numbering** (`renumber_all_wires`, per-potential numbering) includes drawn and
+  undrawn wires; ordinary graphical edits do not renumber either.
 - **The editor UI** has no panel for undrawn wires yet (they are added by script or MCP and
   shown by the wire list and checks); schematic generation (M13) draws them.
 - **New potentials placed in the editor** are new nodes; joining one to an existing
@@ -114,4 +146,14 @@ Known limitations and review points (M10):
   names), so converted drawings are byte-identical; new junctions are named `J<n>`.
 - **Performance:** sandbox smoke timings are within noise except `open`, about +20% on the
   reference project from the load-time check that wire graphics show their saved ends (one
-  connectivity derivation). Instruction counts are compared in CI.
+  connectivity derivation). Instruction counts are compared in CI. PR #42 vs main's
+  baseline (cachegrind, conveyor; 435fcb7 measured separately to attribute): open +8.0%
+  (+7.4% from the R1–R6 corrections, +0.6% from R7's `bridges.json`), save +1.1% (+0.8% R7),
+  edit and check −4.1% (R1–R6), hash +0.6% (R7, bridges are serialized), others within
+  ±0.2%; workload counts identical, content hashes changed (bridges are part of the
+  project). The open increase is, by estimate, mostly `check_terminal_point`, which scans every terminal
+  for each terminal added: linear per edit, **quadratic on load** (about 64 k comparisons, ~1 M
+  instructions, on the conveyor's 358 terminals). It stays within the 10% warning threshold; replacing it with
+  an indexed check belongs with the profiling follow-up below, before projects of thousands
+  of terminals. Allocation blocks moved by under 1%. Wall clock remains unqualified until
+  the Legion run (#39).

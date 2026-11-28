@@ -133,3 +133,152 @@ fn page_graphics_that_dont_show_a_wires_ends_are_refused_on_load() {
     let e = ecad_project::load(tmp.path()).unwrap_err().to_string();
     assert!(e.contains("don't show wire"), "{e}");
 }
+
+#[test]
+fn format_2_refuses_missing_or_duplicate_canonical_records() {
+    let p = conveyor().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    for file in ["products.json", "terminals.json", "nodes.json", "wires.json"] {
+        ecad_project::save(&p, root).unwrap();
+        std::fs::remove_file(root.join(file)).unwrap();
+        assert!(ecad_project::load(root).is_err(), "{file}");
+    }
+    ecad_project::save(&p, root).unwrap();
+    let path = root.join("wires.json");
+    let mut wires: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    wires.push(wires[0].clone());
+    std::fs::write(&path, serde_json::to_vec(&wires).unwrap()).unwrap();
+    assert!(ecad_project::load(root).is_err(), "duplicate wire id");
+    ecad_project::save(&p, root).unwrap();
+    let path = root.join("terminals.json");
+    let mut terminals: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    terminals.remove(0);
+    std::fs::write(&path, serde_json::to_vec(&terminals).unwrap()).unwrap();
+    assert!(ecad_project::load(root).is_err(), "missing terminal record");
+}
+
+#[test]
+fn undrawn_wire_reserves_cable_core_and_number() {
+    let mut p = conveyor().unwrap();
+    let from = p.connectivity().endpoint(&point(&p, "-H1", "X2")).unwrap();
+    let to = Endpoint::Node(p.node_by_name(NodeKind::Potential, "M", ecad_model::PROJECT_SCOPE).unwrap().id);
+    let used = p.connections.values().find_map(|c| c.spec.cable.clone()).unwrap();
+    let wire = Wire {
+        id: ConnectionId::new(),
+        from,
+        to,
+        wire_number: None,
+        spec: ecad_model::WireSpec { cable: Some(used.clone()), ..Default::default() },
+    };
+    let before = p.clone();
+    assert!(p.apply(Command::AddWire(wire.clone())).is_err());
+    assert_eq!(p, before);
+    let core = ecad_model::CableCore { core: "test-unused".into(), ..used };
+    let page = p.pages_in_order()[0].id;
+    let number = p.next_wire_number(page);
+    let wire = Wire {
+        wire_number: Some(number.clone()),
+        spec: ecad_model::WireSpec { cable: Some(core.clone()), ..Default::default() },
+        ..wire
+    };
+    p.apply(Command::AddWire(wire.clone())).unwrap();
+    assert_ne!(p.next_wire_number(page), number);
+    assert!(p.apply(Command::RemoveCable(core.cable)).is_err());
+    let duplicate = Wire { id: ConnectionId::new(), wire_number: None, ..wire };
+    assert!(p.apply(Command::AddWire(duplicate)).is_err());
+    assert!(ecad_reports::cable_list(&p).iter().any(|r| r.core == "test-unused" && r.wire == number));
+    assert_eq!(p, save_and_load(&p));
+}
+
+#[test]
+fn undrawn_wire_short_is_reported_as_an_electrical_error() {
+    let mut p = conveyor().unwrap();
+    let node = |name| Endpoint::Node(p.node_by_name(NodeKind::Potential, name, ecad_model::PROJECT_SCOPE).unwrap().id);
+    let from = node("L+");
+    let to = node("M");
+    let wire = Wire { id: ConnectionId::from_u128(1), from, to, wire_number: None, spec: Default::default() };
+    p.apply(Command::AddWire(wire)).unwrap();
+    assert!(ecad_rules::check(&p).iter().any(|c| c.rule == "potential-clash"), "undrawn short must not disappear");
+}
+
+#[test]
+fn terminal_records_survive_unplace_and_undo_without_reconstruction() {
+    let mut p = conveyor().unwrap();
+    let f = point(&p, "-H1", "X2").function;
+    let t = p.function(f).unwrap().terminals["X2"];
+    let entry = p.terminals.get_mut(&t).unwrap();
+    entry.point = "custom-physical-point".into();
+    let before = p.clone();
+    let undo = p.apply(Command::Unplace(f)).unwrap();
+    let removed = p.clone();
+    let redo = p.apply(undo).unwrap();
+    assert_eq!(p, before);
+    p.apply(redo).unwrap();
+    assert_eq!(p, removed);
+}
+
+/// R7: internal bridges are canonical. Deleting the last drawing of a two-level terminal whose
+/// points stay (undrawn wires end on them) keeps every bridge between the surviving points and
+/// keeps the levels isolated; save and load, undo and redo preserve them exactly.
+#[test]
+fn deleting_a_bridge_drawing_keeps_the_bridges_of_surviving_undrawn_terminals() {
+    let mut p = conveyor().unwrap();
+    let f = point(&p, "-X3", "1").function;
+    let drawing = p.function(f).unwrap().clone();
+    let t = |name: &str| drawing.terminals[name];
+    let m = Endpoint::Node(p.node_by_name(NodeKind::Potential, "M", ecad_model::PROJECT_SCOPE).unwrap().id);
+    // An undrawn wire on each of the four points keeps them all.
+    for name in ["1", "2", "3", "4"] {
+        p.apply(Command::AddWire(Wire {
+            id: ConnectionId::new(),
+            from: Endpoint::Terminal(t(name)),
+            to: m,
+            wire_number: None,
+            spec: Default::default(),
+        }))
+        .unwrap();
+    }
+    let net = |p: &Project, x: &str| {
+        p.netlist().nets.iter().position(|n| n.endpoints.contains(&Endpoint::Terminal(t(x)))).unwrap()
+    };
+    let bridges = p.bridges.clone();
+    let before = p.clone();
+    let undo = p.apply(Command::Unplace(f)).unwrap();
+    assert!(p.function(f).is_err());
+    for name in ["1", "2", "3", "4"] {
+        assert!(p.terminals.contains_key(&t(name)), "{name} survives, undrawn");
+    }
+    assert_eq!(p.bridges, bridges, "no bridge lost with the drawing");
+    let c = p.connectivity();
+    let bridged = |x: &str, y: &str| c.bridges.contains(&ecad_model::connectivity::Bridge::new(t(x), t(y)));
+    assert!(bridged("1", "2") && bridged("3", "4"));
+    assert!(!bridged("1", "3") && !bridged("2", "4"), "levels stay isolated");
+    assert_eq!(net(&p, "1"), net(&p, "2"));
+    let loaded = save_and_load(&p);
+    assert_eq!(loaded.bridges, p.bridges);
+    let redo = p.apply(undo).unwrap();
+    assert_eq!(p, before);
+    p.apply(redo).unwrap();
+    assert_eq!(p.bridges, bridges);
+}
+
+#[test]
+fn renumber_includes_undrawn_points_of_the_same_physical_group() {
+    let mut p = conveyor().unwrap();
+    let f = point(&p, "-X3", "1").function;
+    let entry = p.terminals[&p.function(f).unwrap().terminals["1"]].clone();
+    let extra = ecad_model::TerminalEntry {
+        id: ecad_model::TerminalId(ConnectionId::new().0),
+        point: "extra".into(),
+        ..entry.clone()
+    };
+    p.apply(Command::AddTerminal(extra.clone())).unwrap();
+    let duplicate = ecad_model::TerminalEntry { id: ecad_model::TerminalId(ConnectionId::new().0), ..extra.clone() };
+    assert!(p.apply(Command::AddTerminal(duplicate)).is_err());
+    let before = p.clone();
+    let undo = p.apply(Command::SetDesignations { id: f, designations: [("1".into(), "90".into())].into() }).unwrap();
+    assert_eq!(p.terminals[&extra.id].designation, "90");
+    p.apply(undo).unwrap();
+    assert_eq!(p, before);
+}

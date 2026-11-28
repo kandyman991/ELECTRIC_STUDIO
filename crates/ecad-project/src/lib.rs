@@ -8,6 +8,7 @@
 //!   products.json         the project's products (the parts catalogue), by id
 //!   terminals.json        the devices' terminals (D2): id, device, group, point, designation
 //!   nodes.json            junctions, potentials and interruptions (D1), with scoped names
+//!   bridges.json          internal bridges between terminals of one device (R7)
 //!   cables.json           cables, sorted by tag
 //!   symbols/<id>.json     one file per symbol used by the project
 //!   wires.json            every wire (D1): id, its two ends (terminal or node), number, make
@@ -60,6 +61,8 @@ pub enum ProjectError {
     Busy(PathBuf),
     #[error("{path}: over {limit} MB, too big to read")]
     TooBig { path: PathBuf, limit: usize },
+    #[error("{path}: invalid format-2 record: {reason}")]
+    Canonical { path: PathBuf, reason: String },
 }
 
 /// Largest underlay file read back: a little over what [`ecad_model::underlay::MAX_POINTS`]
@@ -121,8 +124,7 @@ struct WireGraphics {
     bend: Option<f64>,
 }
 
-/// A wire as saved in `wires.json`. A drawn wire's end its drawing no longer resolves (its
-/// symbol lost the point) is saved without one; the netlist reports it.
+/// A wire as saved in `wires.json`. Both canonical endpoints must resolve before save or load.
 #[derive(Serialize, Deserialize)]
 struct WireFile {
     id: ecad_model::ConnectionId,
@@ -333,6 +335,10 @@ fn render(project: &Project) -> Result<Vec<(String, Vec<u8>)>> {
     cables.sort_by(|a, b| a.tag.cmp(&b.tag));
     files.push(("cables.json".to_owned(), render_json(Path::new("cables.json"), &cables)?));
 
+    project.validate_bridges().map_err(model(Path::new("bridges.json")))?;
+    let bridges: Vec<&ecad_model::connectivity::Bridge> = project.bridges.iter().collect();
+    files.push(("bridges.json".to_owned(), render_json(Path::new("bridges.json"), &bridges)?));
+
     let mut nodes: Vec<&NodeEntry> = project.nodes.values().collect();
     nodes.sort_by(|a, b| (a.kind, &a.scope, &a.name, a.id).cmp(&(b.kind, &b.scope, &b.name, b.id)));
     files.push(("nodes.json".to_owned(), render_json(Path::new("nodes.json"), &nodes)?));
@@ -373,6 +379,9 @@ fn render(project: &Project) -> Result<Vec<(String, Vec<u8>)>> {
             spec: w.spec.clone(),
         }))
         .collect();
+    if wires.iter().any(|w| w.from.is_none() || w.to.is_none()) {
+        return Err(model(Path::new("wires.json"))(ModelError::BadWireEnds));
+    }
     wires.sort_by_key(|w| w.id);
     files.push(("wires.json".to_owned(), render_json(Path::new("wires.json"), &wires)?));
 
@@ -563,7 +572,7 @@ pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>
         }
     }
     for page in pages {
-        project.add_page(page);
+        project.apply(Command::AddPage(page)).map_err(model(&path))?;
     }
     let sheet = head.sheet;
 
@@ -575,7 +584,7 @@ pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>
         .collect();
     symbol_paths.sort();
     for p in symbol_paths {
-        project.add_symbol(read_json::<SymbolDef>(&p)?);
+        project.apply(Command::AddSymbol(read_json::<SymbolDef>(&p)?)).map_err(model(&p))?;
     }
 
     // The catalogue comes before the devices that use it; projects saved before M3a have none.
@@ -589,7 +598,7 @@ pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>
                 .map_err(|source| ProjectError::Json { path: path.clone(), source })?;
             project.apply(Command::AddPart(part)).map_err(model(&path))?;
         }
-    } else if path.exists() {
+    } else if !legacy {
         for part in read_json::<Vec<Part>>(&path)? {
             project.apply(Command::AddPart(part)).map_err(model(&path))?;
         }
@@ -604,7 +613,20 @@ pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>
     }
 
     let path = dir.join("devices.json");
-    let devices: Vec<Device> = read_json::<Vec<DeviceFile>>(&path)?.into_iter().map(DeviceFile::into_device).collect();
+    let records = read_json::<Vec<DeviceFile>>(&path)?;
+    let mut device_ids = std::collections::BTreeSet::new();
+    for d in &records {
+        if !device_ids.insert(d.id) {
+            return Err(model(&path)(ModelError::DuplicateId(d.id.0)));
+        }
+        if !legacy && d.parts.iter().any(|r| r.product.is_none()) {
+            return Err(ProjectError::Canonical {
+                path: path.clone(),
+                reason: "product reference has no canonical id".into(),
+            });
+        }
+    }
+    let devices: Vec<Device> = records.into_iter().map(DeviceFile::into_device).collect();
     let mut page_files: Vec<(ecad_model::PageId, PathBuf, PageFile)> = Vec::new();
     for id in project.pages.keys().copied().collect::<Vec<_>>() {
         let path = dir.join("pages").join(format!("{}.json", id.0));
@@ -619,7 +641,7 @@ pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>
         }
     }
     let path = dir.join("nodes.json");
-    if !legacy && path.exists() {
+    if !legacy {
         for n in read_json::<Vec<NodeEntry>>(&path)? {
             project.apply(Command::AddNode(n)).map_err(model(&path))?;
         }
@@ -628,9 +650,17 @@ pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>
     // Terminals before the drawings that show them (format 2); format 1 has none: placing a
     // drawing gives it terminals from its designations.
     let path = dir.join("terminals.json");
-    if !legacy && path.exists() {
+    if !legacy {
         for t in read_json::<Vec<TerminalEntry>>(&path)? {
             project.apply(Command::AddTerminal(t)).map_err(model(&path))?;
+        }
+        // Internal bridges, canonical (R7): before the drawings that depict them.
+        let path = dir.join("bridges.json");
+        for b in read_json::<Vec<ecad_model::connectivity::Bridge>>(&path)? {
+            if b.a >= b.b {
+                return Err(ProjectError::Canonical { path: path.clone(), reason: "bridge ends out of order".into() });
+            }
+            project.apply(Command::AddBridge(b)).map_err(model(&path))?;
         }
     }
 
@@ -638,6 +668,33 @@ pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>
     let mut pages = Vec::new();
     for (id, path, file) in page_files {
         for f in &file.functions {
+            if !legacy {
+                let sym = project.symbol(&f.symbol).map_err(model(&path))?;
+                let valid = f.designations.is_empty()
+                    && if project.node_kind_of(&f.symbol).is_some() {
+                        f.terminals.is_empty()
+                    } else {
+                        f.terminals.len() == sym.connection_points.len()
+                            && sym
+                                .connection_points
+                                .iter()
+                                .all(|cp| f.terminals.get(&cp.name).is_some_and(|t| project.terminals.contains_key(t)))
+                    };
+                if !valid
+                    || (matches!(sym.role, ecad_model::Role::PlcChannel { .. })
+                        && [ecad_model::ADDRESS, ecad_model::SYMBOL, ecad_model::COMMENT]
+                            .iter()
+                            .any(|k| f.properties.contains_key(*k)))
+                {
+                    return Err(model(&path)(ModelError::InvalidTerminalBindings(f.id)));
+                }
+            }
+            if f.page != id {
+                return Err(ProjectError::Canonical {
+                    path: path.clone(),
+                    reason: "drawing belongs to another page".into(),
+                });
+            }
             project.apply(Command::Place(f.clone())).map_err(model(&path))?;
         }
         for b in &file.boxes {
@@ -664,21 +721,42 @@ pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>
             let u = file.into_underlay();
             project.apply(Command::SetUnderlay { page: id, underlay: Some(Box::new(u)) }).map_err(model(&underlay))?;
         }
-        pages.push((path, file.connections, file.wires));
+        if (!legacy && !file.connections.is_empty()) || (legacy && !file.wires.is_empty()) {
+            return Err(ProjectError::Canonical {
+                path,
+                reason: "mixed legacy connections and canonical wire graphics".into(),
+            });
+        }
+        pages.push((id, path, file.connections, file.wires));
     }
     // Format 2: the wires, then how each drawn one is drawn.
     let wires_path = dir.join("wires.json");
-    let mut wires: std::collections::BTreeMap<ecad_model::ConnectionId, WireFile> = if !legacy && wires_path.exists() {
-        read_json::<Vec<WireFile>>(&wires_path)?.into_iter().map(|w| (w.id, w)).collect()
-    } else {
-        Default::default()
-    };
+    let mut wires = std::collections::BTreeMap::new();
+    if !legacy {
+        for w in read_json::<Vec<WireFile>>(&wires_path)? {
+            let id = w.id;
+            if w.from.is_none() || w.to.is_none() {
+                return Err(model(&wires_path)(ModelError::BadWireEnds));
+            }
+            if wires.insert(id, w).is_some() {
+                return Err(model(&wires_path)(ModelError::DuplicateId(id.0)));
+            }
+        }
+    }
     let mut drawn = Vec::new();
-    for (path, connections, graphics) in pages {
+    for (page_id, path, connections, graphics) in pages {
         for c in connections {
             project.apply(Command::Connect(c)).map_err(model(&path))?;
         }
         for g in graphics {
+            if project.function(g.from.function).map_err(model(&path))?.page != page_id
+                || project.function(g.to.function).map_err(model(&path))?.page != page_id
+            {
+                return Err(ProjectError::Canonical {
+                    path: path.clone(),
+                    reason: "wire graphics belong to another page".into(),
+                });
+            }
             let w = wires.remove(&g.wire).ok_or_else(|| model(&path)(ModelError::NoConnection(g.wire)))?;
             let c = Connection {
                 id: g.wire,
@@ -1350,14 +1428,14 @@ mod tests {
     }
 
     #[test]
-    fn the_catalogue_is_saved_and_projects_without_one_still_load() {
+    fn the_catalogue_is_saved_and_required_in_format_2() {
         let dir = tempfile::tempdir().unwrap();
         let original = start_circuit().unwrap();
         assert_eq!(original.parts.len(), 3);
         save(&original, dir.path()).unwrap();
         assert!(dir.path().join("products.json").exists());
         assert_eq!(load(dir.path()).unwrap(), original);
-        // A project saved before M3a: no parts.json and no parts on devices.
+        // A format 2 project with no products still requires its canonical empty file.
         let mut old = original.clone();
         for d in old.devices.values_mut() {
             d.parts.clear();
@@ -1365,7 +1443,7 @@ mod tests {
         old.parts.clear();
         save(&old, dir.path()).unwrap();
         std::fs::remove_file(dir.path().join("products.json")).unwrap();
-        assert_eq!(load(dir.path()).unwrap(), old);
+        assert!(load(dir.path()).is_err(), "format 2 requires its product file, even when empty");
     }
 
     #[test]
