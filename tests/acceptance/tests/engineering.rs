@@ -745,3 +745,69 @@ fn legacy_workflow_objects_are_backfilled_and_equal_length_corruption_repaired()
     assert!(state::verify(dir, &Quiet).unwrap().clean());
     assert_eq!(state::committed(dir).unwrap(), cs.base);
 }
+
+#[test]
+fn the_safety_relay_supply_protection_requires_separate_confirmation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    conveyor(dir);
+    let p = ecad_project::load(dir).unwrap();
+    let cs = propose(dir, assistant(), vec![op("edit_device", json!({ "tag": "-F3", "description": "changed" }))]);
+    let impact = change::preview(&p, &cs, &Quiet).unwrap();
+    assert!(impact.safety_indirect.iter().any(|entry| entry.starts_with("-F3 ")), "{impact:?}");
+    let mut s = Session::open(dir).unwrap();
+    s.handle(UiEvent::ReviewProposal { id: cs.id.clone() });
+    assert!(s.frame(None, [0, 0, 0]).review.unwrap().needs_safety_confirmation);
+    s.handle(UiEvent::ApproveProposal { confirm_safety: false, confirm_global: false });
+    assert!(status(&s).contains("safety impact"), "{}", status(&s));
+    assert_eq!(ecad_project::load(dir).unwrap(), p);
+    assert_eq!(state::committed(dir).unwrap(), cs.base);
+}
+
+#[test]
+fn forty_operations_apply_in_one_transaction_and_undo_restores_engineering_bytes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    conveyor(dir);
+    let files = |dir: &Path| -> std::collections::BTreeMap<String, Vec<u8>> {
+        ecad_project::store::project_files(dir)
+            .unwrap()
+            .into_iter()
+            .map(|name| {
+                let bytes = std::fs::read(dir.join(&name)).unwrap();
+                (name, bytes)
+            })
+            .collect()
+    };
+    let original = ecad_project::load(dir).unwrap();
+    let original_files = files(dir);
+    let ops = (100..140)
+        .map(|n| op("reserve", json!({ "identifiers": format!("tag:-K{n}"), "note": "planned extension" })))
+        .collect();
+    let cs = propose(dir, assistant(), ops);
+    assert_eq!(cs.operations.len(), 40);
+    assert_eq!(files(dir), original_files);
+    let mut s = Session::open(dir).unwrap();
+    s.handle(UiEvent::ReviewProposal { id: cs.id.clone() });
+    s.handle(UiEvent::ApproveProposal { confirm_safety: false, confirm_global: false });
+    assert!(status(&s).starts_with("Applied"), "{}", status(&s));
+    let p = ecad_project::load(dir).unwrap();
+    for n in 100..140 {
+        let id = ecad_model::Identifier::Tag { tag: format!("-K{n}") };
+        assert!(p.numbering.reserved.contains_key(&id));
+    }
+    assert_eq!(records(dir, RecordKind::ChangeSet), 1);
+    let applied = state::committed(dir).unwrap();
+    assert_eq!(applied.generation, cs.base.generation + 1);
+    s.handle(UiEvent::Key { key: ecad_editor::KeyName::Undo });
+    assert_eq!(s.editor().project(), &original);
+    assert_eq!(s.editor().undo_label(), None);
+    s.handle(UiEvent::Save);
+    assert_eq!(files(dir), original_files);
+    assert_eq!(state::committed(dir).unwrap().generation, applied.generation + 1);
+    assert_eq!(state::committed(dir).unwrap().content, cs.base.content);
+    assert!(change::records(dir).unwrap().iter().any(|r| {
+        r.kind == RecordKind::Edits && r.steps.iter().any(|step| step.starts_with("Undo:"))
+    }));
+    assert!(state::verify(dir, &Quiet).unwrap().clean());
+}
