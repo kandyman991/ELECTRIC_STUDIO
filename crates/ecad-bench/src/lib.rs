@@ -168,8 +168,9 @@ fn copy_commands(base: &Project, k: usize) -> Result<Vec<Command>> {
         }
         f.node = f.node.map(|n| ecad_model::NodeId(remap(k, n.0)));
         f.page = page_id(f.page);
-        // New terminals for the copy, with the same designations.
+        // New terminals for the copy, with the same designations and channel data.
         f.designations = base.designations_of(&f);
+        f.properties = base.properties_of(&f);
         f.terminals.clear();
         if let Some(a) = f.properties.get_mut(ADDRESS) {
             *a = shift_address(a, 2 * k32);

@@ -104,6 +104,7 @@ pub const RULES: &[(&str, Severity, &str)] = &[
         Severity::Warning,
         "A device on a mounting plate has no part with a size, so its footprint is a guess",
     ),
+    ("wire-not-drawn", Severity::Warning, "A wire joins two ends but isn't drawn on any page yet"),
 ];
 
 fn severity(rule: &str) -> Severity {
@@ -234,6 +235,7 @@ pub fn check(project: &Project) -> Vec<Check> {
     wire_numbers(&mut out);
     unconnected(&mut out);
     lonely_interruptions(&mut out);
+    undrawn_wires(&mut out);
     ambiguities(&mut out);
     unresolved_ends(&mut out);
     for c in project.connections.values() {
@@ -251,7 +253,9 @@ pub fn check(project: &Project) -> Vec<Check> {
         }
     }
     for f in project.functions.values() {
-        if matches!(project.role(f.id), Ok(Role::PlcChannel { .. })) && f.property(ecad_model::ADDRESS).is_empty() {
+        if matches!(project.role(f.id), Ok(Role::PlcChannel { .. }))
+            && project.property(f, ecad_model::ADDRESS).is_empty()
+        {
             let n = project.drawing_number(f.id).unwrap_or_default();
             let tag = project.label_of(f).to_owned();
             out.at_function("plc-no-address", f.id, format!("{tag}:{n} has no PLC address"));
@@ -371,6 +375,33 @@ fn unconnected(out: &mut Out) {
                 out.at_function("unconnected-point", f.id, message);
             }
         }
+    }
+}
+
+/// Wires not drawn yet (D1): listed, at the first page one of their ends is drawn on.
+fn undrawn_wires(out: &mut Out) {
+    let project = out.project;
+    let c = project.connectivity();
+    let first = project.pages_in_order().first().map(|p| p.id);
+    for w in project.undrawn.values() {
+        let page = [w.from, w.to]
+            .iter()
+            .find_map(|e| c.drawings(*e).first().and_then(|r| project.function(r.function).ok()).map(|f| f.page))
+            .or(first);
+        let Some(page) = page else { continue };
+        let end = |e| {
+            let (tag, d) = project.describe_end(e);
+            if d.is_empty() { tag } else { format!("{tag}:{d}") }
+        };
+        let name = w.wire_number.clone().unwrap_or_else(|| "A wire".into());
+        out.checks.push(Check {
+            rule: "wire-not-drawn",
+            severity: severity("wire-not-drawn"),
+            message: format!("{name} from {} to {} is not drawn yet", end(&w.from), end(&w.to)),
+            target: Target::Connection(w.id),
+            page,
+            location: String::new(),
+        });
     }
 }
 
@@ -562,6 +593,7 @@ mod tests {
                 "junction-drawn-twice",
                 "mixed-logical-roles",
                 "wire-end-missing",
+                "wire-not-drawn",
             ];
             if !elsewhere.contains(rule) {
                 assert!(found.contains(rule), "{rule} missing from {:#?}", rules(&checks));
@@ -704,6 +736,27 @@ mod tests {
         let r = rules(&check(&p));
         assert!(r.iter().any(|r| r.starts_with("junction-drawn-twice") && r.contains("drawn 2 times")), "{r:#?}");
     }
+    #[test]
+    fn a_wire_not_drawn_yet_is_listed() {
+        let mut p = sample::start_circuit().unwrap();
+        let c = p.connectivity();
+        let k1 = |pt: &str| c.endpoint(&ConnectionRef::new(sample::K1_COIL, pt)).unwrap();
+        let s1 = c.endpoint(&ConnectionRef::new(ecad_model::FunctionId::from_u128(0x202), "13")).unwrap();
+        let w = ecad_model::Wire {
+            id: ConnectionId::new(),
+            from: s1,
+            to: k1("A2"),
+            wire_number: Some("W9".into()),
+            spec: Default::default(),
+        };
+        p.apply(Command::AddWire(w)).unwrap();
+        let checks = check(&p);
+        let found: Vec<&Check> = checks.iter().filter(|c| c.rule == "wire-not-drawn").collect();
+        assert_eq!(found.len(), 1, "{:#?}", rules(&checks));
+        assert_eq!(found[0].message, "W9 from -S1:13 to -K1:A2 is not drawn yet");
+        assert_eq!(found[0].page, sample::PAGE_1);
+    }
+
     #[test]
     fn a_wire_end_its_symbol_lost_is_an_error() {
         let mut p = sample::start_circuit().unwrap();

@@ -167,7 +167,7 @@ impl Project {
         points.iter().find_map(|r| {
             let f = self.function(r.function).ok()?;
             matches!(self.role(f.id).ok()?, Role::PlcChannel { .. })
-                .then(|| self.naming.plc_wire_number(f.property(crate::ADDRESS)))?
+                .then(|| self.naming.plc_wire_number(self.property(f, crate::ADDRESS)))?
         })
     }
 

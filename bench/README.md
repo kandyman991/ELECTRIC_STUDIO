@@ -70,6 +70,11 @@ and report their first-sample median and spread. Do not mix disk-cold and proces
 
 - `baseline-smoke.json`: counts for the smoke size (times from the build sandbox, informative).
 - `instructions-conveyor.json`: instructions per workload on the conveyor, rustc 1.97.0.
+- M10 (refreshed in #41): against M7, `open` and `save` take about 30% more instructions
+  (format 2 writes and reads `terminals.json`, `nodes.json` and `wires.json`, and load checks
+  each drawn wire's ends with one connectivity derivation); `check` and `edit` about 34% fewer
+  and `netlist` about 50% fewer (junctions, potentials and interruptions are no longer
+  devices); `render` about 16% fewer.
 - Controlled Legion wall-clock and peak-RSS baseline: **NOT RUN / DEFERRED** by the owner on 27 Nov 2026. M7 accepted and M10 authorized, but the qualified D41 run remains mandatory before first production release. Tracked in [#39](https://github.com/kandyman991/ELECTRIC_STUDIO/issues/39). Run when access returns; do not treat sandbox or hosted measurements as Legion evidence. [Decision](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/35#issuecomment-7228169838).
 - Initial allocation reference: exact head `90d6dfbf4b707aeba99256d727c8da26a8c09f58`, [successful benchmark job](https://github.com/kandyman991/ELECTRIC_STUDIO/actions/runs/46037120317/job/140635343964), [retained evidence](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/35#issuecomment-7226987361). Release conveyor, DHAT setup-subtracted heap allocation blocks (not a hard regression threshold):
 

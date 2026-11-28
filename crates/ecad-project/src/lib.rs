@@ -10,7 +10,8 @@
 //!   nodes.json            junctions, potentials and interruptions (D1), with scoped names
 //!   cables.json           cables, sorted by tag
 //!   symbols/<id>.json     one file per symbol used by the project
-//!   pages/<page-id>.json  the functions and connections on that page
+//!   wires.json            every wire (D1): id, its two ends (terminal or node), number, make
+//!   pages/<page-id>.json  the drawings on that page, and the wire graphics drawn there
 //!   underlays/<page-id>.json  a drawing shown behind that page, if any (compact)
 //! ```
 //!
@@ -110,6 +111,31 @@ fn is_default(info: &ProjectInfo) -> bool {
     *info == ProjectInfo::default()
 }
 
+/// How one wire is drawn on one page: the drawn points it joins and its bend.
+#[derive(Serialize, Deserialize)]
+struct WireGraphics {
+    wire: ecad_model::ConnectionId,
+    from: ecad_model::ConnectionRef,
+    to: ecad_model::ConnectionRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bend: Option<f64>,
+}
+
+/// A wire as saved in `wires.json`. A drawn wire's end its drawing no longer resolves (its
+/// symbol lost the point) is saved without one; the netlist reports it.
+#[derive(Serialize, Deserialize)]
+struct WireFile {
+    id: ecad_model::ConnectionId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    from: Option<ecad_model::Endpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    to: Option<ecad_model::Endpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    wire_number: Option<String>,
+    #[serde(default, flatten)]
+    spec: ecad_model::WireSpec,
+}
+
 /// A device as saved: its products by id, with each product's number beside it for people
 /// reading the file (format 1 had the number only).
 #[derive(Serialize, Deserialize)]
@@ -188,7 +214,12 @@ struct PartV1 {
 #[derive(Serialize, Deserialize, Default)]
 struct PageFile {
     functions: Vec<Function>,
+    /// Format 1: the wires drawn on the page, with their electrical data.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     connections: Vec<Connection>,
+    /// Format 2: how wires are drawn on the page; the wires themselves are in `wires.json`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    wires: Vec<WireGraphics>,
     /// Location boxes; missing in projects saved before G4b.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     boxes: Vec<LocationBox>,
@@ -322,10 +353,37 @@ fn render(project: &Project) -> Result<Vec<(String, Vec<u8>)>> {
         let bytes = render_json(Path::new(&name), s)?;
         files.push((name, bytes));
     }
+    // Every wire with its ends; drawn ones' ends from their drawings.
+    let c = project.connectivity();
+    let mut wires: Vec<WireFile> = project
+        .connections
+        .values()
+        .map(|w| WireFile {
+            id: w.id,
+            from: c.endpoint(&w.from),
+            to: c.endpoint(&w.to),
+            wire_number: w.wire_number.clone(),
+            spec: w.spec.clone(),
+        })
+        .chain(project.undrawn.values().map(|w| WireFile {
+            id: w.id,
+            from: Some(w.from),
+            to: Some(w.to),
+            wire_number: w.wire_number.clone(),
+            spec: w.spec.clone(),
+        }))
+        .collect();
+    wires.sort_by_key(|w| w.id);
+    files.push(("wires.json".to_owned(), render_json(Path::new("wires.json"), &wires)?));
+
     for page in project.pages.keys() {
         let file = PageFile {
             functions: project.functions_on(*page).cloned().collect(),
-            connections: project.connections_on(*page).cloned().collect(),
+            connections: Vec::new(),
+            wires: project
+                .connections_on(*page)
+                .map(|w| WireGraphics { wire: w.id, from: w.from.clone(), to: w.to.clone(), bend: w.bend })
+                .collect(),
             boxes: project.boxes_on(*page).cloned().collect(),
             panel: project.panels.get(page).copied(),
             panel_items: project.panel_items_on(*page).into_iter().cloned().collect(),
@@ -606,12 +664,54 @@ pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>
             let u = file.into_underlay();
             project.apply(Command::SetUnderlay { page: id, underlay: Some(Box::new(u)) }).map_err(model(&underlay))?;
         }
-        pages.push((path, file.connections));
+        pages.push((path, file.connections, file.wires));
     }
-    for (path, connections) in pages {
+    // Format 2: the wires, then how each drawn one is drawn.
+    let wires_path = dir.join("wires.json");
+    let mut wires: std::collections::BTreeMap<ecad_model::ConnectionId, WireFile> = if !legacy && wires_path.exists() {
+        read_json::<Vec<WireFile>>(&wires_path)?.into_iter().map(|w| (w.id, w)).collect()
+    } else {
+        Default::default()
+    };
+    let mut drawn = Vec::new();
+    for (path, connections, graphics) in pages {
         for c in connections {
             project.apply(Command::Connect(c)).map_err(model(&path))?;
         }
+        for g in graphics {
+            let w = wires.remove(&g.wire).ok_or_else(|| model(&path)(ModelError::NoConnection(g.wire)))?;
+            let c = Connection {
+                id: g.wire,
+                from: g.from,
+                to: g.to,
+                wire_number: w.wire_number.clone(),
+                spec: w.spec.clone(),
+                bend: g.bend,
+            };
+            project.apply(Command::Connect(c)).map_err(model(&path))?;
+            drawn.push(w);
+        }
+    }
+    // A drawn wire's graphics must show its ends: they are the wire's identity, the drawing
+    // only shows it.
+    if !drawn.is_empty() {
+        let c = project.connectivity();
+        for w in &drawn {
+            let Ok(conn) = project.connection(w.id) else { continue };
+            let shown = (c.endpoint(&conn.from), c.endpoint(&conn.to));
+            let saved = (w.from, w.to);
+            let swapped = (w.to, w.from);
+            if shown != saved && shown != swapped {
+                return Err(model(&wires_path)(ModelError::WireDrawnElsewhere(w.id.0)));
+            }
+        }
+    }
+    for (_, w) in wires {
+        let (Some(from), Some(to)) = (w.from, w.to) else {
+            return Err(model(&wires_path)(ModelError::BadWireEnds));
+        };
+        let wire = ecad_model::Wire { id: w.id, from, to, wire_number: w.wire_number, spec: w.spec };
+        project.apply(Command::AddWire(wire)).map_err(model(&wires_path))?;
     }
     if legacy {
         findings.extend(split_joining_interruptions(&mut project).map_err(model(dir))?);
@@ -838,6 +938,10 @@ mod tests {
                 .push(serde_json::json!({ "id": stand_in(n), "tag": n.name, "description": n.description }));
         }
         std::fs::write(root.join("devices.json"), serde_json::to_string_pretty(&devices).unwrap()).unwrap();
+        // Wires back in the page files with their numbers and make, no wires file.
+        let wires: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(root.join("wires.json")).unwrap()).unwrap();
+        std::fs::remove_file(root.join("wires.json")).unwrap();
         // Designations back on the drawings, no terminals file.
         let terminals: Vec<TerminalEntry> =
             serde_json::from_str(&std::fs::read_to_string(root.join("terminals.json")).unwrap()).unwrap();
@@ -845,6 +949,25 @@ mod tests {
         for entry in std::fs::read_dir(root.join("pages")).unwrap() {
             let path = entry.unwrap().path();
             let mut page: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let graphics = page.as_object_mut().unwrap().remove("wires").unwrap_or_default();
+            let connections: Vec<serde_json::Value> = graphics
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|g| {
+                    let w = wires.iter().find(|w| w["id"] == g["wire"]).unwrap();
+                    let mut c = w.as_object().unwrap().clone();
+                    c.remove("from");
+                    c.remove("to");
+                    c.insert("from".into(), g["from"].clone());
+                    c.insert("to".into(), g["to"].clone());
+                    if let Some(b) = g.get("bend") {
+                        c.insert("bend".into(), b.clone());
+                    }
+                    serde_json::Value::Object(c)
+                })
+                .collect();
+            page["connections"] = connections.into();
             for f in page["functions"].as_array_mut().unwrap() {
                 if let Some(node) = f.as_object_mut().unwrap().remove("node") {
                     let n = nodes.iter().find(|n| serde_json::to_value(n.id).unwrap() == node).unwrap();
@@ -860,6 +983,17 @@ mod tests {
                 }
                 if !designations.is_empty() {
                     f["designations"] = designations.into();
+                }
+                // A channel's typed data back as the drawing's properties.
+                for (_, id) in map.as_object().unwrap() {
+                    let t = terminals.iter().find(|t| serde_json::to_value(t.id).unwrap() == *id).unwrap();
+                    if let Some(c) = &t.channel {
+                        for (k, v) in [("address", &c.address), ("symbol", &c.symbol), ("comment", &c.comment)] {
+                            if !v.is_empty() {
+                                f["properties"][k] = v.clone().into();
+                            }
+                        }
+                    }
                 }
             }
             std::fs::write(&path, serde_json::to_string_pretty(&page).unwrap()).unwrap();

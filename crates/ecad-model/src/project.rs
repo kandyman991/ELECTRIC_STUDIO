@@ -230,7 +230,47 @@ pub struct TerminalEntry {
     pub point: String,
     /// The printed designation, an editable property: `A1`, `13`, a strip terminal's `3`.
     pub designation: String,
+    /// A PLC channel's typed data, on the channel's terminal (D2): a PLC channel is a terminal
+    /// of the card, with its address as a typed property.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<ChannelData>,
 }
+
+/// What a PLC channel is: its kind, its address as written, its symbol and comment.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelData {
+    pub kind: crate::IoKind,
+    /// The address as entered (`%I0.3`, `i0.3`); [`crate::plc_address`] reads it canonically.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub address: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub symbol: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub comment: String,
+}
+
+impl ChannelData {
+    fn get(&self, key: &str) -> Option<&str> {
+        match key {
+            ADDRESS => Some(&self.address),
+            SYMBOL => Some(&self.symbol),
+            COMMENT => Some(&self.comment),
+            _ => None,
+        }
+    }
+
+    fn set(&mut self, key: &str, value: String) {
+        match key {
+            ADDRESS => self.address = value,
+            SYMBOL => self.symbol = value,
+            COMMENT => self.comment = value,
+            _ => {}
+        }
+    }
+}
+
+/// The property keys kept as a PLC channel's typed data, on its terminal.
+pub const CHANNEL_KEYS: [&str; 3] = [ADDRESS, SYMBOL, COMMENT];
 
 fn check_node(n: NodeEntry) -> Result<NodeEntry> {
     let n = NodeEntry { name: n.name.trim().to_owned(), scope: n.scope.trim().to_owned(), ..n };
@@ -286,10 +326,6 @@ pub const COMMENT: &str = "comment";
 
 impl Function {
     /// A property's value, or `""`.
-    pub fn property(&self, key: &str) -> &str {
-        self.properties.get(key).map_or("", String::as_str)
-    }
-
     /// A symbol-local point in page coordinates.
     pub fn to_page(&self, local: Point) -> Point {
         let local = if self.mirrored { Point::new(-local.x, local.y) } else { local };
@@ -334,6 +370,20 @@ pub struct Connection {
     /// or the x of a vertical one. Set to keep wires off each other and off symbols.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bend: Option<f64>,
+}
+
+/// A wire not drawn yet (D1): it joins two ends, terminals or nodes, and appears in the wire
+/// list, the netlist and the checks; drawing it ([`Command::DrawWire`]) makes it a drawn
+/// [`Connection`] with the same id.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Wire {
+    pub id: ConnectionId,
+    pub from: crate::Endpoint,
+    pub to: crate::Endpoint,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wire_number: Option<String>,
+    #[serde(default, flatten)]
+    pub spec: WireSpec,
 }
 
 /// What a wire is made of.
@@ -532,6 +582,17 @@ pub enum Command {
         #[serde(default)]
         terminals: BTreeMap<String, TerminalId>,
     },
+    /// A wire not drawn yet, between two terminals or nodes (D1).
+    AddWire(Wire),
+    /// Remove a wire that isn't drawn.
+    RemoveWire(ConnectionId),
+    /// Draw a wire not drawn yet, between drawn points that show its ends: it keeps its id,
+    /// number and make.
+    DrawWire {
+        id: ConnectionId,
+        from: ConnectionRef,
+        to: ConnectionRef,
+    },
     /// A node (D1): a junction, potential or interruption, drawn or not yet.
     AddNode(NodeEntry),
     /// Remove a node no drawing shows.
@@ -656,6 +717,12 @@ pub enum ModelError {
     UnknownTag(String),
     #[error("there is no cable `{0}`")]
     UnknownCable(String),
+    #[error("wire {0} is not in the project, or is drawn")]
+    NoUndrawnWire(Uuid),
+    #[error("a wire's two ends must differ and exist")]
+    BadWireEnds,
+    #[error("those points don't show wire {0}'s ends")]
+    WireDrawnElsewhere(Uuid),
     #[error("node {0} is not in the project")]
     NoNode(Uuid),
     #[error("node {0} is shown by a drawing")]
@@ -758,6 +825,9 @@ pub struct Project {
     /// The junctions, potentials and interruptions (D1), by id.
     #[serde(default)]
     pub nodes: BTreeMap<NodeId, NodeEntry>,
+    /// Wires not drawn yet (D1), by id. Drawn wires are [`Project::connections`].
+    #[serde(default)]
+    pub undrawn: BTreeMap<ConnectionId, Wire>,
     /// The physical connection points of the devices (D2), by id.
     #[serde(default)]
     pub terminals: BTreeMap<TerminalId, TerminalEntry>,
@@ -1142,6 +1212,50 @@ impl Project {
         f.terminals.get(point).and_then(|t| self.terminals.get(t)).map_or(point, |t| t.designation.as_str())
     }
 
+    /// Whether a wire not drawn yet ends on `e`.
+    pub fn wire_uses(&self, e: crate::Endpoint) -> bool {
+        self.undrawn.values().any(|w| w.from == e || w.to == e)
+    }
+
+    /// `(tag or name, designation)` of a wire's end, drawn or not.
+    pub fn describe_end(&self, e: &crate::Endpoint) -> (String, String) {
+        match e {
+            crate::Endpoint::Terminal(t) => match self.terminals.get(t) {
+                Some(t) => (self.device(t.device).map(|d| d.tag.clone()).unwrap_or_default(), t.designation.clone()),
+                None => (String::new(), String::new()),
+            },
+            crate::Endpoint::Node(n) => (self.nodes.get(n).map(|n| n.name.clone()).unwrap_or_default(), String::new()),
+        }
+    }
+
+    /// A PLC channel drawing's typed data: on the terminal of its first point.
+    pub fn channel_of(&self, f: &Function) -> Option<&ChannelData> {
+        f.terminals.values().filter_map(|t| self.terminals.get(t)).find_map(|t| t.channel.as_ref())
+    }
+
+    /// A drawing's property: a PLC channel's address, symbol and comment from its terminal,
+    /// anything else from the drawing.
+    pub fn property<'a>(&'a self, f: &'a Function, key: &str) -> &'a str {
+        if let Some(value) = self.channel_of(f).and_then(|c| c.get(key)) {
+            return value;
+        }
+        f.properties.get(key).map_or("", String::as_str)
+    }
+
+    /// A drawing's properties as one map: its own, and a channel's typed data.
+    pub fn properties_of(&self, f: &Function) -> BTreeMap<String, String> {
+        let mut out = f.properties.clone();
+        if let Some(c) = self.channel_of(f) {
+            for key in CHANNEL_KEYS {
+                let v = c.get(key).unwrap_or("");
+                if !v.is_empty() {
+                    out.insert(key.to_owned(), v.to_owned());
+                }
+            }
+        }
+        out
+    }
+
     /// The designations a drawing shows that differ from its symbol's point names.
     pub fn designations_of(&self, f: &Function) -> BTreeMap<String, String> {
         f.terminals
@@ -1175,7 +1289,25 @@ impl Project {
                     None => {
                         let designation = f.designations.get(&cp.name).cloned().unwrap_or_else(|| cp.name.clone());
                         let (group, point) = crate::connectivity::default_group(f.id, id, &cp.name, numbered);
-                        new_entries.push(TerminalEntry { id, device: f.device, group, point, designation });
+                        // A channel's typed data goes on the terminal of its first point.
+                        let channel = match sym.role {
+                            Role::PlcChannel { kind }
+                                if new_entries.is_empty() && cp.name == sym.connection_points[0].name =>
+                            {
+                                let mut c = ChannelData {
+                                    kind,
+                                    address: String::new(),
+                                    symbol: String::new(),
+                                    comment: String::new(),
+                                };
+                                for key in CHANNEL_KEYS {
+                                    c.set(key, f.properties.get(key).cloned().unwrap_or_default());
+                                }
+                                Some(c)
+                            }
+                            _ => None,
+                        };
+                        new_entries.push(TerminalEntry { id, device: f.device, group, point, designation, channel });
                     }
                 }
                 f.terminals.insert(cp.name.clone(), id);
@@ -1186,6 +1318,11 @@ impl Project {
             self.terminals.insert(t.id, t);
         }
         f.designations.clear();
+        if matches!(sym.role, Role::PlcChannel { .. }) {
+            for key in CHANNEL_KEYS {
+                f.properties.remove(key);
+            }
+        }
         self.functions.insert(f.id, f);
         Ok(created)
     }
@@ -1195,9 +1332,19 @@ impl Project {
     fn detach_terminals(&mut self, id: FunctionId) -> Result<Function> {
         let mut f = self.functions.remove(&id).ok_or(ModelError::NoFunction(id))?;
         f.designations = self.designations_of(&f);
+        // A channel's data back on the drawing, so placing it again restores it.
+        if let Some(c) = self.channel_of(&f) {
+            for key in CHANNEL_KEYS {
+                let value = c.get(key).unwrap_or("").to_owned();
+                if !value.is_empty() {
+                    f.properties.insert(key.to_owned(), value);
+                }
+            }
+        }
         for t in f.terminals.values() {
             let shown = self.functions.values().any(|g| g.terminals.values().any(|u| u == t));
-            if !shown {
+            // A terminal a wire not drawn yet ends on stays, undrawn.
+            if !shown && !self.wire_uses(crate::Endpoint::Terminal(*t)) {
                 self.terminals.remove(t);
             }
         }
@@ -1257,9 +1404,9 @@ impl Project {
                     page: f.page,
                     channel: self.drawing_number(f.id)?,
                     kind,
-                    address: f.property(ADDRESS).to_owned(),
-                    symbol: f.property(SYMBOL).to_owned(),
-                    comment: f.property(COMMENT).to_owned(),
+                    address: self.property(f, ADDRESS).to_owned(),
+                    symbol: self.property(f, SYMBOL).to_owned(),
+                    comment: self.property(f, COMMENT).to_owned(),
                     location: self.location(f.page, f.position).ok()?,
                 })
             })
@@ -1280,7 +1427,7 @@ impl Project {
             IoKind::AnalogOut => ("QW", true),
         };
         let used = self.functions.values().filter_map(|f| {
-            let addr = f.property(ADDRESS).strip_prefix(prefix)?;
+            let addr = self.property(f, ADDRESS).strip_prefix(prefix)?;
             if analog {
                 addr.parse::<u32>().ok().map(|w| (w, 0))
             } else {
@@ -1442,7 +1589,7 @@ impl Project {
                 Ok(Command::Mirror { id, to: old })
             }
             Command::Connect(c) => {
-                if self.connections.contains_key(&c.id) {
+                if self.connections.contains_key(&c.id) || self.undrawn.contains_key(&c.id) {
                     return Err(ModelError::DuplicateId(c.id.0));
                 }
                 self.check_connection(&c)?;
@@ -1456,12 +1603,18 @@ impl Project {
             }
             Command::SetWireNumber { id, number } => {
                 let number = number.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty());
-                self.connection(id)?;
+                if !self.undrawn.contains_key(&id) {
+                    self.connection(id)?;
+                }
                 if let Some(n) = &number {
                     self.check_wire_number(n, Some(id))?;
                 }
-                let c = self.connections.get_mut(&id).ok_or(ModelError::NoConnection(id))?;
-                let old = std::mem::replace(&mut c.wire_number, number);
+                // Drawn or not, renumbering changes no end (D1).
+                let slot = match self.connections.get_mut(&id) {
+                    Some(c) => &mut c.wire_number,
+                    None => &mut self.undrawn.get_mut(&id).ok_or(ModelError::NoConnection(id))?.wire_number,
+                };
+                let old = std::mem::replace(slot, number);
                 Ok(Command::SetWireNumber { id, number: old })
             }
             Command::AddPage(page) => {
@@ -1589,6 +1742,46 @@ impl Project {
                     terminals: old_terminals,
                 })
             }
+            Command::AddWire(w) => {
+                if self.connections.contains_key(&w.id) || self.undrawn.contains_key(&w.id) {
+                    return Err(ModelError::DuplicateId(w.id.0));
+                }
+                let exists = |e: &crate::Endpoint| match e {
+                    crate::Endpoint::Terminal(t) => self.terminals.contains_key(t),
+                    crate::Endpoint::Node(n) => self.nodes.contains_key(n),
+                };
+                if w.from == w.to || !exists(&w.from) || !exists(&w.to) {
+                    return Err(ModelError::BadWireEnds);
+                }
+                let w = Wire { wire_number: w.wire_number.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty()), ..w };
+                if let Some(n) = &w.wire_number {
+                    self.check_wire_number(n, Some(w.id))?;
+                }
+                let id = w.id;
+                self.undrawn.insert(id, w);
+                Ok(Command::RemoveWire(id))
+            }
+            Command::RemoveWire(id) => {
+                let w = self.undrawn.remove(&id).ok_or(ModelError::NoUndrawnWire(id.0))?;
+                Ok(Command::AddWire(w))
+            }
+            Command::DrawWire { id, from, to } => {
+                let w = self.undrawn.get(&id).cloned().ok_or(ModelError::NoUndrawnWire(id.0))?;
+                let c = self.connectivity();
+                let ends = (c.endpoint(&from), c.endpoint(&to));
+                if ends != (Some(w.from), Some(w.to)) && ends != (Some(w.to), Some(w.from)) {
+                    return Err(ModelError::WireDrawnElsewhere(id.0));
+                }
+                self.undrawn.remove(&id);
+                let drawn =
+                    Connection { id, from, to, wire_number: w.wire_number.clone(), spec: w.spec.clone(), bend: None };
+                if let Err(e) = self.check_connection(&drawn) {
+                    self.undrawn.insert(id, w);
+                    return Err(e);
+                }
+                self.connections.insert(id, drawn);
+                Ok(Command::Batch(vec![Command::Disconnect(id), Command::AddWire(w)]))
+            }
             Command::AddNode(n) => {
                 if self.nodes.contains_key(&n.id) {
                     return Err(ModelError::DuplicateId(n.id.0));
@@ -1599,7 +1792,7 @@ impl Project {
                 Ok(Command::RemoveNode(id))
             }
             Command::RemoveNode(id) => {
-                if self.functions.values().any(|f| f.node == Some(id)) {
+                if self.functions.values().any(|f| f.node == Some(id)) || self.wire_uses(crate::Endpoint::Node(id)) {
                     return Err(ModelError::NodeInUse(id.0));
                 }
                 let n = self.nodes.remove(&id).ok_or(ModelError::NoNode(id.0))?;
@@ -1630,7 +1823,9 @@ impl Project {
                 Ok(Command::RemoveTerminal(id))
             }
             Command::RemoveTerminal(id) => {
-                if self.functions.values().any(|f| f.terminals.values().any(|t| *t == id)) {
+                if self.functions.values().any(|f| f.terminals.values().any(|t| *t == id))
+                    || self.wire_uses(crate::Endpoint::Terminal(id))
+                {
                     return Err(ModelError::TerminalInUse(id.0));
                 }
                 let t = self.terminals.remove(&id).ok_or(ModelError::NoTerminal(id.0))?;
@@ -1796,17 +1991,29 @@ impl Project {
                 Ok(Command::SetDeviceParts { id, parts: old })
             }
             Command::SetProperties { id, properties } => {
-                let properties = properties
+                let mut properties: BTreeMap<String, String> = properties
                     .into_iter()
                     .map(|(k, v)| (k, v.trim().to_owned()))
                     .filter(|(_, v)| !v.is_empty())
                     .collect();
-                let f = self.functions.get_mut(&id).ok_or(ModelError::NoFunction(id))?;
-                let old = std::mem::replace(&mut f.properties, properties);
-                if let Err(e) = self.check_plc(id) {
-                    if let Some(f) = self.functions.get_mut(&id) {
-                        f.properties = old;
+                let before = self.clone_drawing_state(id)?;
+                let old = self.properties_of(&before.0);
+                // A channel's address, symbol and comment go to its terminal, typed.
+                let channel = self
+                    .function(id)?
+                    .terminals
+                    .values()
+                    .copied()
+                    .find(|t| self.terminals.get(t).is_some_and(|t| t.channel.is_some()));
+                if let Some(t) = channel.and_then(|t| self.terminals.get_mut(&t)).and_then(|t| t.channel.as_mut()) {
+                    for key in CHANNEL_KEYS {
+                        t.set(key, properties.remove(key).unwrap_or_default());
                     }
+                }
+                let f = self.functions.get_mut(&id).ok_or(ModelError::NoFunction(id))?;
+                f.properties = properties;
+                if let Err(e) = self.check_plc(id) {
+                    self.restore_drawing_state(id, before);
                     return Err(e);
                 }
                 Ok(Command::SetProperties { id, properties: old })
@@ -1900,7 +2107,7 @@ impl Project {
             return Ok(());
         }
         for (key, is_address) in [(ADDRESS, true), (SYMBOL, false)] {
-            let value = func.property(key);
+            let value = self.property(func, key);
             if value.is_empty() {
                 continue;
             }
@@ -1909,9 +2116,9 @@ impl Project {
                     && matches!(self.role(g.id), Ok(Role::PlcChannel { .. }))
                     && if is_address {
                         // `%I0.0` and `I00.0` are the same input.
-                        crate::plc_address::same(g.property(key), value)
+                        crate::plc_address::same(self.property(g, key), value)
                     } else {
-                        g.property(key) == value
+                        self.property(g, key) == value
                     }
             });
             if let Some(g) = other {
@@ -2069,10 +2276,9 @@ impl Project {
         if self.naming.wire_numbering == crate::WireNumbering::PerPotential {
             return Ok(());
         }
-        match self.connections.values().find(|c| c.wire_number.as_deref() == Some(number)) {
-            Some(c) if Some(c.id) != except => Err(ModelError::DuplicateWireNumber(number.to_owned())),
-            _ => Ok(()),
-        }
+        let drawn = self.connections.values().any(|c| Some(c.id) != except && c.wire_number.as_deref() == Some(number));
+        let undrawn = self.undrawn.values().any(|w| Some(w.id) != except && w.wire_number.as_deref() == Some(number));
+        if drawn || undrawn { Err(ModelError::DuplicateWireNumber(number.to_owned())) } else { Ok(()) }
     }
 
     fn check_connection(&self, c: &Connection) -> Result<()> {

@@ -144,7 +144,7 @@ fn cross_reference_lines(project: &Project, f: ecad_model::FunctionId, role: Rol
         // A PLC channel shows its address and symbol: `I0.0 Door_Closed`.
         Role::PlcChannel { .. } => {
             let g = project.function(f)?;
-            let line = [g.property(ecad_model::ADDRESS), g.property(ecad_model::SYMBOL)]
+            let line = [project.property(g, ecad_model::ADDRESS), project.property(g, ecad_model::SYMBOL)]
                 .into_iter()
                 .filter(|s| !s.is_empty())
                 .collect::<Vec<_>>()
