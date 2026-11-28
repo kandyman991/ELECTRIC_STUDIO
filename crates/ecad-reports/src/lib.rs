@@ -325,8 +325,13 @@ pub fn terminal_diagram(project: &Project) -> Vec<TerminalRow> {
                     },
                 )
             };
-            // Partition by explicit internal bridges, never by equal printed number or net name.
-            // Keep the existing two-point report convention for legacy terminal symbols.
+            // Partition by the canonical internal bridges (R7), never by the drawing's symbol, an
+            // equal printed number or a net name. Keep the existing two-point report convention
+            // for legacy terminal symbols.
+            let joined = |x: &String, y: &String| match (f.terminals.get(x), f.terminals.get(y)) {
+                (Some(a), Some(b)) => project.bridges.contains(&ecad_model::connectivity::Bridge::new(*a, *b)),
+                _ => false,
+            };
             let groups = if !multi || symbol.bridged {
                 vec![points]
             } else {
@@ -336,11 +341,12 @@ pub fn terminal_diagram(project: &Project) -> Vec<TerminalRow> {
                     let mut group = std::collections::BTreeSet::from([first]);
                     loop {
                         let before = group.len();
-                        for bridge in &symbol.bridges {
-                            if bridge.iter().any(|point| group.contains(point)) {
-                                group.extend(bridge.iter().filter(|point| points.contains(point)).cloned());
-                            }
-                        }
+                        let more: Vec<String> = points
+                            .iter()
+                            .filter(|p| !group.contains(*p) && group.iter().any(|g| joined(g, p)))
+                            .cloned()
+                            .collect();
+                        group.extend(more);
                         if before == group.len() {
                             break;
                         }
@@ -375,7 +381,53 @@ pub fn terminal_diagram(project: &Project) -> Vec<TerminalRow> {
             }
         }
     }
+    // Terminal groups no drawing shows yet (R8): one row per pair of points, wired to what
+    // their undrawn wires reach.
+    let shown: std::collections::BTreeSet<ecad_model::TerminalId> =
+        project.functions.values().flat_map(|f| f.terminals.values().copied()).collect();
+    let mut undrawn: std::collections::BTreeMap<(String, String, ecad_model::connectivity::GroupId), Vec<&ecad_model::TerminalEntry>> =
+        Default::default();
+    for t in project.terminals.values().filter(|t| !shown.contains(&t.id) && t.channel.is_none() && !t.point.is_empty()) {
+        let tag = project.device(t.device).map(|d| d.tag.clone()).unwrap_or_default();
+        undrawn.entry((tag, t.designation.clone(), t.group)).or_default().push(t);
+    }
+    for ((tag, number, _), mut points) in undrawn {
+        points.sort_by(|a, b| a.point.cmp(&b.point));
+        let multi = points.len() > 2;
+        let bridge_points = if multi { points.iter().map(|t| t.point.clone()).collect::<Vec<_>>().join("|") } else { String::new() };
+        for pair in points.chunks(2) {
+            let point_of = |i: usize| pair.get(i).map(|t| t.point.clone()).unwrap_or_default();
+            rows.push(TerminalRow {
+                strip: tag.clone(),
+                terminal: number.clone(),
+                inside: pair.first().map(|t| undrawn_far(project, t.id)).unwrap_or_default(),
+                outside: pair.get(1).map(|t| undrawn_far(project, t.id)).unwrap_or_default(),
+                potential: String::new(),
+                location: "not drawn".into(),
+                inside_point: if multi { point_of(0) } else { String::new() },
+                outside_point: if multi { point_of(1) } else { String::new() },
+                bridge_points: bridge_points.clone(),
+            });
+        }
+    }
+    rows.sort_by(|a, b| a.strip.cmp(&b.strip));
     rows
+}
+
+/// What the undrawn wires on a terminal reach: `-K1:A1`, several joined by `; `.
+fn undrawn_far(project: &Project, t: ecad_model::TerminalId) -> String {
+    let here = ecad_model::Endpoint::Terminal(t);
+    let mut out: Vec<String> = project
+        .undrawn
+        .values()
+        .filter_map(|w| if w.from == here { Some(w.to) } else if w.to == here { Some(w.from) } else { None })
+        .map(|e| {
+            let (tag, p) = project.describe_end(&e);
+            if p.is_empty() { tag } else { format!("{tag}:{p}") }
+        })
+        .collect();
+    out.sort();
+    out.join("; ")
 }
 
 pub fn terminal_diagram_csv(rows: &[TerminalRow]) -> String {
@@ -417,8 +469,23 @@ pub struct PlcIoRow {
 
 /// Every PLC card, sorted by tag, each in channel order.
 pub fn plc_io_list(project: &Project) -> Vec<PlcIoRow> {
-    let mut cards: Vec<&ecad_model::Device> =
-        project.devices.values().filter(|d| !project.plc_channels_of(d.id).is_empty()).collect();
+    // Channels no drawing shows yet (R8) are listed too, after their card's drawn ones.
+    let shown: std::collections::BTreeSet<ecad_model::TerminalId> =
+        project.functions.values().flat_map(|f| f.terminals.values().copied()).collect();
+    let undrawn_of = |card: ecad_model::DeviceId| -> Vec<&ecad_model::TerminalEntry> {
+        let mut v: Vec<&ecad_model::TerminalEntry> = project
+            .terminals
+            .values()
+            .filter(|t| t.device == card && t.channel.is_some() && !shown.contains(&t.id))
+            .collect();
+        v.sort_by(|a, b| a.designation.cmp(&b.designation).then(a.id.cmp(&b.id)));
+        v
+    };
+    let mut cards: Vec<&ecad_model::Device> = project
+        .devices
+        .values()
+        .filter(|d| !project.plc_channels_of(d.id).is_empty() || !undrawn_of(d.id).is_empty())
+        .collect();
     cards.sort_by(|a, b| a.tag.cmp(&b.tag));
     let mut rows = Vec::new();
     for card in cards {
@@ -444,6 +511,19 @@ pub fn plc_io_list(project: &Project) -> Vec<PlcIoRow> {
                 comment: c.comment,
                 wired_to,
                 location: c.location,
+            });
+        }
+        for t in undrawn_of(card.id) {
+            let Some(c) = &t.channel else { continue };
+            rows.push(PlcIoRow {
+                card: card.tag.clone(),
+                channel: t.designation.clone(),
+                kind: c.kind.short().to_owned(),
+                address: c.address.clone(),
+                symbol: c.symbol.clone(),
+                comment: c.comment.clone(),
+                wired_to: undrawn_far(project, t.id),
+                location: "not drawn".into(),
             });
         }
     }

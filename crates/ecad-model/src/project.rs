@@ -4,7 +4,7 @@
 //!
 //! Every change goes through [`Project::apply`], which returns the command that undoes it.
 
-use crate::connectivity::{GroupId, NodeId, NodeKind, TerminalId};
+use crate::connectivity::{Bridge, GroupId, NodeId, NodeKind, TerminalId};
 use crate::geometry::{Direction, Point, Rotation};
 use crate::parts::{Part, PartRef};
 use crate::sheet::Sheet;
@@ -512,13 +512,20 @@ pub enum Command {
         description: String,
     },
     Place(Function),
-    /// Internal history inverse: restore exact drawing and affected terminal records.
+    /// Internal history inverse: restore a drawing, the exact records of the terminals it
+    /// affected, and exactly the bridges touching those terminals.
     #[serde(skip)]
     RestoreDrawing {
         id: FunctionId,
         drawing: Option<Box<Function>>,
         terminals: BTreeMap<TerminalId, Option<TerminalEntry>>,
+        bridges: std::collections::BTreeSet<Bridge>,
     },
+    /// An explicit internal bridge between two terminals of one device (R7): an engineering
+    /// change, never a side effect of drawing.
+    AddBridge(Bridge),
+    /// Remove an internal bridge: an engineering change.
+    RemoveBridge(Bridge),
     /// Removes a function and every connection to it.
     Unplace(FunctionId),
     Move {
@@ -756,8 +763,14 @@ pub enum ModelError {
     InvalidTerminalBindings(FunctionId),
     #[error("physical terminal group already has point `{0}")]
     DuplicateTerminalPoint(String),
-    #[error("removing the drawing would discard an internal bridge between surviving terminals")]
-    BridgeInUse,
+    #[error("the symbol shows a bridge its existing terminals don't have; add the bridge explicitly")]
+    UnbridgedRepresentation,
+    #[error("a bridge joins two different existing terminals of one device")]
+    BadBridge,
+    #[error("that bridge is already there")]
+    DuplicateBridge,
+    #[error("there is no such bridge")]
+    NoBridge,
     #[error("part `{0}` is already in the catalogue")]
     DuplicatePart(String),
     #[error("more than one manufacturer makes a part numbered `{0}`; say which")]
@@ -844,6 +857,10 @@ pub struct Project {
     /// The physical connection points of the devices (D2), by id.
     #[serde(default)]
     pub terminals: BTreeMap<TerminalId, TerminalEntry>,
+    /// Internal bridges between terminals of one device (R7): canonical, independent of the
+    /// drawings that depict them.
+    #[serde(default)]
+    pub bridges: std::collections::BTreeSet<Bridge>,
     /// The parts catalogue (the project's products), by product id.
     #[serde(default)]
     pub parts: BTreeMap<ProductId, Part>,
@@ -1358,10 +1375,24 @@ impl Project {
         for t in &new_entries {
             self.check_terminal_point(t)?;
         }
+        // The symbol's internal bridges: created with the terminals it creates; between terminals
+        // that already exist, a drawing only depicts bridges, so they must already be there
+        // (a repeated representation never adds one).
+        let fresh: std::collections::BTreeSet<TerminalId> = new_entries.iter().map(|t| t.id).collect();
+        let depicted = crate::connectivity::symbol_bridges(&sym, &f.terminals);
+        let mut new_bridges = Vec::new();
+        for b in depicted {
+            if fresh.contains(&b.a) && fresh.contains(&b.b) {
+                new_bridges.push(b);
+            } else if !self.bridges.contains(&b) {
+                return Err(ModelError::UnbridgedRepresentation);
+            }
+        }
         for t in new_entries {
             created.push(t.id);
             self.terminals.insert(t.id, t);
         }
+        self.bridges.extend(new_bridges);
         f.designations.clear();
         if matches!(sym.role, Role::PlcChannel { .. }) {
             for key in CHANNEL_KEYS {
@@ -1378,30 +1409,6 @@ impl Project {
             other.id != t.id && other.device == t.device && other.group == t.group && other.point == t.point
         }) {
             return Err(ModelError::DuplicateTerminalPoint(t.point.clone()));
-        }
-        Ok(())
-    }
-
-    /// Until internal bridges have independent canonical storage, refuse to discard the last
-    /// drawing that supplies a bridge between endpoints that will survive the removal.
-    fn check_detach_bridges(&self, id: FunctionId) -> Result<()> {
-        let f = self.function(id)?;
-        let sym = self.symbol(&f.symbol)?;
-        if f.terminals.is_empty() || (!sym.bridged && sym.bridges.is_empty()) {
-            return Ok(());
-        }
-        if self.functions.values().any(|g| g.id != id && g.symbol == f.symbol && g.terminals == f.terminals) {
-            return Ok(());
-        }
-        let survives = |t: &TerminalId| {
-            self.wire_uses(crate::Endpoint::Terminal(*t))
-                || self.functions.values().any(|g| g.id != id && g.terminals.values().any(|u| u == t))
-        };
-        let bridged = sym.bridged && f.terminals.values().filter(|t| survives(t)).count() > 1;
-        let groups =
-            sym.bridges.iter().any(|g| g.iter().filter_map(|p| f.terminals.get(p)).filter(|t| survives(t)).count() > 1);
-        if bridged || groups {
-            return Err(ModelError::BridgeInUse);
         }
         Ok(())
     }
@@ -1425,9 +1432,20 @@ impl Project {
             // A terminal a wire not drawn yet ends on stays, undrawn.
             if !shown && !self.wire_uses(crate::Endpoint::Terminal(*t)) {
                 self.terminals.remove(t);
+                // Its bridges go with it; bridges between surviving terminals stay (R7).
+                self.bridges.retain(|b| b.a != *t && b.b != *t);
             }
         }
         Ok(f)
+    }
+
+    /// The bridges touching any of these terminals.
+    fn bridges_touching<'a>(
+        &self,
+        terminals: impl IntoIterator<Item = &'a TerminalId>,
+    ) -> std::collections::BTreeSet<Bridge> {
+        let ts: std::collections::BTreeSet<&TerminalId> = terminals.into_iter().collect();
+        self.bridges.iter().filter(|b| ts.contains(&b.a) || ts.contains(&b.b)).copied().collect()
     }
 
     /// A drawing and the terminals it shows, to put back exactly if a change fails.
@@ -1636,22 +1654,29 @@ impl Project {
                 let created = self.attach_terminals(f)?;
                 if let Err(e) = self.check_terminal(id).and_then(|()| self.check_plc(id)) {
                     self.functions.remove(&id);
-                    for t in created {
-                        self.terminals.remove(&t);
+                    for t in &created {
+                        self.terminals.remove(t);
                     }
+                    self.bridges.retain(|b| !created.contains(&b.a) && !created.contains(&b.b));
                     return Err(e);
                 }
                 Ok(Command::RestoreDrawing {
                     id,
                     drawing: None,
                     terminals: created.into_iter().map(|t| (t, None)).collect(),
+                    bridges: Default::default(),
                 })
             }
-            Command::RestoreDrawing { id, drawing, terminals } => {
+            Command::RestoreDrawing { id, drawing, terminals, bridges } => {
                 let old = self.functions.remove(&id).map(Box::new);
                 if let Some(f) = drawing {
                     self.functions.insert(id, *f);
                 }
+                let old_bridges = self.bridges_touching(terminals.keys());
+                for b in &old_bridges {
+                    self.bridges.remove(b);
+                }
+                self.bridges.extend(bridges);
                 let mut inverse = BTreeMap::new();
                 for (id, value) in terminals {
                     let old = match value {
@@ -1660,11 +1685,31 @@ impl Project {
                     };
                     inverse.insert(id, old);
                 }
-                Ok(Command::RestoreDrawing { id, drawing: old, terminals: inverse })
+                Ok(Command::RestoreDrawing { id, drawing: old, terminals: inverse, bridges: old_bridges })
+            }
+            Command::AddBridge(b) => {
+                let b = Bridge::new(b.a, b.b);
+                let (Some(x), Some(y)) = (self.terminals.get(&b.a), self.terminals.get(&b.b)) else {
+                    return Err(ModelError::BadBridge);
+                };
+                if b.a == b.b || x.device != y.device {
+                    return Err(ModelError::BadBridge);
+                }
+                if !self.bridges.insert(b) {
+                    return Err(ModelError::DuplicateBridge);
+                }
+                Ok(Command::RemoveBridge(b))
+            }
+            Command::RemoveBridge(b) => {
+                let b = Bridge::new(b.a, b.b);
+                if !self.bridges.remove(&b) {
+                    return Err(ModelError::NoBridge);
+                }
+                Ok(Command::AddBridge(b))
             }
             Command::Unplace(id) => {
-                self.check_detach_bridges(id)?;
                 let (drawing, terminals) = self.clone_drawing_state(id)?;
+                let bridges = self.bridges_touching(drawing.terminals.values());
                 let attached: Vec<ConnectionId> = self
                     .connections
                     .values()
@@ -1684,6 +1729,7 @@ impl Project {
                         id,
                         drawing: Some(Box::new(drawing)),
                         terminals: terminals.into_iter().map(|t| (t.id, Some(t))).collect(),
+                        bridges,
                     },
                 );
                 Ok(Command::Batch(undo))
@@ -1829,7 +1875,6 @@ impl Project {
             }
             Command::Reassign { id, device, designations, terminals } => {
                 self.device(device)?;
-                self.check_detach_bridges(id)?;
                 let (original, old_entries) = self.clone_drawing_state(id)?;
                 let mut moved = original.clone();
                 moved.device = device;
@@ -1854,8 +1899,10 @@ impl Project {
                         .unwrap_or_else(|| crate::connectivity::default_terminal(id, &cp.name));
                     snapshot.entry(t).or_insert_with(|| self.terminals.get(&t).cloned());
                 }
+                let bridges = self.bridges_touching(snapshot.keys());
                 self.detach_terminals(id)?;
-                let inverse = Command::RestoreDrawing { id, drawing: Some(Box::new(original)), terminals: snapshot };
+                let inverse =
+                    Command::RestoreDrawing { id, drawing: Some(Box::new(original)), terminals: snapshot, bridges };
                 let placed = self
                     .attach_terminals(moved)
                     .and_then(|_| self.check_terminal(id))
@@ -1950,8 +1997,10 @@ impl Project {
                 Ok(Command::RemoveTerminal(id))
             }
             Command::RemoveTerminal(id) => {
+                // Shown, wired or bridged: in use (its bridges are removed explicitly first).
                 if self.functions.values().any(|f| f.terminals.values().any(|t| *t == id))
                     || self.wire_uses(crate::Endpoint::Terminal(id))
+                    || self.bridges.iter().any(|b| b.a == id || b.b == id)
                 {
                     return Err(ModelError::TerminalInUse(id.0));
                 }

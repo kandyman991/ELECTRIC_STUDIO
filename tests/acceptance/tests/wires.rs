@@ -218,26 +218,49 @@ fn terminal_records_survive_unplace_and_undo_without_reconstruction() {
     assert_eq!(p, removed);
 }
 
+/// R7: internal bridges are canonical. Deleting the last drawing of a two-level terminal whose
+/// points stay (undrawn wires end on them) keeps every bridge between the surviving points and
+/// keeps the levels isolated; save and load, undo and redo preserve them exactly.
 #[test]
-fn deleting_a_bridge_drawing_cannot_disconnect_surviving_undrawn_endpoints() {
+fn deleting_a_bridge_drawing_keeps_the_bridges_of_surviving_undrawn_terminals() {
     let mut p = conveyor().unwrap();
     let f = point(&p, "-X3", "1").function;
     let drawing = p.function(f).unwrap().clone();
-    let terminal = |name| Endpoint::Terminal(drawing.terminals[name]);
+    let t = |name: &str| drawing.terminals[name];
     let m = Endpoint::Node(p.node_by_name(NodeKind::Potential, "M", ecad_model::PROJECT_SCOPE).unwrap().id);
-    for end in [terminal("1"), terminal("2")] {
+    // An undrawn wire on each of the four points keeps them all.
+    for name in ["1", "2", "3", "4"] {
         p.apply(Command::AddWire(Wire {
             id: ConnectionId::new(),
-            from: end,
+            from: Endpoint::Terminal(t(name)),
             to: m,
             wire_number: None,
             spec: Default::default(),
         }))
         .unwrap();
     }
+    let net = |p: &Project, x: &str| {
+        p.netlist().nets.iter().position(|n| n.endpoints.contains(&Endpoint::Terminal(t(x)))).unwrap()
+    };
+    let bridges = p.bridges.clone();
     let before = p.clone();
-    assert_eq!(p.apply(Command::Unplace(f)).unwrap_err(), ecad_model::ModelError::BridgeInUse);
+    let undo = p.apply(Command::Unplace(f)).unwrap();
+    assert!(p.function(f).is_err());
+    for name in ["1", "2", "3", "4"] {
+        assert!(p.terminals.contains_key(&t(name)), "{name} survives, undrawn");
+    }
+    assert_eq!(p.bridges, bridges, "no bridge lost with the drawing");
+    let c = p.connectivity();
+    let bridged = |x: &str, y: &str| c.bridges.contains(&ecad_model::connectivity::Bridge::new(t(x), t(y)));
+    assert!(bridged("1", "2") && bridged("3", "4"));
+    assert!(!bridged("1", "3") && !bridged("2", "4"), "levels stay isolated");
+    assert_eq!(net(&p, "1"), net(&p, "2"));
+    let loaded = save_and_load(&p);
+    assert_eq!(loaded.bridges, p.bridges);
+    let redo = p.apply(undo).unwrap();
     assert_eq!(p, before);
+    p.apply(redo).unwrap();
+    assert_eq!(p.bridges, bridges);
 }
 
 #[test]

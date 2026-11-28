@@ -8,6 +8,7 @@
 //!   products.json         the project's products (the parts catalogue), by id
 //!   terminals.json        the devices' terminals (D2): id, device, group, point, designation
 //!   nodes.json            junctions, potentials and interruptions (D1), with scoped names
+//!   bridges.json          internal bridges between terminals of one device (R7)
 //!   cables.json           cables, sorted by tag
 //!   symbols/<id>.json     one file per symbol used by the project
 //!   wires.json            every wire (D1): id, its two ends (terminal or node), number, make
@@ -334,6 +335,9 @@ fn render(project: &Project) -> Result<Vec<(String, Vec<u8>)>> {
     cables.sort_by(|a, b| a.tag.cmp(&b.tag));
     files.push(("cables.json".to_owned(), render_json(Path::new("cables.json"), &cables)?));
 
+    let bridges: Vec<&ecad_model::connectivity::Bridge> = project.bridges.iter().collect();
+    files.push(("bridges.json".to_owned(), render_json(Path::new("bridges.json"), &bridges)?));
+
     let mut nodes: Vec<&NodeEntry> = project.nodes.values().collect();
     nodes.sort_by(|a, b| (a.kind, &a.scope, &a.name, a.id).cmp(&(b.kind, &b.scope, &b.name, b.id)));
     files.push(("nodes.json".to_owned(), render_json(Path::new("nodes.json"), &nodes)?));
@@ -648,6 +652,14 @@ pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>
     if !legacy {
         for t in read_json::<Vec<TerminalEntry>>(&path)? {
             project.apply(Command::AddTerminal(t)).map_err(model(&path))?;
+        }
+        // Internal bridges, canonical (R7): before the drawings that depict them.
+        let path = dir.join("bridges.json");
+        for b in read_json::<Vec<ecad_model::connectivity::Bridge>>(&path)? {
+            if b.a >= b.b {
+                return Err(ProjectError::Canonical { path: path.clone(), reason: "bridge ends out of order".into() });
+            }
+            project.apply(Command::AddBridge(b)).map_err(model(&path))?;
         }
     }
 
