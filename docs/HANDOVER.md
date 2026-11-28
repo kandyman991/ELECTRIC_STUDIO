@@ -137,9 +137,20 @@ The cumulative source review found authority, safety and persistence defects; AI
   byte comparisons and avoids heap allocation for the per-file read buffer. This is a
   source-level optimization, not measured performance acceptance.
 
-Regression coverage was added to the engineering, CLI and project-store suites. Final
-exact-head CI, benchmark results and the remaining acceptance decision must be recorded
-before merge. The Legion pre-release gate (#39) remains open and has not been passed.
+Regression coverage was added to the engineering, CLI and project-store suites. All six
+hosted jobs passed at `557d57a` (see PR #50). Smoke counts matched; normal conveyor save
+31,114,694 instructions (+5.4% versus the AI0 baseline), 11,580 heap allocations. Retained
+object and journal integrity work explains the extra cost; workflow-only speedup is not
+measured by the normal-save workload. See #51 for profiling; #39 remains mandatory before
+production release.
+
+Original roadmap audit: the pilot and a four-operation proposal are not the full conveyor
+build through the registry required by the AI0 acceptance row. The registry does not yet
+cover all the fixture's operations (custom symbols, parts, panel layout and more). The
+explicit forty-operation and -F3 cases have been added to the corrective branch, but still
+need exact-head CI. AI0 acceptance remains blocked on the full registry-build criterion,
+unless the owner explicitly revises its scope; do not claim that the pilot substitutes
+for it.
 
 Known limitations and review points (AI0):
 
@@ -147,10 +158,11 @@ Known limitations and review points (AI0):
   can write anything; that is detected at the next open, preview, apply or save. Actors are
   recorded as asserted: MCP's client name is a claim, and there is no enterprise
   authentication. Agents that control the desktop app itself are outside the boundary.
-- **Indirect safety impact** covers devices on *unnamed* potentials with a safety-related
-  terminal, and cables carrying one. Named supply potentials (L+, M) are excluded: otherwise
-  every device would be indirectly safety-related. Finer rules need M8's section safety
-  marking.
+- **Indirect safety impact** conservatively includes devices sharing named or unnamed
+  potentials with a safety-related terminal, including protection on a common supply
+  (D19's conveyor -F3 case). This can flag unrelated loads sharing the supply; a separate
+  human confirmation is preferable to missing a dependency. Finer rules need M8's section
+  safety marking.
 - **Records for some refusals.** A refusal because the folder changed outside Electric Studio
   can't be committed into that folder. It is reported, and the reconciliation that follows is
   recorded. Refusals for lock contention aren't recorded either, because nothing was read or
