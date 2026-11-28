@@ -619,3 +619,27 @@ fn wire_only_changes_on_safety_nets_require_confirmation() {
     let impact = change::compare(&p, &after, &Quiet).unwrap();
     assert!(impact.safety(), "{impact:?}");
 }
+
+#[test]
+fn damaged_or_missing_workflow_files_are_restored_not_adopted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    conveyor(dir);
+    let cs = propose(dir, cli(), vec![op("edit_device", json!({ "tag": "-M1", "description": "changed" }))]);
+    let approval =
+        change::issue_cli_approval(dir, &cs.id, &cs.hash(), Confirmations::default(), Actor::person()).unwrap();
+    let path = dir.join(change::approval_path(&approval.id));
+    let bytes = std::fs::read(&path).unwrap();
+    std::fs::write(&path, "tampered").unwrap();
+    assert!(change::apply_approved(dir, &cs.id, &cs.base, cli()).is_err());
+    state::restore(dir).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert!(state::verify(dir, &Quiet).unwrap().clean());
+    std::fs::remove_file(&path).unwrap();
+    let record = change::ChangeRecord::new(Actor::External, RecordKind::Reconciliation, "test", "accepted");
+    assert!(state::accept(dir, record.file(), Vec::new()).is_err());
+    state::restore(dir).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert!(state::verify(dir, &Quiet).unwrap().clean());
+    assert_eq!(state::committed(dir).unwrap(), cs.base);
+}
