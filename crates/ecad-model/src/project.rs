@@ -754,6 +754,10 @@ pub enum ModelError {
     TerminalOfOtherDevice,
     #[error("drawing {0:?} has invalid canonical terminal bindings")]
     InvalidTerminalBindings(FunctionId),
+    #[error("physical terminal group already has point `{0}")]
+    DuplicateTerminalPoint(String),
+    #[error("removing the drawing would discard an internal bridge between surviving terminals")]
+    BridgeInUse,
     #[error("part `{0}` is already in the catalogue")]
     DuplicatePart(String),
     #[error("more than one manufacturer makes a part numbered `{0}`; say which")]
@@ -1305,7 +1309,14 @@ impl Project {
                     Some(_) => {}
                     None if new_entries.iter().any(|t: &TerminalEntry| t.id == id) => {}
                     None => {
-                        let designation = f.designations.get(&cp.name).cloned().unwrap_or_else(|| cp.name.clone());
+                        let designation = f.designations.get(&cp.name).cloned().unwrap_or_else(|| {
+                            if numbered {
+                                let first = &sym.connection_points[0].name;
+                                f.designations.get(first).cloned().unwrap_or_else(|| first.clone())
+                            } else {
+                                cp.name.clone()
+                            }
+                        });
                         let (group, point) = crate::connectivity::default_group(f.id, id, &cp.name, numbered);
                         // A channel's typed data goes on the terminal of its first point.
                         let channel = match sym.role {
@@ -1344,6 +1355,9 @@ impl Project {
         } else if f.terminals.values().any(|id| self.terminals.get(id).is_some_and(|t| t.channel.is_some())) {
             return Err(ModelError::InvalidTerminalBindings(f.id));
         }
+        for t in &new_entries {
+            self.check_terminal_point(t)?;
+        }
         for t in new_entries {
             created.push(t.id);
             self.terminals.insert(t.id, t);
@@ -1356,6 +1370,41 @@ impl Project {
         }
         self.functions.insert(f.id, f);
         Ok(created)
+    }
+
+    /// A physical point key is unique within its device and terminal group.
+    fn check_terminal_point(&self, t: &TerminalEntry) -> Result<()> {
+        if self.terminals.values().any(|other| {
+            other.id != t.id && other.device == t.device && other.group == t.group && other.point == t.point
+        }) {
+            return Err(ModelError::DuplicateTerminalPoint(t.point.clone()));
+        }
+        Ok(())
+    }
+
+    /// Until internal bridges have independent canonical storage, refuse to discard the last
+    /// drawing that supplies a bridge between endpoints that will survive the removal.
+    fn check_detach_bridges(&self, id: FunctionId) -> Result<()> {
+        let f = self.function(id)?;
+        let sym = self.symbol(&f.symbol)?;
+        if f.terminals.is_empty() || (!sym.bridged && sym.bridges.is_empty()) {
+            return Ok(());
+        }
+        if self.functions.values().any(|g| g.id != id && g.symbol == f.symbol && g.terminals == f.terminals) {
+            return Ok(());
+        }
+        let survives = |t: &TerminalId| {
+            self.wire_uses(crate::Endpoint::Terminal(*t))
+                || self.functions.values().any(|g| g.id != id && g.terminals.values().any(|u| u == t))
+        };
+        let bridged = sym.bridged && f.terminals.values().filter(|t| survives(t)).count() > 1;
+        let groups = sym.bridges.iter().any(|g| {
+            g.iter().filter_map(|p| f.terminals.get(p)).filter(|t| survives(t)).count() > 1
+        });
+        if bridged || groups {
+            return Err(ModelError::BridgeInUse);
+        }
+        Ok(())
     }
 
     /// Take a drawing out, removing the terminals only it showed. Returns the drawing as it
@@ -1612,6 +1661,7 @@ impl Project {
                 Ok(Command::RestoreDrawing { id, drawing: old, terminals: inverse })
             }
             Command::Unplace(id) => {
+                self.check_detach_bridges(id)?;
                 let (drawing, terminals) = self.clone_drawing_state(id)?;
                 let attached: Vec<ConnectionId> = self
                     .connections
@@ -1777,6 +1827,7 @@ impl Project {
             }
             Command::Reassign { id, device, designations, terminals } => {
                 self.device(device)?;
+                self.check_detach_bridges(id)?;
                 let (original, old_entries) = self.clone_drawing_state(id)?;
                 let mut moved = original.clone();
                 moved.device = device;
@@ -1890,6 +1941,7 @@ impl Project {
                     return Err(ModelError::DuplicateId(t.id.0));
                 }
                 self.device(t.device)?;
+                self.check_terminal_point(&t)?;
                 self.check_channel(&t)?;
                 let id = t.id;
                 self.terminals.insert(id, t);
@@ -2100,6 +2152,31 @@ impl Project {
                 // The designations are the drawing's terminals': renumbering changes no id
                 // and no wire.
                 let f = self.function(id)?.clone();
+                if self.role(id)?.numbered() {
+                    let sym = self.symbol(&f.symbol)?;
+                    let first = sym.connection_points.first().ok_or(ModelError::InvalidTerminalBindings(id))?;
+                    let first_terminal = f.terminals.get(&first.name)
+                        .and_then(|t| self.terminals.get(t)).ok_or(ModelError::InvalidTerminalBindings(id))?;
+                    let group = first_terminal.group;
+                    let old_number = first_terminal.designation.clone();
+                    let number = designations.values().next().cloned().unwrap_or_else(|| first.name.clone());
+                    if designations.keys().any(|p| !f.terminals.contains_key(p))
+                        || designations.values().any(|d| d != &number)
+                    {
+                        return Err(ModelError::InvalidTerminalBindings(id));
+                    }
+                    if number.trim().is_empty() {
+                        return Err(ModelError::EmptyNumber);
+                    }
+                    if self.terminals.values().any(|t| t.device == f.device && t.group != group && t.designation == number) {
+                        return Err(ModelError::DuplicateNumber(self.device(f.device)?.tag.clone(), number));
+                    }
+                    for t in self.terminals.values_mut().filter(|t| t.device == f.device && t.group == group) {
+                        t.designation = number.clone();
+                    }
+                    let undo = f.terminals.keys().map(|p| (p.clone(), old_number.clone())).collect();
+                    return Ok(Command::SetDesignations { id, designations: undo });
+                }
                 let mut old = BTreeMap::new();
                 for (point, t) in &f.terminals {
                     let Some(entry) = self.terminals.get_mut(t) else { continue };
@@ -2157,22 +2234,25 @@ impl Project {
         }
     }
 
-    /// A terminal's or channel's number is non-empty and unique on its device.
-    fn check_terminal(&self, f: FunctionId) -> Result<()> {
-        let Some(number) = self.drawing_number(f) else { return Ok(()) };
+    /// A numbered physical group has one designation, unique on its device, even undrawn.
+    fn check_terminal(&self, id: FunctionId) -> Result<()> {
+        let Some(number) = self.drawing_number(id) else { return Ok(()) };
         if number.trim().is_empty() {
             return Err(ModelError::EmptyNumber);
         }
-        let device = self.function(f)?.device;
-        let mine: Vec<TerminalId> = self.function(f)?.terminals.values().copied().collect();
-        // Another drawing of the same terminal (a repeated representation) is no second one.
-        let taken = self.functions_of(device).any(|g| {
-            g.id != f
-                && !g.terminals.values().any(|t| mine.contains(t))
-                && self.drawing_number(g.id).as_deref() == Some(number.as_str())
-        });
-        if taken {
-            return Err(ModelError::DuplicateNumber(self.device(device)?.tag.clone(), number));
+        let f = self.function(id)?;
+        let Some(first) = f.terminals.values().find_map(|t| self.terminals.get(t)) else {
+            return Err(ModelError::InvalidTerminalBindings(id));
+        };
+        if f.terminals.values().any(|t| {
+            self.terminals.get(t).is_none_or(|t| t.group != first.group || t.designation != number)
+        }) || self.terminals.values().any(|t| {
+            t.device == f.device && t.group == first.group && t.designation != number
+        }) {
+            return Err(ModelError::InvalidTerminalBindings(id));
+        }
+        if self.terminals.values().any(|t| t.device == f.device && t.group != first.group && t.designation == number) {
+            return Err(ModelError::DuplicateNumber(self.device(f.device)?.tag.clone(), number));
         }
         Ok(())
     }

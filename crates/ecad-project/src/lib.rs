@@ -567,7 +567,7 @@ pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>
         }
     }
     for page in pages {
-        project.add_page(page);
+        project.apply(Command::AddPage(page)).map_err(model(&path))?;
     }
     let sheet = head.sheet;
 
@@ -579,7 +579,7 @@ pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>
         .collect();
     symbol_paths.sort();
     for p in symbol_paths {
-        project.add_symbol(read_json::<SymbolDef>(&p)?);
+        project.apply(Command::AddSymbol(read_json::<SymbolDef>(&p)?)).map_err(model(&p))?;
     }
 
     // The catalogue comes before the devices that use it; projects saved before M3a have none.
@@ -667,7 +667,9 @@ pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>
                                 .iter()
                                 .all(|cp| f.terminals.get(&cp.name).is_some_and(|t| project.terminals.contains_key(t)))
                     };
-                if !valid {
+                if !valid || (matches!(sym.role, ecad_model::Role::PlcChannel { .. })
+                    && [ecad_model::ADDRESS, ecad_model::SYMBOL, ecad_model::COMMENT].iter().any(|k| f.properties.contains_key(*k)))
+                {
                     return Err(model(&path)(ModelError::InvalidTerminalBindings(f.id)));
                 }
             }
