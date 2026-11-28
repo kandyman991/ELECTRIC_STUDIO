@@ -771,6 +771,8 @@ pub enum ModelError {
     DuplicateBridge,
     #[error("there is no such bridge")]
     NoBridge,
+    #[error("a drawing depicts this bridge; reconcile its representation before removing the bridge")]
+    BridgeDepicted,
     #[error("part `{0}` is already in the catalogue")]
     DuplicatePart(String),
     #[error("more than one manufacturer makes a part numbered `{0}`; say which")]
@@ -1427,16 +1429,47 @@ impl Project {
                 }
             }
         }
-        for t in f.terminals.values() {
-            let shown = self.functions.values().any(|g| g.terminals.values().any(|u| u == t));
-            // A terminal a wire not drawn yet ends on stays, undrawn.
-            if !shown && !self.wire_uses(crate::Endpoint::Terminal(*t)) {
-                self.terminals.remove(t);
-                // Its bridges go with it; bridges between surviving terminals stay (R7).
-                self.bridges.retain(|b| b.a != *t && b.b != *t);
+        // Only discard a whole unused bridge component. An unshown intermediate point may
+        // still carry current between surviving endpoints, including points outside this drawing.
+        let mut removable: std::collections::BTreeSet<_> = f.terminals.values().copied().filter(|t| {
+            !self.functions.values().any(|g| g.terminals.values().any(|u| u == t))
+                && !self.wire_uses(crate::Endpoint::Terminal(*t))
+        }).collect();
+        loop {
+            let before = removable.len();
+            for b in &self.bridges {
+                match (removable.contains(&b.a), removable.contains(&b.b)) {
+                    (true, false) => { removable.remove(&b.a); }
+                    (false, true) => { removable.remove(&b.b); }
+                    _ => {}
+                }
             }
+            if removable.len() == before { break; }
+        }
+        self.bridges.retain(|b| !removable.contains(&b.a) && !removable.contains(&b.b));
+        for t in removable {
+            self.terminals.remove(&t);
         }
         Ok(f)
+    }
+
+    /// Check the same bridge invariants required when loading a format-2 project, before save.
+    pub fn validate_bridges(&self) -> Result<()> {
+        for b in &self.bridges {
+            let (Some(a), Some(z)) = (self.terminals.get(&b.a), self.terminals.get(&b.b)) else {
+                return Err(ModelError::BadBridge);
+            };
+            if b.a >= b.b || a.device != z.device {
+                return Err(ModelError::BadBridge);
+            }
+        }
+        for f in self.functions.values() {
+            let sym = self.symbol(&f.symbol)?;
+            if crate::connectivity::symbol_bridges(sym, &f.terminals).iter().any(|b| !self.bridges.contains(b)) {
+                return Err(ModelError::UnbridgedRepresentation);
+            }
+        }
+        Ok(())
     }
 
     /// The bridges touching any of these terminals.
@@ -1702,9 +1735,18 @@ impl Project {
             }
             Command::RemoveBridge(b) => {
                 let b = Bridge::new(b.a, b.b);
-                if !self.bridges.remove(&b) {
+                if !self.bridges.contains(&b) {
                     return Err(ModelError::NoBridge);
                 }
+                for f in self.functions.values() {
+                    if f.terminals.values().any(|t| *t == b.a)
+                        && f.terminals.values().any(|t| *t == b.b)
+                        && crate::connectivity::symbol_bridges(self.symbol(&f.symbol)?, &f.terminals).contains(&b)
+                    {
+                        return Err(ModelError::BridgeDepicted);
+                    }
+                }
+                self.bridges.remove(&b);
                 Ok(Command::AddBridge(b))
             }
             Command::Unplace(id) => {

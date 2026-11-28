@@ -72,13 +72,24 @@ fn a_repeated_representation_depicts_existing_bridges_and_cannot_add_one() {
     assert_eq!(p.netlist().nets.len(), net.nets.len());
     p.apply(undo).unwrap();
     assert_eq!(p.bridges, bridges);
-    // Once the engineering bridge 1–2 is removed, a drawing that depicts it is refused, and
-    // refusing it changes nothing.
+    // A depicted bridge cannot be removed, even with multiple representations.
     let b12 = Bridge::new(t["1"], t["2"]);
-    assert!(bridges.contains(&b12));
+    let before = p.clone();
+    assert_eq!(p.apply(Command::RemoveBridge(b12)).unwrap_err(), ecad_model::ModelError::BridgeDepicted);
+    assert_eq!(p, before);
+    assert_eq!(save_and_load(&p), p);
+    // Once the drawing is gone, an engineering bridge may be removed; a new depiction
+    // cannot silently restore it.
+    let later = repeat(&p, f, 40.0);
+    let m = m_node(&p);
+    for id in t.values() {
+        undrawn_wire(&mut p, *id, m);
+    }
+    p.apply(Command::Unplace(f)).unwrap();
     let restore = p.apply(Command::RemoveBridge(b12)).unwrap();
     let before = p.clone();
-    let err = p.apply(Command::Place(repeat(&p, f, 40.0))).unwrap_err();
+    assert_eq!(save_and_load(&p), p);
+    let err = p.apply(Command::Place(later)).unwrap_err();
     assert!(matches!(err, ecad_model::ModelError::UnbridgedRepresentation), "{err:?}");
     assert_eq!(p, before, "nothing changes on refusal");
     p.apply(restore).unwrap();
@@ -109,21 +120,25 @@ fn bridges_are_explicit_engineering_operations_with_exact_undo() {
         p.apply(Command::AddBridge(Bridge::new(t["1"], TerminalId(ConnectionId::new().0)))),
         Err(ecad_model::ModelError::BadBridge)
     ));
-    // Removing the drawing's own bridge splits the level; the drawing itself is untouched.
-    let drawing = p.function(f).unwrap().clone();
-    h.execute(&mut p, "unbridge", Command::RemoveBridge(Bridge::new(t["3"], t["4"]))).unwrap();
-    assert_ne!(net_of(&p, "3"), net_of(&p, "4"));
-    assert_eq!(p.function(f).unwrap(), &drawing);
-    assert!(matches!(
-        p.apply(Command::RemoveBridge(Bridge::new(t["3"], t["4"]))),
-        Err(ecad_model::ModelError::NoBridge)
-    ));
+    // Removing a depicted bridge is refused, but the explicit, non-depicted cross bridge
+    // can be removed, saved and reloaded, undone and redone.
+    let before = p.clone();
+    assert_eq!(p.apply(Command::RemoveBridge(Bridge::new(t["3"], t["4"]))).unwrap_err(),
+        ecad_model::ModelError::BridgeDepicted);
+    assert_eq!(p, before);
+    h.execute(&mut p, "unbridge", Command::RemoveBridge(cross)).unwrap();
+    assert_eq!(p, original);
+    assert_eq!(save_and_load(&p), p);
+    assert_eq!(p.apply(Command::RemoveBridge(cross)).unwrap_err(), ecad_model::ModelError::NoBridge);
     h.undo(&mut p).unwrap();
+    assert_eq!(p, before);
     h.undo(&mut p).unwrap();
     assert_eq!(p, original);
     h.redo(&mut p).unwrap();
+    assert_eq!(p, before);
     h.redo(&mut p).unwrap();
-    assert!(p.bridges.contains(&cross) && !p.bridges.contains(&Bridge::new(t["3"], t["4"])));
+    assert_eq!(p, original);
+    assert_eq!(save_and_load(&p), p);
 }
 
 #[test]
@@ -154,8 +169,8 @@ fn a_failed_batch_rolls_back_terminals_and_bridges_exactly() {
     let before = p.clone();
     let bad = Bridge::new(t["1"], TerminalId(ConnectionId::new().0));
     let err = p.apply(Command::Batch(vec![
-        Command::RemoveBridge(Bridge::new(t["3"], t["4"])),
         Command::Unplace(f),
+        Command::RemoveBridge(Bridge::new(t["1"], t["2"])),
         Command::AddBridge(bad),
     ]));
     assert!(err.is_err());
@@ -360,4 +375,66 @@ fn undrawn_plc_channels_and_strip_terminals_stay_typed_and_reported() {
     let undrawn: Vec<_> = rows.iter().filter(|r| r.strip == "-X3" && r.location == "not drawn").collect();
     assert_eq!(undrawn.len(), 2, "two levels of one four-point terminal: {rows:#?}");
     assert!(undrawn.iter().all(|r| r.inside == "M" && r.outside == "M"));
+}
+
+
+#[test]
+fn detach_retains_intermediate_bridge_points_and_external_canonical_endpoints() {
+    let mut p = conveyor().unwrap();
+    let f = drawing_of(&p, "-X3", "1");
+    let t = p.function(f).unwrap().terminals.clone();
+    let extra = ecad_model::TerminalEntry {
+        id: TerminalId(ConnectionId::new().0),
+        point: "extra".into(),
+        ..p.terminals[&t["2"]].clone()
+    };
+    p.apply(Command::AddTerminal(extra.clone())).unwrap();
+    p.apply(Command::AddBridge(Bridge::new(t["2"], extra.id))).unwrap();
+    let m = m_node(&p);
+    undrawn_wire(&mut p, t["1"], m);
+    let before = p.clone();
+    let same_net = |p: &Project| p.netlist().nets.iter().any(|n| {
+        n.endpoints.contains(&Endpoint::Terminal(t["1"]))
+            && n.endpoints.contains(&Endpoint::Terminal(extra.id))
+    });
+    let undo = p.apply(Command::Unplace(f)).unwrap();
+    assert!(same_net(&p));
+    assert!(p.terminals.contains_key(&t["2"]), "unwired intermediate point survives");
+    assert!(p.bridges.contains(&Bridge::new(t["2"], extra.id)));
+    assert!(!p.terminals.contains_key(&t["3"]) && !p.terminals.contains_key(&t["4"]), "unused isolated level removed");
+    let detached = p.clone();
+    assert_eq!(save_and_load(&p), detached);
+    let redo = p.apply(undo).unwrap();
+    assert_eq!(p, before);
+    p.apply(redo).unwrap();
+    assert_eq!(p, detached);
+    p = before.clone();
+    let device = ecad_model::Device { id: ecad_model::DeviceId::new(), tag: "-X90".into(), ..p.device(p.function(f).unwrap().device).unwrap().clone() };
+    p.apply(Command::AddDevice(device.clone())).unwrap();
+    let before = p.clone();
+    let cmd = Command::Reassign { id: f, device: device.id, designations: Default::default(), terminals: Default::default() };
+    let bad = Command::AddBridge(Bridge::new(t["1"], TerminalId(ConnectionId::new().0)));
+    assert!(p.apply(Command::Batch(vec![cmd.clone(), bad])).is_err());
+    assert_eq!(p, before);
+    let undo = p.apply(cmd).unwrap();
+    assert!(same_net(&p));
+    assert_eq!(save_and_load(&p), p);
+    let moved = p.clone();
+    let redo = p.apply(undo).unwrap();
+    assert_eq!(p, before);
+    p.apply(redo).unwrap();
+    assert_eq!(p, moved);
+}
+
+#[test]
+fn save_refuses_a_bridge_inconsistent_with_its_drawing() {
+    let mut p = conveyor().unwrap();
+    let f = drawing_of(&p, "-X3", "1");
+    let t = p.function(f).unwrap().terminals.clone();
+    let tmp = tempfile::tempdir().unwrap();
+    ecad_project::save(&p, tmp.path()).unwrap();
+    let before = p.clone();
+    p.bridges.remove(&Bridge::new(t["1"], t["2"]));
+    assert!(ecad_project::save(&p, tmp.path()).is_err());
+    assert_eq!(ecad_project::load(tmp.path()).unwrap(), before);
 }

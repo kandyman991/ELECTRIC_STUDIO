@@ -335,6 +335,7 @@ fn render(project: &Project) -> Result<Vec<(String, Vec<u8>)>> {
     cables.sort_by(|a, b| a.tag.cmp(&b.tag));
     files.push(("cables.json".to_owned(), render_json(Path::new("cables.json"), &cables)?));
 
+    project.validate_bridges().map_err(model(Path::new("bridges.json")))?;
     let bridges: Vec<&ecad_model::connectivity::Bridge> = project.bridges.iter().collect();
     files.push(("bridges.json".to_owned(), render_json(Path::new("bridges.json"), &bridges)?));
 
