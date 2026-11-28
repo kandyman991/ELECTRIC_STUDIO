@@ -425,7 +425,9 @@ pub fn committed_files(dir: &Path) -> Result<Vec<(String, Vec<u8>)>> {
     let mut out = Vec::new();
     let mut damaged = Vec::new();
     for (path, entry) in &m.files {
-        let object = dir.join(OBJECTS).join(&entry.sha256);
+        let object_name = format!("{OBJECTS}/{}", entry.sha256);
+        let object = dir.join(&object_name);
+        check_on_disk(dir, &object_name).map_err(|reason| ProjectError::Canonical { path: object.clone(), reason })?;
         match std::fs::read(&object) {
             Ok(bytes) if sha256(&bytes) == entry.sha256 => out.push((path.clone(), bytes)),
             _ => damaged.push(path.clone()),
@@ -754,11 +756,30 @@ pub fn restore(dir: &Path) -> Result<Vec<String>> {
             reason: "nothing committed to restore".into(),
         });
     }
-    let mut committed = committed_files(dir)?;
+    if !v.unsafe_paths.is_empty() {
+        return Err(ProjectError::External { dir: dir.to_owned(), summary: v.summary() });
+    }
     let manifest = read_manifest(dir)?.ok_or_else(|| ProjectError::Canonical {
         path: dir.join(MANIFEST),
         reason: "nothing committed to restore".into(),
     })?;
+    // If only a retained object was damaged, its unchanged live file is a
+    // verified source for repair. Never repair from a changed live file.
+    for path in &v.damaged_objects {
+        let entry = manifest.files.get(path).or_else(|| manifest.workflow.get(path)).ok_or_else(|| {
+            ProjectError::Canonical { path: dir.join(path), reason: "missing manifest entry".into() }
+        })?;
+        check_on_disk(dir, path).map_err(|reason| ProjectError::Canonical { path: dir.join(path), reason })?;
+        let bytes = std::fs::read(dir.join(path)).map_err(io(&dir.join(path)))?;
+        if sha256(&bytes) != entry.sha256 || bytes.len() as u64 != entry.size {
+            return Err(ProjectError::Canonical {
+                path: dir.join(path),
+                reason: "both committed object and live file are unavailable or damaged".into(),
+            });
+        }
+        write_objects(dir, &[(path.clone(), entry.clone(), bytes.as_slice())])?;
+    }
+    let mut committed = committed_files(dir)?;
     // Prepare all workflow restoration bytes before quarantining anything. A legacy
     // project with already-damaged workflow data may lack a retained copy; fail closed.
     for path in v.modified.iter().chain(&v.missing).filter(|p| is_workflow(p)) {
@@ -766,7 +787,9 @@ pub fn restore(dir: &Path) -> Result<Vec<String>> {
             path: dir.join(path),
             reason: "workflow entry missing from manifest".into(),
         })?;
-        let object = dir.join(OBJECTS).join(&entry.sha256);
+        let object_name = format!("{OBJECTS}/{}", entry.sha256);
+        let object = dir.join(&object_name);
+        check_on_disk(dir, &object_name).map_err(|reason| ProjectError::Canonical { path: object.clone(), reason })?;
         let bytes = std::fs::read(&object).map_err(io(&object))?;
         if sha256(&bytes) != entry.sha256 || bytes.len() as u64 != entry.size {
             return Err(ProjectError::Canonical {
