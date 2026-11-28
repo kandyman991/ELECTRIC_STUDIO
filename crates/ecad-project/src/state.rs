@@ -228,6 +228,7 @@ pub fn workflow_files(dir: &Path) -> Result<Vec<String>> {
     let mut out = Vec::new();
     for w in WORKFLOW {
         let d = dir.join(w);
+        check_on_disk(dir, w).map_err(|reason| ProjectError::Canonical { path: d.clone(), reason })?;
         let entries = match std::fs::read_dir(&d) {
             Ok(e) => e,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
@@ -379,6 +380,10 @@ fn verify_with(dir: &Path, progress: &dyn Progress, objects: bool) -> Result<Ver
         }
         progress.step(done, total, path);
         done += 1;
+        if let Err(reason) = check_on_disk(dir, path) {
+            v.unsafe_paths.push(reason);
+            continue;
+        }
         let on_disk = dir.join(path);
         if !on_disk.exists() {
             v.missing.push((*path).clone());
@@ -396,7 +401,12 @@ fn verify_with(dir: &Path, progress: &dyn Progress, objects: bool) -> Result<Ver
         }
         progress.step(done, total, path);
         done += 1;
-        let object = dir.join(OBJECTS).join(&entry.sha256);
+        let object_name = format!("{OBJECTS}/{}", entry.sha256);
+        let object = dir.join(&object_name);
+        if let Err(reason) = check_on_disk(dir, &object_name) {
+            v.unsafe_paths.push(reason);
+            continue;
+        }
         if !matches!(file_sha256(&object), Ok((h, size)) if h == entry.sha256 && size == entry.size) {
             v.damaged_objects.push(path.clone());
         }
@@ -456,6 +466,7 @@ fn write_objects(dir: &Path, files: &[(String, Entry, &[u8])]) -> Result<()> {
     let objects = dir.join(OBJECTS);
     check_on_disk(dir, OBJECTS).map_err(|reason| ProjectError::Canonical { path: objects.clone(), reason })?;
     std::fs::create_dir_all(&objects).map_err(io(&objects))?;
+    let mut written = false;
     for (_, entry, bytes) in files {
         let path = objects.join(&entry.sha256);
         let object_name = format!("{OBJECTS}/{}", entry.sha256);
@@ -476,9 +487,12 @@ fn write_objects(dir: &Path, files: &[(String, Entry, &[u8])]) -> Result<()> {
             f.sync_all().map_err(io(&tmp))?;
         }
         std::fs::rename(&tmp, &path).map_err(io(&path))?;
+        written = true;
     }
-    store::sync_dir(&objects);
-    store::sync_dir(&dir.join(".ecad"));
+    if written {
+        store::sync_dir(&objects);
+        store::sync_dir(&dir.join(".ecad"));
+    }
     Ok(())
 }
 
@@ -607,7 +621,18 @@ fn commit_inner(
     }
     let ecad = dir.join(".ecad");
     std::fs::create_dir_all(&ecad).map_err(io(&ecad))?;
-    store::commit(dir, &all)?;
+    if let Err(error) = store::commit(dir, &all) {
+        if !reconcile || !dir.join(store::JOURNAL).exists() {
+            return Err(error);
+        }
+        let uncertain = || ProjectError::CommitUncertain(dir.to_owned());
+        store::recover(dir).map_err(|_| uncertain())?;
+        if read_manifest(dir).map_err(|_| uncertain())?.as_ref() != Some(&manifest)
+            || !verify(dir, &Quiet).map_err(|_| uncertain())?.clean()
+        {
+            return Err(uncertain());
+        }
+    }
     prune(dir, &manifest);
     Ok(manifest.revision())
 }
@@ -624,7 +649,7 @@ pub fn commit_workflow(dir: &Path, workflow: Vec<(String, Vec<u8>)>) -> Result<R
 /// [`commit_workflow`] for a caller that holds the lock.
 pub fn commit_workflow_locked(dir: &Path, workflow: Vec<(String, Vec<u8>)>) -> Result<Revision> {
     let v = verify(dir, &Quiet)?;
-    if v.committed.is_some() && !v.clean() {
+    if !v.unsafe_paths.is_empty() || (v.committed.is_some() && !v.clean()) {
         return Err(ProjectError::External { dir: dir.to_owned(), summary: v.summary() });
     }
     let manifest = read_manifest(dir)?;
