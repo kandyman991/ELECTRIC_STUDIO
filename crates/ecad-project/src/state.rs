@@ -433,24 +433,15 @@ pub fn committed_files(dir: &Path) -> Result<Vec<(String, Vec<u8>)>> {
 /// The project as last committed, reconstructed from retained objects (read-only).
 pub fn load_committed(dir: &Path) -> Result<ecad_model::Project> {
     let files = committed_files(dir)?;
-    let tmp = std::env::temp_dir().join(format!(
-        "ecad-committed-{}-{}",
-        std::process::id(),
-        sha256(dir.to_string_lossy().as_bytes()).get(..12).unwrap_or("x")
-    ));
-    let _ = std::fs::remove_dir_all(&tmp);
-    let result = (|| {
-        for (path, bytes) in &files {
-            let target = tmp.join(path);
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent).map_err(io(parent))?;
-            }
-            std::fs::write(&target, bytes).map_err(io(&target))?;
+    let tmp = tempfile::tempdir().map_err(io(&std::env::temp_dir()))?;
+    for (path, bytes) in &files {
+        let target = tmp.path().join(path);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(io(parent))?;
         }
-        crate::load(&tmp)
-    })();
-    let _ = std::fs::remove_dir_all(&tmp);
-    result
+        std::fs::write(&target, bytes).map_err(io(&target))?;
+    }
+    crate::load(tmp.path())
 }
 
 /// A commit's extra contents besides the rendered project: workflow files to add or replace,
@@ -463,9 +454,14 @@ pub struct Extras {
 /// Write objects for `files` that aren't retained yet; synced before the manifest names them.
 fn write_objects(dir: &Path, files: &[(String, Entry, &[u8])]) -> Result<()> {
     let objects = dir.join(OBJECTS);
+    check_on_disk(dir, OBJECTS).map_err(|reason| ProjectError::Canonical { path: objects.clone(), reason })?;
     std::fs::create_dir_all(&objects).map_err(io(&objects))?;
     for (_, entry, bytes) in files {
         let path = objects.join(&entry.sha256);
+        let object_name = format!("{OBJECTS}/{}", entry.sha256);
+        for rel in [&object_name, &format!("{object_name}.tmp")] {
+            check_on_disk(dir, rel).map_err(|reason| ProjectError::Canonical { path: dir.join(rel), reason })?;
+        }
         // Compare with the already verified bytes, not just the size: an equal-length
         // damaged object must be repaired. The comparison avoids a second SHA-256 pass.
         if store::same_contents(&path, bytes) {
@@ -481,6 +477,8 @@ fn write_objects(dir: &Path, files: &[(String, Entry, &[u8])]) -> Result<()> {
         }
         std::fs::rename(&tmp, &path).map_err(io(&path))?;
     }
+    store::sync_dir(&objects);
+    store::sync_dir(&dir.join(".ecad"));
     Ok(())
 }
 
@@ -524,6 +522,16 @@ pub(crate) fn digest<'a>(files: impl Iterator<Item = (&'a str, &'a str)>) -> Str
 /// the manifest; a rendered file equal byte for byte to its file on disk then keeps the
 /// manifest's hash instead of being hashed again.
 pub(crate) fn commit(dir: &Path, files: &[(String, Vec<u8>)], extras: &Extras, verified: bool) -> Result<Revision> {
+    commit_inner(dir, files, extras, verified, false)
+}
+
+fn commit_inner(
+    dir: &Path,
+    files: &[(String, Vec<u8>)],
+    extras: &Extras,
+    verified: bool,
+    reconcile: bool,
+) -> Result<Revision> {
     let old = read_manifest(dir)?;
     let mut entries = Vec::new();
     for (name, bytes) in files {
@@ -533,7 +541,7 @@ pub(crate) fn commit(dir: &Path, files: &[(String, Vec<u8>)], extras: &Extras, v
             .filter(|_| verified)
             .and_then(|m| m.files.get(name))
             .filter(|e| e.size == bytes.len() as u64)
-            .filter(|_| std::fs::read(dir.join(name)).is_ok_and(|disk| disk == *bytes));
+            .filter(|_| store::same_contents(&dir.join(name), bytes));
         let entry = match known {
             Some(e) => e.clone(),
             None => Entry { sha256: sha256(bytes), size: bytes.len() as u64 },
@@ -543,7 +551,7 @@ pub(crate) fn commit(dir: &Path, files: &[(String, Vec<u8>)], extras: &Extras, v
     let content = digest(entries.iter().map(|(n, e, _)| (n.as_str(), e.sha256.as_str())));
     write_objects(dir, &entries)?;
     let (project, generation) = match &old {
-        Some(m) if m.content == content => (m.project.clone(), m.generation),
+        Some(m) if m.content == content && !reconcile => (m.project.clone(), m.generation),
         Some(m) => (m.project.clone(), m.generation + 1),
         None => (new_identity(), 1),
     };
@@ -619,7 +627,39 @@ pub fn commit_workflow_locked(dir: &Path, workflow: Vec<(String, Vec<u8>)>) -> R
     if v.committed.is_some() && !v.clean() {
         return Err(ProjectError::External { dir: dir.to_owned(), summary: v.summary() });
     }
-    let files = match read_manifest(dir)? {
+    let manifest = read_manifest(dir)?;
+    if let Some(mut manifest) = manifest.clone().filter(|m| m.retains_workflow) {
+        // Verification already checked every engineering and retained file. Only
+        // workflow bytes and the manifest need staging; preserve the revision.
+        let mut files = workflow;
+        for (name, bytes) in &files {
+            check_on_disk(dir, name).map_err(|reason| ProjectError::Canonical { path: dir.join(name), reason })?;
+            if !is_workflow(name) {
+                return Err(ProjectError::Canonical { path: dir.join(name), reason: "not a workflow file".into() });
+            }
+            let entry = Entry { sha256: sha256(bytes), size: bytes.len() as u64 };
+            write_objects(dir, &[(name.clone(), entry.clone(), bytes.as_slice())])?;
+            manifest.workflow.insert(name.clone(), entry);
+        }
+        let text = serde_json::to_vec_pretty(&manifest)
+            .map_err(|source| ProjectError::Json { path: dir.join(MANIFEST), source })?;
+        files.push((MANIFEST.into(), text));
+        if let Err(error) = store::commit_partial(dir, &files) {
+            if !dir.join(store::JOURNAL).exists() {
+                return Err(error);
+            }
+            let uncertain = || ProjectError::CommitUncertain(dir.to_owned());
+            store::recover(dir).map_err(|_| uncertain())?;
+            if read_manifest(dir).map_err(|_| uncertain())?.as_ref() != Some(&manifest)
+                || !verify(dir, &Quiet).map_err(|_| uncertain())?.clean()
+            {
+                return Err(uncertain());
+            }
+        }
+        prune(dir, &manifest);
+        return Ok(manifest.revision());
+    }
+    let files = match manifest {
         Some(_) => committed_files(dir)?,
         // Adoption: the files as they are on disk (a format 1 folder stays format 1 until a
         // person saves it knowingly), so nothing but the manifest and contents is written.
@@ -775,7 +815,7 @@ pub fn accept_locked(
     }
     let mut workflow = rewrite;
     workflow.push(record);
-    let revision = commit(dir, &files, &Extras { workflow }, false)?;
+    let revision = commit_inner(dir, &files, &Extras { workflow }, false, true)?;
     Ok((project, revision))
 }
 
