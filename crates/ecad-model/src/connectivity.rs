@@ -397,7 +397,12 @@ impl Project {
             }
         }
         // Internal bridges are canonical (R7): stored, never derived from a drawing.
-        c.bridges = self.bridges.iter().filter(|b| c.terminals.contains_key(&b.a) && c.terminals.contains_key(&b.b)).copied().collect();
+        c.bridges = self
+            .bridges
+            .iter()
+            .filter(|b| c.terminals.contains_key(&b.a) && c.terminals.contains_key(&b.b))
+            .copied()
+            .collect();
         // Nodes no drawing shows yet; junctions drawn more than once.
         for n in self.nodes.values() {
             c.nodes.entry(n.id).or_insert_with(|| Node {

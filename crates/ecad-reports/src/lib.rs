@@ -385,16 +385,20 @@ pub fn terminal_diagram(project: &Project) -> Vec<TerminalRow> {
     // their undrawn wires reach.
     let shown: std::collections::BTreeSet<ecad_model::TerminalId> =
         project.functions.values().flat_map(|f| f.terminals.values().copied()).collect();
-    let mut undrawn: std::collections::BTreeMap<(String, String, ecad_model::connectivity::GroupId), Vec<&ecad_model::TerminalEntry>> =
-        Default::default();
-    for t in project.terminals.values().filter(|t| !shown.contains(&t.id) && t.channel.is_none() && !t.point.is_empty()) {
+    let mut undrawn: std::collections::BTreeMap<
+        (String, String, ecad_model::connectivity::GroupId),
+        Vec<&ecad_model::TerminalEntry>,
+    > = Default::default();
+    for t in project.terminals.values().filter(|t| !shown.contains(&t.id) && t.channel.is_none() && !t.point.is_empty())
+    {
         let tag = project.device(t.device).map(|d| d.tag.clone()).unwrap_or_default();
         undrawn.entry((tag, t.designation.clone(), t.group)).or_default().push(t);
     }
     for ((tag, number, _), mut points) in undrawn {
         points.sort_by(|a, b| a.point.cmp(&b.point));
         let multi = points.len() > 2;
-        let bridge_points = if multi { points.iter().map(|t| t.point.clone()).collect::<Vec<_>>().join("|") } else { String::new() };
+        let bridge_points =
+            if multi { points.iter().map(|t| t.point.clone()).collect::<Vec<_>>().join("|") } else { String::new() };
         for pair in points.chunks(2) {
             let point_of = |i: usize| pair.get(i).map(|t| t.point.clone()).unwrap_or_default();
             rows.push(TerminalRow {
@@ -420,7 +424,15 @@ fn undrawn_far(project: &Project, t: ecad_model::TerminalId) -> String {
     let mut out: Vec<String> = project
         .undrawn
         .values()
-        .filter_map(|w| if w.from == here { Some(w.to) } else if w.to == here { Some(w.from) } else { None })
+        .filter_map(|w| {
+            if w.from == here {
+                Some(w.to)
+            } else if w.to == here {
+                Some(w.from)
+            } else {
+                None
+            }
+        })
         .map(|e| {
             let (tag, p) = project.describe_end(&e);
             if p.is_empty() { tag } else { format!("{tag}:{p}") }
