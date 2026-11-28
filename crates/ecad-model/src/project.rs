@@ -1473,6 +1473,7 @@ impl Project {
         }) {
             return Err(ModelError::DuplicateTerminalPoint(t.point.clone()));
         }
+        self.check_slot(t.device, &t.designation, t.channel.is_some())?;
         self.check_available(&crate::numbering::Identifier::Terminal {
             device: t.device,
             designation: t.designation.clone(),
@@ -2324,6 +2325,7 @@ impl Project {
                         return Err(ModelError::EmptyNumber);
                     }
                     if number != old_number {
+                        self.check_slot(f.device, &number, first_terminal.channel.is_some())?;
                         self.check_available(&crate::numbering::Identifier::Terminal {
                             device: f.device,
                             designation: number.clone(),

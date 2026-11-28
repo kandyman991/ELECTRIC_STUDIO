@@ -143,7 +143,6 @@ fn allocating_past_the_last_free_channel_reports_exhaustion_and_adds_nothing() {
     let p = conveyor().unwrap();
     let card = p.device_by_tag("-A1").unwrap().id;
     let used = p.terminals.values().filter(|t| t.device == card && t.channel.is_some()).count() as u32;
-    let mut e = Editor::new(p.clone(), page(&p, "5")).unwrap();
     // A card of one more channel than it uses: one free slot, then none.
     let mut q = p.clone();
     q.apply(Command::SetCapacity { device: card, capacity: Some(used + 1) }).unwrap();
@@ -167,7 +166,14 @@ fn allocating_past_the_last_free_channel_reports_exhaustion_and_adds_nothing() {
     assert!(matches!(r.allocate_channel(card), Err(ModelError::Exhausted(_))));
     // Removing the card refuses while its numbering names it; the removal operation takes the
     // capacity and reservations with it.
-    let _ = &mut e;
+    let before = r.clone();
+    let undo = remove_device(&mut r, "-A1");
+    assert!(!r.numbering.names_device(card));
+    let removed = r.clone();
+    let redo = r.apply(undo).unwrap();
+    assert_eq!(r, before);
+    r.apply(redo).unwrap();
+    assert_eq!(r, removed);
     let persisted = save_and_load(&r);
     assert_eq!(persisted.numbering, r.numbering);
 }
@@ -441,4 +447,52 @@ fn replacing_a_device_keeps_its_identity_and_reconciles_terminals_explicitly() {
         q.apply(Command::ReplaceDevice { id: q1.id, parts: vec![], designations: [(first, " ".to_owned())].into() });
     assert!(err.is_err());
     assert_eq!(q, before);
+}
+
+#[test]
+fn page_renumbering_keeps_a_family_together_and_skips_blocked_staging_names() {
+    use ecad_model::renumber::Scope;
+    let mut p = Project::new("page family");
+    let root = ecad_model::Page::new("8", 10);
+    let child = ecad_model::Page::new("8a", 20);
+    for pg in [&root, &child] {
+        p.apply(Command::AddPage(pg.clone())).unwrap();
+    }
+    for name in ["1a".to_owned(), format!("~renumbering~{}", root.id.0)] {
+        p.apply(Command::Reserve(vec![Record::new(Identifier::Page { name }, "future")])).unwrap();
+    }
+    let before = p.clone();
+    let preview = p.preview_renumbering(Scope::Pages).unwrap();
+    let undo = p.apply_renumbering(&preview).unwrap();
+    assert_eq!(p.pages[&root.id].name, "2");
+    assert_eq!(p.pages[&child.id].name, "2a");
+    p.apply(undo).unwrap();
+    assert_eq!(p, before);
+}
+
+#[test]
+fn numeric_limits_preserve_series_order_and_address_range_endpoints() {
+    let mut p = Project::new("limits");
+    let pg = ecad_model::Page::new("18446744073709551615", u64::MAX);
+    p.apply(Command::AddPage(pg.clone())).unwrap();
+    let new = ecad_model::Page::new("", 0);
+    let id = new.id;
+    p.apply(Command::Batch(p.insert_page(None, new))).unwrap();
+    assert_eq!(p.pages[&id].name, "18446744073709551616");
+    assert!(p.pages[&id].order > p.pages[&pg.id].order);
+    assert!(p.parse_identifiers("address:IW0..IW3").is_err());
+}
+
+#[test]
+fn card_slot_bounds_agree_on_reserve_resize_and_strip_renumber() {
+    use ecad_model::renumber::Scope;
+    let mut p = conveyor().unwrap();
+    let card = p.device_by_tag("-A1").unwrap().id;
+    let spare = Identifier::Terminal { device: card, designation: "20".into() };
+    p.apply(Command::Reserve(vec![Record::new(spare.clone(), "last")])).unwrap();
+    assert!(p.apply(Command::SetCapacity { device: card, capacity: Some(20) }).is_err());
+    p.apply(Command::Unreserve(vec![spare.clone()])).unwrap();
+    p.apply(Command::SetCapacity { device: card, capacity: Some(20) }).unwrap();
+    assert!(p.apply(Command::Reserve(vec![Record::new(spare, "")])).is_err());
+    assert!(p.preview_renumbering(Scope::Terminals(card)).is_err());
 }

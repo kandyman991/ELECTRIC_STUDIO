@@ -30,6 +30,7 @@ impl Project {
                 return Err(ModelError::EmptyNumber);
             }
             if d != entry.designation {
+                self.check_slot(id, d, entry.channel.is_some())?;
                 self.check_available(&Identifier::Terminal { device: id, designation: d.to_owned() })?;
                 next.insert(*t, d.to_owned());
             }
@@ -46,7 +47,7 @@ impl Project {
         }
         // Strip terminals: one group per designation.
         let mut seen: BTreeMap<String, crate::connectivity::GroupId> = BTreeMap::new();
-        for t in self.terminals.values().filter(|t| t.device == id && !t.point.is_empty()) {
+        for t in self.terminals.values().filter(|t| t.device == id && (!t.point.is_empty() || t.channel.is_some())) {
             let d = after(t);
             if seen.insert(d.clone(), t.group).is_some_and(|g| g != t.group) {
                 return Err(ModelError::DuplicateNumber(tag, d));

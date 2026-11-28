@@ -296,32 +296,46 @@ impl Project {
     /// longer in use afterwards are recorded as retired, and the numbering that names a removed
     /// device or cable (its capacity, its reservations) goes with it. Removal renumbers nothing.
     pub fn removal(&self, cmds: Vec<Command>) -> Result<Vec<Command>> {
-        let mut after = self.clone();
-        after.underlays.clear();
-        after.apply(Command::Batch(cmds.clone()))?;
+        fn collect_owners(cmds: &[Command], devices: &mut BTreeSet<DeviceId>, cables: &mut BTreeSet<CableId>) {
+            for cmd in cmds {
+                match cmd {
+                    Command::RemoveDevice(d) => {
+                        devices.insert(*d);
+                    }
+                    Command::RemoveCable(c) => {
+                        cables.insert(*c);
+                    }
+                    Command::Batch(children) => collect_owners(children, devices, cables),
+                    _ => {}
+                }
+            }
+        }
+        let (mut devices, mut cables) = (BTreeSet::new(), BTreeSet::new());
+        collect_owners(&cmds, &mut devices, &mut cables);
         let mut out = Vec::new();
-        // Device- and cable-scoped numbering first, so the removal itself isn't refused.
-        let gone_devices: Vec<DeviceId> =
-            self.devices.keys().filter(|d| !after.devices.contains_key(d)).copied().collect();
-        let gone_cables: Vec<CableId> = self.cables.keys().filter(|c| !after.cables.contains_key(c)).copied().collect();
-        let unreserve: Vec<Identifier> = self
+        let held: Vec<_> = self
             .numbering
             .reserved
             .keys()
             .filter(|id| match id {
-                Identifier::Terminal { device, .. } => gone_devices.contains(device),
-                Identifier::Core { cable, .. } => gone_cables.contains(cable),
+                Identifier::Terminal { device, .. } => devices.contains(device),
+                Identifier::Core { cable, .. } => cables.contains(cable),
                 _ => false,
             })
             .cloned()
             .collect();
-        if !unreserve.is_empty() {
-            out.push(Command::Unreserve(unreserve));
+        // Undo restores the owner's terminals first, then its typed capacity and reservations.
+        if !held.is_empty() {
+            out.push(Command::Unreserve(held));
         }
-        for d in gone_devices.iter().filter(|d| self.numbering.capacities.contains_key(d)) {
-            out.push(Command::SetCapacity { device: *d, capacity: None });
+        for device in devices {
+            if self.numbering.capacities.contains_key(&device) {
+                out.push(Command::SetCapacity { device, capacity: None });
+            }
         }
         out.extend(cmds);
+        let mut after = self.clone();
+        after.apply(Command::Batch(out.clone()))?;
         let now = after.retirable();
         let retire: Vec<Record> = self
             .retirable()
@@ -346,27 +360,46 @@ impl Project {
         values: impl Iterator<Item = String>,
         as_id: impl Fn(String) -> Identifier,
     ) -> String {
-        let n_of = |s: &str| -> Option<u64> {
-            let digits = s.strip_prefix(before)?.strip_suffix(after)?;
-            (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())).then(|| digits.parse().ok()).flatten()
-        };
-        let start = match self.numbering.policies.strategy(kind) {
-            Strategy::LowestFree => 1,
-            Strategy::Sequential => {
-                let retired = self.numbering.retired.keys().filter_map(|id| match (kind, id) {
-                    (Kind::Tag, Identifier::Tag { tag: v })
-                    | (Kind::Cable, Identifier::Cable { tag: v })
-                    | (Kind::Wire, Identifier::Wire { number: v })
-                    | (Kind::Page, Identifier::Page { name: v }) => Some(v.clone()),
-                    _ => None,
-                });
-                values.chain(retired).filter_map(|v| n_of(&v)).max().map_or(1, |n| n + 1)
+        let retired = self.numbering.retired.keys().filter_map(|id| match (kind, id) {
+            (Kind::Tag, Identifier::Tag { tag: v })
+            | (Kind::Cable, Identifier::Cable { tag: v })
+            | (Kind::Wire, Identifier::Wire { number: v })
+            | (Kind::Page, Identifier::Page { name: v }) => Some(v.clone()),
+            _ => None,
+        });
+        let mut counter = Vec::new();
+        if self.numbering.policies.strategy(kind) == Strategy::Sequential {
+            for value in values.chain(retired) {
+                if let Some(digits) = value.strip_prefix(before).and_then(|v| v.strip_suffix(after))
+                    && digits.bytes().all(|b| b.is_ascii_digit())
+                {
+                    let digits = digits.trim_start_matches('0').as_bytes();
+                    if (digits.len(), digits) > (counter.len(), counter.as_slice()) {
+                        counter = digits.to_vec();
+                    }
+                }
             }
-        };
-        (start..)
-            .map(|n| format!("{before}{n:0width$}{after}"))
-            .find(|s| !taken(s) && self.available(&as_id(s.clone())))
-            .unwrap_or_default()
+        }
+        loop {
+            // Identifiers are text; a valid existing counter can exceed machine integer width.
+            let mut carry = true;
+            for d in counter.iter_mut().rev() {
+                if *d < b'9' {
+                    *d += 1;
+                    carry = false;
+                    break;
+                }
+                *d = b'0';
+            }
+            if carry {
+                counter.insert(0, b'1');
+            }
+            let digits = String::from_utf8_lossy(&counter);
+            let s = format!("{before}{digits:0>width$}{after}");
+            if !taken(&s) && self.available(&as_id(s.clone())) {
+                return s;
+            }
+        }
     }
 
     /// The tag for a new cable `<prefix><n>` (`-W4`) by the cable policy, skipping used,
@@ -482,8 +515,9 @@ impl Project {
             (Strategy::Sequential, _) => used.iter().copied().chain(retired).max().map(|n| n + step),
         };
         let Some(start) = start.or((step == 1).then_some(0)) else { return String::new() };
-        (0..)
-            .map(|i| start + i * step)
+        let limit = if step == 1 { u64::from(u32::MAX) * 8 + 7 } else { u64::from(u32::MAX) };
+        (start..=limit)
+            .step_by(step as usize)
             .find(|n| !used.contains(n) && self.available(&Identifier::Address { address: address_at(prefix, *n) }))
             .map(|n| address_at(prefix, n))
             .unwrap_or_default()
@@ -546,8 +580,8 @@ impl Project {
         let at = after.and_then(|a| order.iter().position(|p| p.id == a)).map_or(order.len(), |i| i + 1);
         let lower = if at == 0 { 0 } else { order[at - 1].order };
         let key = match order.get(at) {
-            None => Some(lower.saturating_add(crate::PAGE_STEP)),
-            Some(next) if next.order > lower + 1 => Some(lower + (next.order - lower) / 2),
+            None => lower.checked_add(crate::PAGE_STEP),
+            Some(next) if next.order.saturating_sub(lower) > 1 => Some(lower + (next.order - lower) / 2),
             Some(_) => None,
         };
         match key {
@@ -622,7 +656,7 @@ impl Project {
                             return Err(format!("`{rest}`: both ends of one kind"));
                         };
                         let step = if prefix.ends_with('W') { 2 } else { 1 };
-                        if y < x || (y - x) / step >= 1000 {
+                        if y < x || (y - x) % step != 0 || (y - x) / step >= 1000 {
                             return Err(format!("`{rest}`: a range runs upwards, up to 1000 values"));
                         }
                         (x..=y)
@@ -634,6 +668,24 @@ impl Project {
             }
             other => return Err(format!("unknown kind `{other}` (tag, cable, wire, terminal, address, core, page)")),
         })
+    }
+
+    fn is_card(&self, device: DeviceId) -> bool {
+        self.terminals.values().any(|t| t.device == device && t.channel.is_some())
+    }
+
+    pub(crate) fn check_slot(&self, device: DeviceId, designation: &str, channel: bool) -> Result<()> {
+        if let Some(cap) = self.numbering.capacities.get(&device)
+            && designation.bytes().all(|b| b.is_ascii_digit())
+            && !designation
+                .parse::<u64>()
+                .is_ok_and(|n| if channel { n < u64::from(*cap) } else { (1..=u64::from(*cap)).contains(&n) })
+        {
+            return Err(ModelError::BadIdentifier(
+                self.describe_identifier(&Identifier::Terminal { device, designation: designation.into() }),
+            ));
+        }
+        Ok(())
     }
 
     /// Whether an identifier names something that exists and fits it, for reserving.
@@ -654,11 +706,7 @@ impl Project {
                 if blank(designation) {
                     return Err(bad());
                 }
-                if let (Some(cap), Ok(n)) = (self.numbering.capacities.get(device), designation.parse::<u64>())
-                    && n > u64::from(*cap)
-                {
-                    return Err(bad());
-                }
+                self.check_slot(*device, designation, self.is_card(*device))?;
             }
             Identifier::Address { address } => {
                 if crate::plc_address::canonical(address).as_deref() != Some(address.as_str()) {
@@ -749,20 +797,15 @@ impl Project {
             Command::SetCapacity { device, capacity } => {
                 let tag = self.device(device)?.tag.clone();
                 if let Some(cap) = capacity {
-                    let highest = self
-                        .terminals
-                        .values()
-                        .filter(|t| t.device == device)
-                        .filter_map(|t| {
-                            t.designation.parse::<u64>().ok().map(|n| if t.channel.is_some() { n + 1 } else { n })
-                        })
-                        .chain(self.numbering.reserved.keys().filter_map(|id| match id {
-                            Identifier::Terminal { device: d, designation } if *d == device => designation.parse().ok(),
-                            _ => None,
-                        }))
-                        .max()
-                        .unwrap_or(0);
-                    if cap == 0 || highest > u64::from(cap) {
+                    let channel = self.is_card(device);
+                    let fits = |s: &str, channel: bool| {
+                        !s.bytes().all(|b| b.is_ascii_digit())
+                            || s.parse::<u64>().is_ok_and(|n| {
+                                if channel { n < u64::from(cap) } else { (1..=u64::from(cap)).contains(&n) }
+                            })
+                    };
+                    if cap == 0 || self.terminals.values().any(|t| t.device == device && !fits(&t.designation, t.channel.is_some()))
+                        || self.numbering.reserved.keys().any(|id| matches!(id, Identifier::Terminal {device: d, designation} if *d == device && !fits(designation, channel))) {
                         return Err(ModelError::BadCapacity(tag));
                     }
                 }

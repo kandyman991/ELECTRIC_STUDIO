@@ -2,7 +2,7 @@
 
 **Status: architecture approved and merged (PR #31, 27 Nov 2026), all decisions D1–D43
 resolved. M7 accepted with owner-approved deferred Legion validation (27 Nov 2026); M10
-formally accepted (28 Nov 2026); S0 implemented, awaiting independent milestone review.** Pairs with
+formally accepted (28 Nov 2026); S0 accepted on verified merge of its corrective PR; AI0 authorized.** Pairs with
 [PLATFORM-ARCHITECTURE.md](PLATFORM-ARCHITECTURE.md).
 
 ## Where things stand
@@ -12,7 +12,8 @@ formally accepted (28 Nov 2026); S0 implemented, awaiting independent milestone 
 | M0–M6 (foundation, editor, multi-page, parts and reports, checks and output, MVP gate, panel layout, integrations) | Merged |
 | M7 model foundations | M7a (PR #33, derived connectivity, netlist, content hash) merged; M7b (conveyor acceptance project, benchmark harness) complete; PR #35 merged after all six exact-head CI jobs passed; **accepted with R5 deferred to the first production release** |
 | M10 format 2 | Implemented: M10a (#37), M10b (#38), M10c (#40), M10b′ and M10d (#41); review findings R1–R8 corrected in #42 (canonical `bridges.json`, fail-closed format 2, undrawn coverage); **Accepted**: #42 merged at `6e223ec`; [final corrective acceptance](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/42#issuecomment-7236646425) |
-| S0 stable numbering | Implemented: S0a (#44), S0b (#45), S0c (#46); **awaiting independent milestone review** (not accepted; AI0 waits) |
+| S0 stable numbering | Implemented: S0a (#44), S0b (#45), S0c (#46); **accepted on verified corrective merge** (see HANDOVER.md) |
+| AI0 engineering interface | Authorized for implementation on S0 corrective merge |
 | Components library (PR #32) | Draft, **on hold** (D13). Its compatible parts are reused in M9 |
 
 The earlier proposals in GAPS.md (library, annotations, generated pages, symbols, layouts,
@@ -63,7 +64,7 @@ SPAC) are all folded into the plan below. Nothing from them is dropped.
 
 Each milestone needs only what is listed:
 
-- **M7** is accepted with the documented R5 exception; **M10** accepted; **S0** implemented, in review. The conveyor is
+- **M7** is accepted with the documented R5 exception; **M10** accepted; **S0** accepted on verified corrective merge. The conveyor is
   `crates/ecad-model/src/conveyor.rs`, its acceptance tests `tests/acceptance/`, the benchmark
   harness `crates/ecad-bench` with `bench/` (baselines, the controlled-run script).
 - After M10: **S0**, **AI0**, **C0**.
