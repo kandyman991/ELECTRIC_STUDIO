@@ -496,7 +496,7 @@ pub fn save_locked(project: &Project, dir: &Path, extras: state::Extras) -> Resu
             if !verification.clean()
                 || revision.content != expected
                 || extras.workflow.iter().any(|(path, bytes)| {
-                    state::read_workflow(dir, path).is_err_or(|actual| actual != *bytes)
+                    !state::read_workflow(dir, path).is_ok_and(|actual| actual == *bytes)
                 })
             {
                 return Err(uncertain());
