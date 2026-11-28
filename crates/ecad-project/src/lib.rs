@@ -1386,14 +1386,17 @@ mod tests {
         let held = store::Lock::take(dir.path()).unwrap();
         assert!(matches!(save(&p, dir.path()), Err(ProjectError::Busy(_))));
         drop(held);
-        save(&p, dir.path()).unwrap();
-        // A lock file from long ago (a crash) doesn't block.
-        let lock = std::fs::File::create(dir.path().join(store::LOCK)).unwrap();
-        let old = std::time::SystemTime::now() - store::STALE_LOCK - std::time::Duration::from_secs(5);
+        // An old file without an OS lock does not block the next save.
+        let lock = std::fs::OpenOptions::new().write(true).open(dir.path().join(store::LOCK)).unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
         lock.set_modified(old).unwrap();
         drop(lock);
+        let held = store::Lock::take(dir.path()).unwrap();
+        // An old file with a live OS lock must never be stolen.
+        assert!(matches!(save(&p, dir.path()), Err(ProjectError::Busy(_))));
+        drop(held);
         save(&p, dir.path()).unwrap();
-        assert!(!dir.path().join(store::LOCK).exists());
+        assert!(dir.path().join(store::LOCK).exists());
     }
 
     use ecad_model::sample::start_circuit;
