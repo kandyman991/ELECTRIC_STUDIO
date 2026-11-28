@@ -224,7 +224,16 @@ impl Project {
         }
         let potentials = self.potentials();
         let find = |r: &ConnectionRef| potentials.iter().find(|p| p.points.contains(r));
-        let sides: Vec<_> = [find(from), find(to)].into_iter().flatten().collect();
+        let endpoints = [find(from), find(to)];
+        if let [Some(start), Some(end)] = endpoints
+            && !std::ptr::eq(start, end)
+        {
+            let number = |p: &crate::Potential| p.connections.iter().find_map(|c| self.wire_number(*c));
+            if let (Some(origin), Some(_)) = (number(start), number(end)) {
+                return origin.to_owned();
+            }
+        }
+        let sides: Vec<_> = endpoints.into_iter().flatten().collect();
         let name = sides.iter().find_map(|p| p.name());
         // A channel's own end may not be on a potential yet (no wire): count it too.
         let mut points: Vec<ConnectionRef> = sides.iter().flat_map(|p| p.points.iter().cloned()).collect();
@@ -433,6 +442,8 @@ mod tests {
             spec: Default::default(),
         })
         .unwrap();
+        // Even a named destination cannot override the origin's assigned wire number.
+        assert_eq!(p.number_for_new_wire(&ConnectionRef::new(j2, "2"), &ConnectionRef::new(l_plus, "1")), "X9");
         assert_eq!(wire(&mut p, (j, "2"), (j2, "2")), "102");
         let numbers: BTreeSet<String> = p.connections.values().filter_map(|c| c.wire_number.clone()).collect();
         assert!(numbers.contains("X9"), "X9 kept its number: {numbers:?}");
@@ -441,6 +452,20 @@ mod tests {
         let any = p.connections.values().find(|c| c.wire_number.as_deref() == Some("102")).unwrap().id;
         let cmds = p.set_wire_number_commands(any, Some("150".into()));
         assert_eq!(cmds.len(), 3, "k3-j, j-j2 and j2-k4");
+    }
+
+    #[test]
+    fn derived_wire_numbers_skip_reserved_potential_names() {
+        let mut p = start_circuit().unwrap();
+        p.apply(Command::SetNaming(Naming::by_page())).unwrap();
+        p.apply(Command::Reserve(vec![crate::Record::new(crate::Identifier::Wire { number: "L+".into() }, "spare")]))
+            .unwrap();
+        let supply = place(&mut p, "iec.supply", Some("L+"), (100.0, 80.0));
+        let coil = place(&mut p, "iec.coil", None, (100.0, 40.0));
+        assert_ne!(wire(&mut p, (supply, "1"), (coil, "A1")), "L+");
+        let preview = p.preview_renumbering(crate::renumber::Scope::Wires).unwrap();
+        p.apply_renumbering(&preview).unwrap();
+        assert!(!p.wire_number_in_use("L+"));
     }
 
     #[test]

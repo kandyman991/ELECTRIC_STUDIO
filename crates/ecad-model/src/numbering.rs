@@ -296,47 +296,46 @@ impl Project {
     /// longer in use afterwards are recorded as retired, and the numbering that names a removed
     /// device or cable (its capacity, its reservations) goes with it. Removal renumbers nothing.
     pub fn removal(&self, cmds: Vec<Command>) -> Result<Vec<Command>> {
-        let mut after = self.clone();
+        fn collect_owners(cmds: &[Command], devices: &mut BTreeSet<DeviceId>, cables: &mut BTreeSet<CableId>) {
+            for cmd in cmds {
+                match cmd {
+                    Command::RemoveDevice(d) => {
+                        devices.insert(*d);
+                    }
+                    Command::RemoveCable(c) => {
+                        cables.insert(*c);
+                    }
+                    Command::Batch(children) => collect_owners(children, devices, cables),
+                    _ => {}
+                }
+            }
+        }
+        let (mut devices, mut cables) = (BTreeSet::new(), BTreeSet::new());
+        collect_owners(&cmds, &mut devices, &mut cables);
         let mut out = Vec::new();
-        fn plan(p: &mut Project, cmd: Command, out: &mut Vec<Command>) -> Result<()> {
-            if let Command::Batch(children) = cmd {
-                for child in children {
-                    plan(p, child, out)?;
-                }
-                return Ok(());
-            }
-            let mut steps = Vec::new();
-            if matches!(cmd, Command::RemoveDevice(_) | Command::RemoveCable(_)) {
-                let held: Vec<_> = p
-                    .numbering
-                    .reserved
-                    .keys()
-                    .filter(|id| match (&cmd, id) {
-                        (Command::RemoveDevice(d), Identifier::Terminal { device, .. }) => d == device,
-                        (Command::RemoveCable(c), Identifier::Core { cable, .. }) => c == cable,
-                        _ => false,
-                    })
-                    .cloned()
-                    .collect();
-                if !held.is_empty() {
-                    steps.push(Command::Unreserve(held));
-                }
-                if let Command::RemoveDevice(device) = cmd
-                    && p.numbering.capacities.contains_key(&device)
-                {
-                    steps.push(Command::SetCapacity { device, capacity: None });
-                }
-            }
-            steps.push(cmd);
-            for step in steps {
-                p.apply(step.clone())?;
-                out.push(step);
-            }
-            Ok(())
+        let held: Vec<_> = self
+            .numbering
+            .reserved
+            .keys()
+            .filter(|id| match id {
+                Identifier::Terminal { device, .. } => devices.contains(device),
+                Identifier::Core { cable, .. } => cables.contains(cable),
+                _ => false,
+            })
+            .cloned()
+            .collect();
+        // Undo restores the owner's terminals first, then its typed capacity and reservations.
+        if !held.is_empty() {
+            out.push(Command::Unreserve(held));
         }
-        for cmd in cmds {
-            plan(&mut after, cmd, &mut out)?;
+        for device in devices {
+            if self.numbering.capacities.contains_key(&device) {
+                out.push(Command::SetCapacity { device, capacity: None });
+            }
         }
+        out.extend(cmds);
+        let mut after = self.clone();
+        after.apply(Command::Batch(out.clone()))?;
         let now = after.retirable();
         let retire: Vec<Record> = self
             .retirable()
