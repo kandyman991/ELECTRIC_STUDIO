@@ -79,7 +79,7 @@ fn write_synced(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 /// Make renames in `dir` durable (Unix; Windows has no directory handles to flush).
-fn sync_dir(dir: &Path) {
+pub(crate) fn sync_dir(dir: &Path) {
     #[cfg(unix)]
     if let Ok(d) = std::fs::File::open(dir) {
         let _ = d.sync_all();
@@ -104,7 +104,7 @@ fn remove(path: &Path) -> Result<()> {
 pub(crate) fn each_chunk(path: &Path, mut f: impl FnMut(&[u8])) -> Result<()> {
     use std::io::Read;
     let mut file = std::fs::File::open(path).map_err(io(path))?;
-    let mut buf = vec![0u8; 64 << 10];
+    let mut buf = [0u8; 64 << 10];
     loop {
         let n = file.read(&mut buf).map_err(io(path))?;
         if n == 0 {
