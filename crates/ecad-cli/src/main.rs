@@ -40,16 +40,31 @@ usage:
       export for the built-in sample, without a project folder.
   ecad --help | --version
 
+Commands that save a project write format 2. Saving a format 1 project whose conversion
+found ambiguous mappings (kept apart, nothing merged) needs --accept-conversion.
+
 exit codes: 0 done, 1 check failed, 2 the command couldn't run";
 
 /// What `--only` can name.
 const PARTS: [&str; 5] = ["pdf", "dxf", "dwg", "png", "reports"];
 
 /// Say on stderr when a save is about to upgrade an older project's format.
-fn upgrade_note(dir: &str) {
+/// Before a save: say when it upgrades an older project's format, and refuse to save a
+/// format 1 conversion that found ambiguous mappings unless `--accept-conversion` says to
+/// save them as converted (kept apart, nothing merged).
+fn before_save(dir: &str, accept: bool) -> Result<(), String> {
+    let findings = ecad_project::conversion_findings(Path::new(dir)).map_err(|e| e.to_string())?;
+    if !findings.is_empty() && !accept {
+        let list: Vec<String> = findings.iter().map(ToString::to_string).collect();
+        return Err(format!(
+            "{dir}: converting from format 1 kept these apart without merging them: {}; resolve them in the app, or pass --accept-conversion to save them so",
+            list.join("; ")
+        ));
+    }
     if let Some(note) = ecad_project::upgrade_note(Path::new(dir)) {
         eprintln!("note: {dir}: {note}");
     }
+    Ok(())
 }
 
 fn load(dir: &Path) -> Result<Project, String> {
@@ -63,15 +78,18 @@ struct Args {
     strict: bool,
     only: Option<String>,
     units: Option<String>,
+    accept_conversion: bool,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
-    let mut out = Args { positional: Vec::new(), json: false, strict: false, only: None, units: None };
+    let mut out =
+        Args { positional: Vec::new(), json: false, strict: false, only: None, units: None, accept_conversion: false };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--json" => out.json = true,
             "--strict" => out.strict = true,
+            "--accept-conversion" => out.accept_conversion = true,
             "--only" => out.only = Some(it.next().ok_or("--only needs a list, e.g. --only pdf,reports")?.clone()),
             "--units" => out.units = Some(it.next().ok_or("--units needs a unit: mm, cm, m, inch or feet")?.clone()),
             flag if flag.starts_with("--") => return Err(format!("unknown option `{flag}`")),
@@ -223,7 +241,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             }
             if let Some(command) = import.command {
                 project.apply(command).map_err(|e| e.to_string())?;
-                upgrade_note(dir);
+                before_save(dir, a.accept_conversion)?;
                 ecad_project::save(&project, Path::new(dir)).map_err(|e| e.to_string())?;
             }
             println!(
@@ -245,7 +263,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             let page = ecad_editor::script::find_page(&project, page)?;
             let mut editor = ecad_editor::Editor::new(project, page).map_err(|e| e.to_string())?;
             let message = editor.import_underlay_file(page, Path::new(file), units)?;
-            upgrade_note(dir);
+            before_save(dir, a.accept_conversion)?;
             ecad_project::save_checked(editor.project(), Path::new(dir), Some(seen)).map_err(|e| e.to_string())?;
             println!("{message}");
             Ok(ExitCode::SUCCESS)
@@ -256,7 +274,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             let page = ecad_editor::script::find_page(&project, page)?;
             let mut editor = ecad_editor::Editor::new(project, page).map_err(|e| e.to_string())?;
             editor.remove_underlay(page)?;
-            upgrade_note(dir);
+            before_save(dir, a.accept_conversion)?;
             ecad_project::save_checked(editor.project(), Path::new(dir), Some(seen)).map_err(|e| e.to_string())?;
             println!("removed the underlay");
             Ok(ExitCode::SUCCESS)

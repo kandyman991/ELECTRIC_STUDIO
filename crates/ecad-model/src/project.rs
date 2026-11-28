@@ -4,7 +4,7 @@
 //!
 //! Every change goes through [`Project::apply`], which returns the command that undoes it.
 
-use crate::connectivity::{GroupId, TerminalId};
+use crate::connectivity::{GroupId, NodeId, NodeKind, TerminalId};
 use crate::geometry::{Direction, Point, Rotation};
 use crate::parts::{Part, PartRef};
 use crate::sheet::Sheet;
@@ -113,6 +113,19 @@ id_type!(
 /// The namespace of ids derived from legacy data (format 1 products, D7).
 const LEGACY: Uuid = Uuid::from_u128(0x6563_6164_2d6c_6567_6163_792d_6964_7300);
 
+impl DeviceId {
+    /// The device of a node drawing: none (D1). Node drawings show a node, not a device.
+    pub const NONE: DeviceId = DeviceId(Uuid::nil());
+
+    pub fn is_none(&self) -> bool {
+        self.0.is_nil()
+    }
+
+    fn none() -> Self {
+        DeviceId::NONE
+    }
+}
+
 impl ProductId {
     /// The id a product numbered `number` gets when a format 1 project (where numbers were
     /// unique) is read, and in the built-in samples: the same on every conversion.
@@ -170,7 +183,13 @@ impl Device {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Function {
     pub id: FunctionId,
+    /// The device this drawing shows; [`DeviceId::NONE`] for a node drawing.
+    #[serde(default = "DeviceId::none", skip_serializing_if = "DeviceId::is_none")]
     pub device: DeviceId,
+    /// The node a node drawing (a junction dot, a potential or interruption point) shows: an
+    /// explicit binding (D1, D33). `None` for a device's drawing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<NodeId>,
     pub symbol: SymbolId,
     pub page: PageId,
     pub position: Point,
@@ -211,6 +230,53 @@ pub struct TerminalEntry {
     pub point: String,
     /// The printed designation, an editable property: `A1`, `13`, a strip terminal's `3`.
     pub designation: String,
+}
+
+fn check_node(n: NodeEntry) -> Result<NodeEntry> {
+    let n = NodeEntry { name: n.name.trim().to_owned(), scope: n.scope.trim().to_owned(), ..n };
+    if n.kind != NodeKind::Junction && n.name.is_empty() {
+        return Err(ModelError::EmptyNodeName(n.kind.label()));
+    }
+    let scope = if n.scope.is_empty() { project_scope() } else { n.scope };
+    Ok(NodeEntry { scope, ..n })
+}
+
+/// The naming scope of a format 1 project's potentials and interruptions, and the default.
+pub const PROJECT_SCOPE: &str = "project";
+
+fn project_scope() -> String {
+    PROJECT_SCOPE.to_owned()
+}
+
+fn is_project_scope(s: &str) -> bool {
+    s == PROJECT_SCOPE
+}
+
+/// A logical connection point with no physical terminal (D1): a junction, a named potential,
+/// an interruption. Persistent from format 2 on; its drawings bind to it by id, never by name.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeEntry {
+    pub id: NodeId,
+    pub kind: NodeKind,
+    /// The displayed name (`L+`, `Q-FWD`). A junction needs none; one converted from format 1
+    /// keeps its tag (`J1`), so its drawings stay as they were.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// The naming scope (D33): a lookup by name gives kind and scope, and refuses ambiguity.
+    /// Independent networks may use the same name, in the same scope or not; only the id says
+    /// which network a drawing is part of.
+    #[serde(default = "project_scope", skip_serializing_if = "is_project_scope")]
+    pub scope: String,
+    /// What it is, as people describe it (`24 V DC`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+}
+
+impl NodeEntry {
+    /// A potential or interruption in the project scope, or a junction (no name).
+    pub fn new(id: NodeId, kind: NodeKind, name: &str) -> Self {
+        NodeEntry { id, kind, name: name.trim().to_owned(), scope: project_scope(), description: String::new() }
+    }
 }
 
 /// Property keys of a PLC channel.
@@ -466,6 +532,18 @@ pub enum Command {
         #[serde(default)]
         terminals: BTreeMap<String, TerminalId>,
     },
+    /// A node (D1): a junction, potential or interruption, drawn or not yet.
+    AddNode(NodeEntry),
+    /// Remove a node no drawing shows.
+    RemoveNode(NodeId),
+    /// Rename or rescope a node (its kind and id don't change).
+    SetNode(NodeEntry),
+    /// Bind a node drawing to another node of its kind: an explicit engineering operation,
+    /// the only way two drawings become one network (D33).
+    Rebind {
+        id: FunctionId,
+        node: NodeId,
+    },
     /// A terminal, drawn or not yet (format 2 files list them before the drawings).
     AddTerminal(TerminalEntry),
     /// Remove a terminal no drawing shows.
@@ -578,6 +656,22 @@ pub enum ModelError {
     UnknownTag(String),
     #[error("there is no cable `{0}`")]
     UnknownCable(String),
+    #[error("node {0} is not in the project")]
+    NoNode(Uuid),
+    #[error("node {0} is shown by a drawing")]
+    NodeInUse(Uuid),
+    #[error("a {0} symbol shows a node of that kind, not a device")]
+    NodeDrawingNeedsNode(&'static str),
+    #[error("a device's symbol can't show a node")]
+    NotANodeSymbol,
+    #[error("a junction is drawn once")]
+    JunctionDrawnTwice,
+    #[error("a {0} needs a name")]
+    EmptyNodeName(&'static str),
+    #[error("more than one {0} is named `{1}` in scope `{2}`; say which")]
+    AmbiguousNode(&'static str, String, String),
+    #[error("no {0} is named `{1}` in scope `{2}`")]
+    UnknownNode(&'static str, String, String),
     #[error("terminal {0} is not in the project")]
     NoTerminal(Uuid),
     #[error("terminal {0} is shown by a drawing")]
@@ -661,6 +755,9 @@ pub struct Project {
     /// The sheet every page is drawn on.
     #[serde(default)]
     pub sheet: Sheet,
+    /// The junctions, potentials and interruptions (D1), by id.
+    #[serde(default)]
+    pub nodes: BTreeMap<NodeId, NodeEntry>,
     /// The physical connection points of the devices (D2), by id.
     #[serde(default)]
     pub terminals: BTreeMap<TerminalId, TerminalEntry>,
@@ -780,7 +877,10 @@ impl Project {
     /// `(device tag, point)` for display and reports.
     pub fn describe(&self, r: &ConnectionRef) -> Result<(String, String)> {
         let f = self.function(r.function)?;
-        Ok((self.device(f.device)?.tag.clone(), self.designation(f, &r.point).to_owned()))
+        if f.node.is_none() {
+            self.device(f.device)?;
+        }
+        Ok((self.label_of(f).to_owned(), self.designation(f, &r.point).to_owned()))
     }
 
     // ---- cross-references ----
@@ -949,6 +1049,91 @@ impl Project {
                 (cp.name.clone(), format!("{n}{last}"))
             })
             .collect()
+    }
+
+    /// What a drawing shows: a device (its symbol is a device's) or a node of the symbol's kind,
+    /// bound by id. A junction is drawn once.
+    fn check_owner(&self, f: &Function) -> Result<()> {
+        let sym = self.symbol(&f.symbol)?;
+        match (crate::connectivity::node_kind(sym), f.node) {
+            (None, None) => self.device(f.device).map(drop),
+            (None, Some(_)) => Err(ModelError::NotANodeSymbol),
+            (Some(kind), None) => Err(ModelError::NodeDrawingNeedsNode(kind.label())),
+            (Some(kind), Some(n)) => {
+                let node = self.nodes.get(&n).ok_or(ModelError::NoNode(n.0))?;
+                if node.kind != kind {
+                    return Err(ModelError::NodeDrawingNeedsNode(kind.label()));
+                }
+                if !f.device.is_none() {
+                    return Err(ModelError::NodeDrawingNeedsNode(kind.label()));
+                }
+                if kind == NodeKind::Junction && self.functions.values().any(|g| g.id != f.id && g.node == Some(n)) {
+                    return Err(ModelError::JunctionDrawnTwice);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// What a drawing of `tag` (a format 1 device id, tag and description) with `symbol` shows
+    /// in format 2, creating it if it is missing: a device's symbol, that device; a potential or
+    /// interruption point, the node the device stood for ([`NodeId::for_device`], named after
+    /// the tag); a junction dot, the node of drawing `f` ([`NodeId::for_junction`]). Returns the
+    /// drawing's device (or [`DeviceId::NONE`]) and node. Used to build the samples and to
+    /// convert format 1.
+    pub fn legacy_owner(
+        &mut self,
+        device: DeviceId,
+        tag: &str,
+        description: &str,
+        symbol: &SymbolId,
+        f: FunctionId,
+    ) -> Result<(DeviceId, Option<NodeId>)> {
+        let kind = crate::connectivity::node_kind(self.symbol(symbol)?);
+        let Some(kind) = kind else {
+            if !self.devices.contains_key(&device) {
+                self.add_device(Device::new(device, tag, description))?;
+            }
+            return Ok((device, None));
+        };
+        let id = if kind == NodeKind::Junction { NodeId::for_junction(f) } else { NodeId::for_device(device) };
+        if !self.nodes.contains_key(&id) {
+            // A format 1 junction keeps its tag as its display name (section 9).
+            let node = NodeEntry { description: description.to_owned(), ..NodeEntry::new(id, kind, tag) };
+            self.apply(Command::AddNode(node))?;
+        }
+        Ok((DeviceId::NONE, Some(id)))
+    }
+
+    /// The one node of `kind` named `name` in `scope` (D33): an error if there is none, or more
+    /// than one (independent networks with one name).
+    pub fn node_by_name(&self, kind: NodeKind, name: &str, scope: &str) -> Result<&NodeEntry> {
+        let name = name.trim();
+        let found: Vec<&NodeEntry> =
+            self.nodes.values().filter(|n| n.kind == kind && n.name == name && n.scope == scope).collect();
+        match found.as_slice() {
+            [one] => Ok(one),
+            [] => Err(ModelError::UnknownNode(kind.label(), name.to_owned(), scope.to_owned())),
+            _ => Err(ModelError::AmbiguousNode(kind.label(), name.to_owned(), scope.to_owned())),
+        }
+    }
+
+    /// The kind of node a symbol's drawings show, if they show a node.
+    pub fn node_kind_of(&self, symbol: &SymbolId) -> Option<NodeKind> {
+        self.symbol(symbol).ok().and_then(crate::connectivity::node_kind)
+    }
+
+    /// The name a drawing is labelled with: its node's name, or its device's tag.
+    pub fn label_of(&self, f: &Function) -> &str {
+        match f.node {
+            Some(n) => self.nodes.get(&n).map_or("", |n| n.name.as_str()),
+            None => self.device(f.device).map_or("", |d| d.tag.as_str()),
+        }
+    }
+
+    /// The drawings of a node.
+    pub fn drawings_of_node(&self, node: NodeId) -> impl Iterator<Item = &Function> {
+        self.functions.values().filter(move |f| f.node == Some(node))
     }
 
     /// The designation a drawing shows for one of its connection points: its terminal's, or
@@ -1148,7 +1333,11 @@ impl Project {
 
     /// The lowest free tag `<prefix><n>`, n from 1.
     pub fn next_tag(&self, prefix: &str) -> String {
-        (1..).map(|n| format!("{prefix}{n}")).find(|t| self.device_by_tag(t).is_none()).unwrap_or_default()
+        // Node names count too, so a new junction or potential gets a name of its own.
+        (1..)
+            .map(|n| format!("{prefix}{n}"))
+            .find(|t| self.device_by_tag(t).is_none() && !self.nodes.values().any(|n| n.name == *t))
+            .unwrap_or_default()
     }
 
     // ---- library edits (not undoable) ----
@@ -1206,8 +1395,7 @@ impl Project {
                     return Err(ModelError::DuplicateId(f.id.0));
                 }
                 self.page(f.page)?;
-                self.device(f.device)?;
-                self.symbol(&f.symbol)?;
+                self.check_owner(&f)?;
                 let id = f.id;
                 let created = self.attach_terminals(f)?;
                 if let Err(e) = self.check_terminal(id).and_then(|()| self.check_plc(id)) {
@@ -1400,6 +1588,37 @@ impl Project {
                     designations: old_designations,
                     terminals: old_terminals,
                 })
+            }
+            Command::AddNode(n) => {
+                if self.nodes.contains_key(&n.id) {
+                    return Err(ModelError::DuplicateId(n.id.0));
+                }
+                let n = check_node(n)?;
+                let id = n.id;
+                self.nodes.insert(id, n);
+                Ok(Command::RemoveNode(id))
+            }
+            Command::RemoveNode(id) => {
+                if self.functions.values().any(|f| f.node == Some(id)) {
+                    return Err(ModelError::NodeInUse(id.0));
+                }
+                let n = self.nodes.remove(&id).ok_or(ModelError::NoNode(id.0))?;
+                Ok(Command::AddNode(n))
+            }
+            Command::SetNode(n) => {
+                let old = self.nodes.get(&n.id).ok_or(ModelError::NoNode(n.id.0))?;
+                let n = check_node(NodeEntry { kind: old.kind, ..n })?;
+                let old = self.nodes.insert(n.id, n).ok_or(ModelError::NoNode(Uuid::nil()))?;
+                Ok(Command::SetNode(old))
+            }
+            Command::Rebind { id, node } => {
+                let f = self.function(id)?.clone();
+                let old = f.node.ok_or(ModelError::NotANodeSymbol)?;
+                self.check_owner(&Function { node: Some(node), ..f.clone() })?;
+                if let Some(f) = self.functions.get_mut(&id) {
+                    f.node = Some(node);
+                }
+                Ok(Command::Rebind { id, node: old })
             }
             Command::AddTerminal(t) => {
                 if self.terminals.contains_key(&t.id) {
@@ -1884,8 +2103,32 @@ impl Project {
         let id = device.id;
         self.apply(Command::AddDevice(device)).map(|_| id)
     }
-    pub fn place(&mut self, function: Function) -> Result<FunctionId> {
+    /// Place a drawing. A node symbol drawn for a device, as format 1 drew potentials,
+    /// interruptions and junctions, becomes a drawing of the node that device stands for
+    /// ([`Project::legacy_owner`]), and the device goes if nothing else draws it: how the
+    /// samples are built.
+    pub fn place(&mut self, mut function: Function) -> Result<FunctionId> {
         let id = function.id;
+        let is_node = crate::connectivity::node_kind(self.symbol(&function.symbol)?).is_some();
+        let known = NodeId::for_device(function.device);
+        if is_node
+            && function.node.is_none()
+            && !self.devices.contains_key(&function.device)
+            && self.nodes.contains_key(&known)
+        {
+            // A device that already became its node.
+            function.device = DeviceId::NONE;
+            function.node = Some(known);
+        }
+        if is_node && function.node.is_none() && !function.device.is_none() {
+            let d = self.device(function.device)?.clone();
+            let (device, node) = self.legacy_owner(d.id, &d.tag, &d.description, &function.symbol, id)?;
+            if self.functions_of(d.id).next().is_none() {
+                self.apply(Command::RemoveDevice(d.id))?;
+            }
+            function.device = device;
+            function.node = node;
+        }
         self.apply(Command::Place(function)).map(|_| id)
     }
     pub fn connect(&mut self, connection: Connection) -> Result<ConnectionId> {

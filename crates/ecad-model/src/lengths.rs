@@ -414,8 +414,44 @@ mod tests {
         assert!(by_number(&p, "W7").unwrap().inferred);
         // W8 runs from the junction to the potential point M: neither end is a place.
         assert_eq!(by_number(&p, "W8"), None);
-        // With M on the plate too, W3's junction end could be -K2 or M: unknown, not guessed.
-        let p = placed(&["-K1", "-K2", "M"]);
+        // M is a node, not a device (M10c), so it can't be on a plate: the junction still
+        // stands for the one placed device. With a third device on the potential placed, W3's
+        // junction end could be -K2 or that device: unknown, not guessed.
+        assert!(!p.devices.values().any(|d| d.tag == "M"));
+        let mut p = placed(&["-K1", "-K2"]);
+        let k2 = p.device_by_tag("-K2").unwrap().id;
+        let coil = p.functions_of(k2).next().unwrap().clone();
+        let k3 = p.add_device(crate::Device::new(crate::DeviceId::new(), "-K3", "")).unwrap();
+        let third = crate::Function {
+            id: crate::FunctionId::new(),
+            device: k3,
+            position: Point::new(coil.position.x + 40.0, coil.position.y),
+            terminals: Default::default(),
+            designations: Default::default(),
+            ..coil
+        };
+        let third_id = third.id;
+        p.place(third).unwrap();
+        let j1_m = crate::ConnectionRef::new(crate::sample::JUNCTION_1, "3");
+        p.connect(crate::Connection {
+            id: crate::ConnectionId::new(),
+            from: crate::ConnectionRef::new(third_id, "A2"),
+            to: j1_m,
+            wire_number: Some("W9".into()),
+            spec: Default::default(),
+            bend: None,
+        })
+        .unwrap();
+        p.apply(Command::AddPanelItem(PanelItem {
+            id: PanelItemId::new(),
+            page: crate::sample::PAGE_1,
+            kind: PanelItemKind::Device { device: k3 },
+            at: Point::new(500.0, 100.0),
+            length: 0.0,
+            vertical: false,
+            part: String::new(),
+        }))
+        .unwrap();
         assert_eq!(by_number(&p, "W3"), None);
         assert_eq!(by_number(&p, "W7"), None);
         // Wires between two placed devices are known exactly.

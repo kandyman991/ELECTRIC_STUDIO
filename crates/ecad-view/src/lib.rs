@@ -94,12 +94,13 @@ fn point_label(at: Point, leaves: Direction, name: &str) -> Text {
 /// Whether a terminal or channel has one of the same device just left of it on the same page,
 /// 8 mm away at the same height: then its label leaves out the strip's name.
 fn continues_row(project: &Project, f: &ecad_model::Function) -> bool {
-    project.functions_of(f.device).any(|g| {
-        g.id != f.id
-            && g.page == f.page
-            && (g.position.y - f.position.y).abs() < 0.01
-            && (f.position.x - g.position.x - 8.0).abs() < 0.01
-    })
+    f.node.is_none()
+        && project.functions_of(f.device).any(|g| {
+            g.id != f.id
+                && g.page == f.page
+                && (g.position.y - f.position.y).abs() < 0.01
+                && (f.position.x - g.position.x - 8.0).abs() < 0.01
+        })
 }
 
 /// Which side of a symbol its tag and cross-references go on first: the first of right, left
@@ -131,8 +132,11 @@ fn cross_reference_lines(project: &Project, f: ecad_model::FunctionId, role: Rol
             let order: Vec<PageId> = project.pages_in_order().iter().map(|p| p.id).collect();
             let rank = |page: PageId| order.iter().position(|p| *p == page).unwrap_or(usize::MAX);
             let here = rank(project.function(f)?.page);
-            let mut others: Vec<&ecad_model::Function> =
-                project.functions_of(device).filter(|g| g.id != f && rank(g.page) != here).collect();
+            // The other drawings of its node (D1): bound by id, never by name.
+            let node = project.function(f)?.node;
+            let mut others: Vec<&ecad_model::Function> = node
+                .map(|n| project.drawings_of_node(n).filter(|g| g.id != f && rank(g.page) != here).collect())
+                .unwrap_or_default();
             others.sort_by_key(|g| rank(g.page));
             let next = others.iter().find(|g| rank(g.page) > here).or_else(|| others.first());
             next.and_then(|g| project.reference(g.id).ok()).map(|r| vec![r]).unwrap_or_default()
@@ -348,7 +352,7 @@ pub fn page_drawing(project: &Project, page: PageId) -> Result<Drawing> {
         Placer::new((Point::new(flo.x, tb.y), Point::new(fhi.x, fhi.y - COLUMN_BAND)))
     };
     for f in project.functions_on(page) {
-        let device = project.device(f.device)?;
+        let tag = project.label_of(f).to_owned();
         let sym = project.symbol(&f.symbol)?;
         // Labels are placed in page coordinates, not inside the block, so they stay upright
         // and readable whatever the symbol's rotation.
@@ -382,8 +386,8 @@ pub fn page_drawing(project: &Project, page: PageId) -> Result<Drawing> {
             tag: match project.drawing_number(f.id) {
                 // In a row of terminals of one strip, only the first names the strip.
                 Some(n) if continues_row(project, f) => format!(":{n}"),
-                Some(n) => format!("{}:{n}", device.tag),
-                None => device.tag.clone(),
+                Some(n) => format!("{tag}:{n}"),
+                None => tag.clone(),
             },
             numbered: project.drawing_number(f.id).is_some(),
             size: if project.drawing_number(f.id).is_some() && continues_row(project, f) {

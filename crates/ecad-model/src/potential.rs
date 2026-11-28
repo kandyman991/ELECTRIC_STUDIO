@@ -117,7 +117,8 @@ impl Project {
         }
         // Junctions join their own points; potential and interruption devices join all of
         // their drawings.
-        let mut by_device: BTreeMap<crate::DeviceId, Vec<usize>> = BTreeMap::new();
+        // (Since M10c a node drawing names its node rather than a device; the oracle keys by it.)
+        let mut by_device: BTreeMap<uuid::Uuid, Vec<usize>> = BTreeMap::new();
         for f in self.functions.values() {
             let Ok(sym) = self.symbol(&f.symbol) else { continue };
             let mine: Vec<usize> =
@@ -134,7 +135,7 @@ impl Project {
                 }
             }
             if sym.role.joins_drawings() {
-                by_device.entry(f.device).or_default().extend(mine);
+                by_device.entry(f.node.map_or(f.device.0, |n| n.0)).or_default().extend(mine);
             }
         }
         for points in by_device.values() {
@@ -154,10 +155,9 @@ impl Project {
             p.points.push(r.clone());
             if let Ok(f) = self.function(r.function)
                 && self.role(f.id) == Ok(Role::Potential)
-                && let Ok(d) = self.device(f.device)
-                && !p.names.contains(&d.tag)
+                && !p.names.iter().any(|n| n == self.label_of(f))
             {
-                p.names.push(d.tag.clone());
+                p.names.push(self.label_of(f).to_owned());
             }
         }
         for c in self.connections.values() {
@@ -270,6 +270,7 @@ mod tests {
         let (l_plus, m) = (DeviceId::from_u128(0x101), DeviceId::from_u128(0x104));
         let mut extra = |device, x| {
             let f = Function {
+                node: None,
                 terminals: Default::default(),
                 id: FunctionId::new(),
                 device,

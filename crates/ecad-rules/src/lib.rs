@@ -5,7 +5,7 @@
 //! tags, wire numbers, terminal and channel numbers, PLC addresses and symbols, wires to a point
 //! that is already wired.
 
-use ecad_model::{ConnectionId, ConnectionRef, DeviceId, FunctionId, PageId, Point, Project, Role};
+use ecad_model::{ConnectionId, ConnectionRef, FunctionId, PageId, Point, Project, Role};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -73,12 +73,12 @@ pub const RULES: &[(&str, Severity, &str)] = &[
     (
         "junction-drawn-twice",
         Severity::Warning,
-        "A junction device is drawn more than once; each drawing is its own junction",
+        "A junction is drawn more than once (only possible behind the commands' back)",
     ),
     (
         "mixed-logical-roles",
         Severity::Warning,
-        "A device is drawn both as a potential point and as an interruption point",
+        "A node is drawn with a symbol of another kind (only possible behind the commands' back)",
     ),
     ("lonely-interruption", Severity::Warning, "An interruption point has no partner with the same name"),
     ("wire-unnumbered", Severity::Warning, "A wire has no number"),
@@ -200,21 +200,17 @@ fn ambiguities(out: &mut Out) {
                     out.at_function("shared-designation", f, message.clone());
                 }
             }
-            Ambiguity::MixedLogicalRoles { device, node } => {
-                let tag = out.project.device(*device).map(|d| d.tag.clone()).unwrap_or_default();
-                let message = format!("{tag} is drawn both as a potential point and as an interruption point");
+            Ambiguity::MixedLogicalRoles { node } => {
+                let tag = c.nodes.get(node).map(|n| n.name.clone()).unwrap_or_default();
+                let message = format!("{tag} is drawn with a symbol of another kind of node");
                 if let Some(r) = c.nodes.get(node).and_then(|n| n.drawings.first()) {
                     out.at_function("mixed-logical-roles", r.function, message);
                 }
             }
-            Ambiguity::JunctionDrawnTwice { device, nodes } => {
-                let tag = out.project.device(*device).map(|d| d.tag.clone()).unwrap_or_default();
-                let message =
-                    format!("Junction {tag} is drawn {} times; each drawing is its own junction", nodes.len());
-                for n in nodes.iter().skip(1) {
-                    if let Some(r) = c.nodes.get(n).and_then(|n| n.drawings.first()) {
-                        out.at_function("junction-drawn-twice", r.function, message.clone());
-                    }
+            Ambiguity::JunctionDrawnTwice { drawings, .. } => {
+                let message = format!("A junction is drawn {} times", drawings.len());
+                for f in drawings.iter().skip(1) {
+                    out.at_function("junction-drawn-twice", *f, message.clone());
                 }
             }
         }
@@ -224,12 +220,9 @@ fn ambiguities(out: &mut Out) {
 /// Wires whose ends the netlist couldn't resolve.
 fn unresolved_ends(out: &mut Out) {
     for u in out.project.netlist().unresolved {
-        let tag = out.project.function(u.end.function).ok().and_then(|f| out.project.device(f.device).ok());
-        let message = format!(
-            "A wire ends on {}:{}, which its symbol no longer has",
-            tag.map(|d| d.tag.clone()).unwrap_or_default(),
-            u.end.point
-        );
+        let tag = out.project.function(u.end.function).ok().map(|f| out.project.label_of(f).to_owned());
+        let message =
+            format!("A wire ends on {}:{}, which its symbol no longer has", tag.unwrap_or_default(), u.end.point);
         out.at_connection("wire-end-missing", u.wire, message);
     }
 }
@@ -260,7 +253,7 @@ pub fn check(project: &Project) -> Vec<Check> {
     for f in project.functions.values() {
         if matches!(project.role(f.id), Ok(Role::PlcChannel { .. })) && f.property(ecad_model::ADDRESS).is_empty() {
             let n = project.drawing_number(f.id).unwrap_or_default();
-            let tag = project.device(f.device).map(|d| d.tag.clone()).unwrap_or_default();
+            let tag = project.label_of(f).to_owned();
             out.at_function("plc-no-address", f.id, format!("{tag}:{n} has no PLC address"));
         }
     }
@@ -366,7 +359,7 @@ fn unconnected(out: &mut Out) {
         let count = used.map_or(0, BTreeSet::len);
         if is_junction(project, f.id) {
             if count < 3 {
-                let tag = project.device(f.device).map(|d| d.tag.clone()).unwrap_or_default();
+                let tag = project.label_of(f).to_owned();
                 let message = format!("Junction {tag} joins {count} wire{}", if count == 1 { "" } else { "s" });
                 out.at_function("junction-unused", f.id, message);
             }
@@ -383,15 +376,18 @@ fn unconnected(out: &mut Out) {
 
 fn lonely_interruptions(out: &mut Out) {
     let project = out.project;
-    let mut drawings: BTreeMap<DeviceId, Vec<FunctionId>> = BTreeMap::new();
+    // An interruption node's drawings (D1): bound by id, not by name.
+    let mut drawings: BTreeMap<ecad_model::NodeId, Vec<FunctionId>> = BTreeMap::new();
     for f in project.functions.values() {
-        if project.role(f.id) == Ok(Role::Interruption) {
-            drawings.entry(f.device).or_default().push(f.id);
+        if project.role(f.id) == Ok(Role::Interruption)
+            && let Some(n) = f.node
+        {
+            drawings.entry(n).or_default().push(f.id);
         }
     }
-    for (device, fs) in drawings {
+    for fs in drawings.values() {
         if let [only] = fs.as_slice() {
-            let tag = project.device(device).map(|d| d.tag.clone()).unwrap_or_default();
+            let tag = project.function(*only).map(|f| project.label_of(f).to_owned()).unwrap_or_default();
             out.at_function("lonely-interruption", *only, format!("Interruption point {tag} has no partner"));
         }
     }
@@ -473,11 +469,7 @@ fn wire_layout(out: &mut Out) {
                     out.at_connection("wire-overlap", a, message);
                 }
                 ecad_model::layout::WireClash::ThroughSymbol { wire: w, function, .. } => {
-                    let tag = project
-                        .function(function)
-                        .and_then(|f| project.device(f.device))
-                        .map(|d| d.tag.clone())
-                        .unwrap_or_default();
+                    let tag = project.function(function).map(|f| project.label_of(f).to_owned()).unwrap_or_default();
                     out.at_connection("wire-through-symbol", w, format!("Wire {} runs through {tag}", wire(w)));
                 }
             }
@@ -503,11 +495,7 @@ fn overlaps(out: &mut Out) {
                 if alo.x < bhi.x && blo.x < ahi.x && alo.y < bhi.y && blo.y < ahi.y {
                     let tag = |f: &FunctionId| {
                         let n = project.drawing_number(*f).map(|n| format!(":{n}")).unwrap_or_default();
-                        project
-                            .function(*f)
-                            .and_then(|f| project.device(f.device))
-                            .map(|d| format!("{}{n}", d.tag))
-                            .unwrap_or_default()
+                        project.function(*f).map(|f| format!("{}{n}", project.label_of(f))).unwrap_or_default()
                     };
                     out.at_function("overlap", *a, format!("{} overlaps {}", tag(a), tag(b)));
                 }
@@ -687,8 +675,9 @@ mod tests {
     #[test]
     fn a_designation_drawn_twice_is_reported_not_merged() {
         let mut p = sample::with_contacts().unwrap();
-        let k1 = DeviceId::from_u128(0x103);
+        let k1 = ecad_model::DeviceId::from_u128(0x103);
         let f = ecad_model::Function {
+            node: None,
             terminals: Default::default(),
             id: FunctionId::new(),
             device: k1,
@@ -706,10 +695,12 @@ mod tests {
         assert_eq!(shared.len(), 2, "A1 and A2: {r:#?}");
         assert!(shared[0].contains("-K1:A") && shared[0].contains("as different points"), "{shared:?}");
 
-        // A junction device drawn a second time.
+        // A junction drawn a second time: refused by the commands, reported if it gets in.
         let mut p = sample::with_potentials().unwrap();
         let j = p.function(sample::JUNCTION_1).unwrap().clone();
-        p.place(ecad_model::Function { id: FunctionId::new(), position: Point::new(120.0, -8.0), ..j }).unwrap();
+        let again = ecad_model::Function { id: FunctionId::new(), position: Point::new(120.0, -8.0), ..j };
+        assert_eq!(p.place(again.clone()).unwrap_err(), ecad_model::ModelError::JunctionDrawnTwice);
+        p.functions.insert(again.id, again);
         let r = rules(&check(&p));
         assert!(r.iter().any(|r| r.starts_with("junction-drawn-twice") && r.contains("drawn 2 times")), "{r:#?}");
     }
@@ -727,13 +718,14 @@ mod tests {
     }
 
     #[test]
-    fn a_device_drawn_as_potential_and_interruption_is_reported() {
+    fn a_node_drawn_with_a_symbol_of_another_kind_is_refused_or_reported() {
         let mut p = sample::start_circuit().unwrap();
-        let l_plus = DeviceId::from_u128(0x101);
+        let l_plus = p.node_by_name(ecad_model::NodeKind::Potential, "L+", ecad_model::PROJECT_SCOPE).unwrap().id;
         let f = ecad_model::Function {
+            node: Some(l_plus),
             terminals: Default::default(),
             id: FunctionId::new(),
-            device: l_plus,
+            device: ecad_model::DeviceId::NONE,
             symbol: ecad_model::SymbolId::new("iec.interruption"),
             page: sample::PAGE_1,
             position: Point::new(100.0, 90.0),
@@ -742,8 +734,9 @@ mod tests {
             designations: Default::default(),
             properties: Default::default(),
         };
-        p.place(f).unwrap();
+        assert!(p.place(f.clone()).is_err());
+        p.functions.insert(f.id, f);
         let r = rules(&check(&p));
-        assert!(r.iter().any(|r| r.starts_with("mixed-logical-roles") && r.contains("L+ is drawn both")), "{r:#?}");
+        assert!(r.iter().any(|r| r.starts_with("mixed-logical-roles") && r.contains("L+ is drawn with")), "{r:#?}");
     }
 }

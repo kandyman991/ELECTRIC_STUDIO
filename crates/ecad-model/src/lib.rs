@@ -25,7 +25,7 @@ pub mod sheet;
 pub mod symbol;
 pub mod underlay;
 
-pub use connectivity::{Connectivity, Endpoint, Net, Netlist, NodeId, TerminalId};
+pub use connectivity::{Connectivity, Endpoint, Net, Netlist, NodeId, NodeKind, TerminalId};
 pub use geometry::{Direction, Point, Rotation};
 pub use history::History;
 pub use lengths::{WireLength, WireLengthSettings};
@@ -281,6 +281,7 @@ mod tests {
             let id = FunctionId::new();
             let page = p.function(K1_COIL).unwrap().page;
             p.place(Function {
+                node: None,
                 terminals: Default::default(),
                 id,
                 device: k1,
@@ -350,6 +351,7 @@ mod tests {
         p.add_device(Device::new(device, "-K9", "")).unwrap();
         let f = FunctionId::new();
         p.place(Function {
+            node: None,
             terminals: Default::default(),
             id: f,
             device,
@@ -375,6 +377,7 @@ mod tests {
         // A right-leaving point leaves left when mirrored.
         let motor = FunctionId::new();
         p.place(Function {
+            node: None,
             terminals: Default::default(),
             id: motor,
             device,

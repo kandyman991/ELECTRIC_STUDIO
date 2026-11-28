@@ -340,6 +340,7 @@ mod tests {
         let id = FunctionId::new();
         let designations = p.next_designations(device, &symbol);
         p.place(Function {
+            node: None,
             terminals: Default::default(),
             id,
             device,

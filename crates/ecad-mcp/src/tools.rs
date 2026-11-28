@@ -102,7 +102,7 @@ pub fn list(writable: bool) -> Vec<Value> {
         tool(
             "list_devices",
             "List devices",
-            "Every device (by tag) with its description, parts and where it is drawn. Optionally only devices drawn on one page.",
+            "Every device (by tag) with its description, parts and where it is drawn, and every node (potential, interruption, junction) by kind, name and scope with its drawings. Optionally only those drawn on one page.",
             json!({ "page": string("A page name, or #n for the n-th page") }),
             &[],
             Effect::Reads,
@@ -266,7 +266,7 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Result<Value, Stri
             let f = server.editor.script_place(required(args, "symbol")?, page, x, y, text(args, "device"))?;
             let p = server.editor.project();
             let func = p.function(f).map_err(|e| e.to_string())?;
-            let tag = p.device(func.device).map_err(|e| e.to_string())?.tag.clone();
+            let tag = p.label_of(func).to_owned();
             let points = points_of(p, func);
             changed(server, json!({ "tag": tag, "x": func.position.x, "y": func.position.y, "points": points }))
         }
@@ -360,7 +360,20 @@ fn list_devices(p: &Project, page: Option<&str>) -> Result<Value, String> {
             json!({ "tag": d.tag, "description": d.description, "parts": parts, "drawings": drawings })
         })
         .collect();
-    Ok(json!({ "devices": list }))
+    // Potentials, interruptions and junctions are nodes (D1), found by kind, name and scope.
+    let nodes: Vec<Value> = p
+        .nodes
+        .values()
+        .filter(|n| only.is_none_or(|pg| p.drawings_of_node(n.id).any(|f| f.page == pg)))
+        .map(|n| {
+            let drawings: Vec<Value> = p
+                .drawings_of_node(n.id)
+                .map(|f| json!({ "symbol": f.symbol.0, "page": page_name(p, f.page), "x": f.position.x, "y": f.position.y }))
+                .collect();
+            json!({ "kind": n.kind.label(), "name": n.name, "scope": n.scope, "description": n.description, "drawings": drawings })
+        })
+        .collect();
+    Ok(json!({ "devices": list, "nodes": nodes }))
 }
 
 /// A device's product: its number and maker as the catalogue has them, its id, the quantity.
@@ -393,6 +406,16 @@ fn points_of(p: &Project, f: &ecad_model::Function) -> Vec<Value> {
 }
 
 fn device_details(p: &Project, tag: &str) -> Result<Value, String> {
+    // A node by name, if no device has the tag (scripts that treat L+ as a device).
+    if p.device_by_tag(tag).is_none() && p.functions.values().any(|f| f.node.is_some() && p.label_of(f) == tag) {
+        let drawings: Vec<Value> = p
+            .functions
+            .values()
+            .filter(|f| f.node.is_some() && p.label_of(f) == tag)
+            .map(|f| json!({ "symbol": f.symbol.0, "page": page_name(p, f.page), "x": f.position.x, "y": f.position.y, "points": points_of(p, f) }))
+            .collect();
+        return Ok(json!({ "tag": tag, "node": true, "drawings": drawings }));
+    }
     let id = find_device(p, tag)?;
     let d = p.device(id).map_err(|e| e.to_string())?;
     let drawings: Vec<Value> = p

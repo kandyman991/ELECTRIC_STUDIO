@@ -1,0 +1,17 @@
+[
+  {
+    "number": "EX-AUX-1NO1NC",
+    "manufacturer": "Example",
+    "description": "Auxiliary contact block 1 NO + 1 NC"
+  },
+  {
+    "number": "EX-CT-24DC",
+    "manufacturer": "Example",
+    "description": "Contactor 3 kW, 24 V DC coil, 1 NO auxiliary"
+  },
+  {
+    "number": "EX-PB-GRN",
+    "manufacturer": "Example",
+    "description": "Pushbutton, green, 1 NO"
+  }
+]

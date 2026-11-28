@@ -1,0 +1,27 @@
+{
+  "format": 1,
+  "name": "Sample: start circuit",
+  "sheet": {
+    "origin": {
+      "x": -216.0,
+      "y": -132.0
+    },
+    "width": 420.0,
+    "height": 297.0,
+    "columns": 10
+  },
+  "pages": [
+    {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "name": "1",
+      "description": "Start circuit",
+      "order": 0
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000002",
+      "name": "2",
+      "description": "Contacts",
+      "order": 1
+    }
+  ]
+}

@@ -34,10 +34,17 @@ pub fn find_device(project: &Project, tag: &str) -> Result<DeviceId, String> {
 /// the designation printed beside it. The tag may itself contain `:` only before the last one.
 pub fn find_point(project: &Project, spec: &str) -> Result<ConnectionRef, String> {
     let (tag, point) = spec.rsplit_once(':').ok_or_else(|| format!("`{spec}` isn't TAG:POINT (like -K1:A1)"))?;
-    let device = find_device(project, tag)?;
+    // A device by its tag, or a node (a potential, interruption or junction) by its name.
+    let drawings: Vec<&ecad_model::Function> = match project.device_by_tag(tag) {
+        Some(d) => project.functions_of(d.id).collect(),
+        None => project.functions.values().filter(|f| f.node.is_some() && project.label_of(f) == tag).collect(),
+    };
+    if drawings.is_empty() {
+        return Err(format!("no device `{tag}`"));
+    }
     let mut found: Vec<ConnectionRef> = Vec::new();
     let mut all: Vec<String> = Vec::new();
-    for f in project.functions_of(device) {
+    for f in drawings {
         let Ok(symbol) = project.symbol(&f.symbol) else { continue };
         for cp in &symbol.connection_points {
             let shown = project.designation(f, &cp.name);
@@ -76,6 +83,13 @@ impl Editor {
         }
         let at = snap(Point::new(x, y), GRID);
         let placed = match device {
+            // A node symbol names its node: `L+` is a potential, found by name (D33).
+            Some(name) if self.project.node_kind_of(&symbol).is_some() => {
+                let kind = self.project.node_kind_of(&symbol).ok_or("not a node symbol")?;
+                let node =
+                    self.project.node_by_name(kind, name, ecad_model::PROJECT_SCOPE).map_err(|e| e.to_string())?.id;
+                self.place_node_drawing(page, &symbol, node, at)
+            }
             Some(tag) => {
                 let device = find_device(&self.project, tag)?;
                 self.place_another(page, &symbol, device, at)

@@ -335,6 +335,7 @@ fn pages_match_the_golden_drawings() {
 
 fn extra_drawing(p: &Project, tag: &str, symbol: &str, page: &str, at: Point) -> Function {
     Function {
+        node: None,
         terminals: Default::default(),
         id: FunctionId::new(),
         device: p.device_by_tag(tag).unwrap().id,
@@ -391,15 +392,22 @@ fn hostile_a_wire_end_lost_to_a_symbol_change_is_an_error_and_blocks_the_netlist
     assert!(matches!(ecad_reports::csv(&p, "netlist"), Err(ModelError::IncompleteNetlist(_))));
 }
 
+/// Since M10c a junction is a node drawn once: the commands refuse a second drawing, and one
+/// put in behind their back is reported.
 #[test]
-fn hostile_a_junction_drawn_twice_is_reported() {
+fn hostile_a_junction_drawn_twice_is_refused_or_reported() {
     let mut p = conveyor().unwrap();
     let page5 = page_named(&p, "5");
     let j = p.functions.values().find(|f| f.page == page5 && f.symbol.0.as_str() == "iec.junction").unwrap().clone();
-    let tag = p.device(j.device).unwrap().tag.clone();
-    p.place(extra_drawing(&p, &tag, "iec.junction", "5", Point::new(380.0, 20.0))).unwrap();
+    let again = Function { id: FunctionId::new(), position: Point::new(380.0, 20.0), ..j.clone() };
+    assert_eq!(p.apply(Command::Place(again.clone())).unwrap_err(), ModelError::JunctionDrawnTwice);
+    p.functions.insert(again.id, again);
     let c = p.connectivity();
-    assert!(c.ambiguities.iter().any(|a| matches!(a, Ambiguity::JunctionDrawnTwice { nodes, .. } if nodes.len() == 2)));
+    assert!(
+        c.ambiguities
+            .iter()
+            .any(|a| matches!(a, Ambiguity::JunctionDrawnTwice { drawings, .. } if drawings.len() == 2))
+    );
     assert!(has_rule(&p, "junction-drawn-twice"));
 }
 

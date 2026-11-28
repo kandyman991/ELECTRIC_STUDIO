@@ -7,6 +7,7 @@
 //!   devices.json          all devices, sorted by tag; their products by id, number beside
 //!   products.json         the project's products (the parts catalogue), by id
 //!   terminals.json        the devices' terminals (D2): id, device, group, point, designation
+//!   nodes.json            junctions, potentials and interruptions (D1), with scoped names
 //!   cables.json           cables, sorted by tag
 //!   symbols/<id>.json     one file per symbol used by the project
 //!   pages/<page-id>.json  the functions and connections on that page
@@ -27,8 +28,9 @@
 //! over someone else's save ([`save_checked`]): see [`store`].
 
 use ecad_model::{
-    Cable, Command, Connection, Device, DeviceId, Function, LocationBox, ModelError, Naming, PAGE_STEP, Page, Part,
-    PartRef, Point, ProductId, Project, ProjectInfo, Sheet, SymbolDef, SymbolId, TerminalEntry,
+    Cable, Command, Connection, Device, DeviceId, Function, LocationBox, ModelError, Naming, NodeEntry, NodeId,
+    NodeKind, PAGE_STEP, Page, Part, PartRef, Point, ProductId, Project, ProjectInfo, Sheet, SymbolDef, SymbolId,
+    TerminalEntry,
 };
 
 pub mod csv;
@@ -300,6 +302,10 @@ fn render(project: &Project) -> Result<Vec<(String, Vec<u8>)>> {
     cables.sort_by(|a, b| a.tag.cmp(&b.tag));
     files.push(("cables.json".to_owned(), render_json(Path::new("cables.json"), &cables)?));
 
+    let mut nodes: Vec<&NodeEntry> = project.nodes.values().collect();
+    nodes.sort_by(|a, b| (a.kind, &a.scope, &a.name, a.id).cmp(&(b.kind, &b.scope, &b.name, b.id)));
+    files.push(("nodes.json".to_owned(), render_json(Path::new("nodes.json"), &nodes)?));
+
     let tag = |d| project.device(d).map(|d| d.tag.as_str()).unwrap_or("");
     let mut terminals: Vec<&TerminalEntry> = project.terminals.values().collect();
     terminals.sort_by(|a, b| {
@@ -423,8 +429,56 @@ pub fn upgrade_note(dir: &Path) -> Option<String> {
     })
 }
 
+/// An ambiguous format 1 mapping found while converting (section 9, D33): the nodes are kept
+/// apart, nothing is merged or reconnected, and a person decides.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConversionFinding {
+    pub kind: FindingKind,
+    /// The format 1 device's tag.
+    pub name: String,
+    /// The pages its drawings are on.
+    pub pages: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FindingKind {
+    /// Drawn both as a potential point and as an interruption point: now a potential and an
+    /// interruption of that name.
+    PotentialAndInterruption,
+    /// An interruption whose drawings joined differently named potentials: each drawing is now
+    /// its own interruption, so none of those potentials is joined.
+    InterruptionJoinsPotentials,
+    /// A junction device drawn more than once: each drawing is its own junction.
+    JunctionDrawnTwice,
+}
+
+impl std::fmt::Display for ConversionFinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let what = match self.kind {
+            FindingKind::PotentialAndInterruption => {
+                "is drawn as a potential and as an interruption; kept as two nodes"
+            }
+            FindingKind::InterruptionJoinsPotentials => {
+                "joins differently named potentials; each of its drawings is now its own interruption"
+            }
+            FindingKind::JunctionDrawnTwice => "is a junction drawn more than once; each drawing is its own junction",
+        };
+        write!(f, "{} {what} (pages {})", self.name, self.pages.join(", "))
+    }
+}
+
+/// The ambiguous mappings converting the project in `dir` finds: none for this format.
+pub fn conversion_findings(dir: &Path) -> Result<Vec<ConversionFinding>> {
+    Ok(load_with_findings(dir)?.1)
+}
+
 /// Read a project folder written by [`save`], in this format or format 1.
 pub fn load(dir: &Path) -> Result<Project> {
+    Ok(load_with_findings(dir)?.0)
+}
+
+/// [`load`], with what converting a format 1 project found ambiguous.
+pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>)> {
     // A save that stopped part way is finished (if it got as far as its journal) or undone.
     if dir.join(store::JOURNAL).exists() || store::has_staged(dir)? {
         let _lock = store::Lock::take(dir)?;
@@ -492,8 +546,25 @@ pub fn load(dir: &Path) -> Result<Project> {
     }
 
     let path = dir.join("devices.json");
-    for d in read_json::<Vec<DeviceFile>>(&path)? {
-        project.apply(Command::AddDevice(d.into_device())).map_err(model(&path))?;
+    let devices: Vec<Device> = read_json::<Vec<DeviceFile>>(&path)?.into_iter().map(DeviceFile::into_device).collect();
+    let mut page_files: Vec<(ecad_model::PageId, PathBuf, PageFile)> = Vec::new();
+    for id in project.pages.keys().copied().collect::<Vec<_>>() {
+        let path = dir.join("pages").join(format!("{}.json", id.0));
+        let file: PageFile = read_json(&path)?;
+        page_files.push((id, path, file));
+    }
+    let (node_only, mut findings) =
+        if legacy { legacy_nodes(&mut project, &devices, &mut page_files)? } else { Default::default() };
+    for d in devices {
+        if !node_only.contains(&d.id) {
+            project.apply(Command::AddDevice(d)).map_err(model(&path))?;
+        }
+    }
+    let path = dir.join("nodes.json");
+    if !legacy && path.exists() {
+        for n in read_json::<Vec<NodeEntry>>(&path)? {
+            project.apply(Command::AddNode(n)).map_err(model(&path))?;
+        }
     }
 
     // Terminals before the drawings that show them (format 2); format 1 has none: placing a
@@ -507,9 +578,7 @@ pub fn load(dir: &Path) -> Result<Project> {
 
     // Place every page's functions before any connection, then connect.
     let mut pages = Vec::new();
-    for id in project.pages.keys().copied().collect::<Vec<_>>() {
-        let path = dir.join("pages").join(format!("{}.json", id.0));
-        let file: PageFile = read_json(&path)?;
+    for (id, path, file) in page_files {
         for f in &file.functions {
             project.apply(Command::Place(f.clone())).map_err(model(&path))?;
         }
@@ -544,11 +613,146 @@ pub fn load(dir: &Path) -> Result<Project> {
             project.apply(Command::Connect(c)).map_err(model(&path))?;
         }
     }
+    if legacy {
+        findings.extend(split_joining_interruptions(&mut project).map_err(model(dir))?);
+    }
     project.sheet = match sheet {
         Some(s) => s,
         None => legacy_sheet(&project),
     };
-    Ok(project)
+    Ok((project, findings))
+}
+
+type Pages = [(ecad_model::PageId, PathBuf, PageFile)];
+
+fn page_names(project: &Project, pages: impl IntoIterator<Item = ecad_model::PageId>) -> Vec<String> {
+    let mut names: Vec<String> =
+        pages.into_iter().filter_map(|p| project.page(p).ok()).map(|p| p.name.clone()).collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Format 1 drew potentials, interruptions and junctions as devices. Each becomes a node (D1):
+/// a potential or interruption device the node [`NodeId::for_device`] gives it, named after its
+/// tag; each junction drawing its own node ([`NodeId::for_junction`]), the ids M7 derived. The
+/// drawings are rewritten to show their node. A device drawn both ways becomes a potential and
+/// an interruption ([`NodeId::interruption_of`]), and a junction drawn twice two junctions: both
+/// reported, never merged. Returns the devices that only stood for nodes.
+fn legacy_nodes(
+    project: &mut Project,
+    devices: &[Device],
+    pages: &mut Pages,
+) -> Result<(std::collections::BTreeSet<DeviceId>, Vec<ConversionFinding>)> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut kinds: BTreeMap<DeviceId, BTreeSet<NodeKind>> = BTreeMap::new();
+    let mut on_pages: BTreeMap<DeviceId, BTreeSet<ecad_model::PageId>> = BTreeMap::new();
+    let mut as_device: BTreeSet<DeviceId> = BTreeSet::new();
+    let mut junctions: BTreeMap<DeviceId, usize> = BTreeMap::new();
+    for (page, _, file) in pages.iter() {
+        for f in &file.functions {
+            match project.node_kind_of(&f.symbol) {
+                Some(kind) => {
+                    kinds.entry(f.device).or_default().insert(kind);
+                    on_pages.entry(f.device).or_default().insert(*page);
+                    if kind == NodeKind::Junction {
+                        *junctions.entry(f.device).or_default() += 1;
+                    }
+                }
+                None => {
+                    as_device.insert(f.device);
+                }
+            }
+        }
+    }
+    let by_id: BTreeMap<DeviceId, &Device> = devices.iter().map(|d| (d.id, d)).collect();
+    for (_, path, file) in pages.iter_mut() {
+        for f in &mut file.functions {
+            let Some(kind) = project.node_kind_of(&f.symbol) else { continue };
+            let device = f.device;
+            let (tag, description) =
+                by_id.get(&device).map_or((String::new(), String::new()), |d| (d.tag.clone(), d.description.clone()));
+            let mixed = kinds
+                .get(&device)
+                .is_some_and(|k| k.contains(&NodeKind::Potential) && k.contains(&NodeKind::Interruption));
+            let id = match kind {
+                NodeKind::Junction => NodeId::for_junction(f.id),
+                NodeKind::Interruption if mixed => NodeId::interruption_of(device),
+                _ => NodeId::for_device(device),
+            };
+            if !project.nodes.contains_key(&id) {
+                // Tags become display names, junctions' included (section 9).
+                let node = NodeEntry { description, ..NodeEntry::new(id, kind, &tag) };
+                project.apply(Command::AddNode(node)).map_err(model(path))?;
+            }
+            f.device = DeviceId::NONE;
+            f.node = Some(id);
+        }
+    }
+    let mut findings = Vec::new();
+    for (device, k) in &kinds {
+        let tag = by_id.get(device).map_or_else(String::new, |d| d.tag.clone());
+        let pages = page_names(project, on_pages.get(device).into_iter().flatten().copied());
+        if k.contains(&NodeKind::Potential) && k.contains(&NodeKind::Interruption) {
+            findings.push(ConversionFinding {
+                kind: FindingKind::PotentialAndInterruption,
+                name: tag.clone(),
+                pages: pages.clone(),
+            });
+        }
+        if junctions.get(device).is_some_and(|n| *n > 1) {
+            findings.push(ConversionFinding { kind: FindingKind::JunctionDrawnTwice, name: tag, pages });
+        }
+    }
+    let node_only = kinds.keys().filter(|d| !as_device.contains(d)).copied().collect();
+    Ok((node_only, findings))
+}
+
+/// An interruption whose drawings, taken one by one, reach more than one potential name joined
+/// those potentials in format 1. Converted, each of its drawings becomes its own interruption
+/// ([`NodeId::split`]), so nothing is joined that a label alone joined; reported.
+fn split_joining_interruptions(project: &mut Project) -> std::result::Result<Vec<ConversionFinding>, ModelError> {
+    let mut findings = Vec::new();
+    let interruptions: Vec<NodeEntry> =
+        project.nodes.values().filter(|n| n.kind == NodeKind::Interruption).cloned().collect();
+    for node in interruptions {
+        let drawings: Vec<ecad_model::Function> = project.drawings_of_node(node.id).cloned().collect();
+        if drawings.len() < 2 {
+            continue;
+        }
+        // Each drawing on its own node, to see which potentials it reaches by itself.
+        let mut undo = Vec::new();
+        for f in &drawings {
+            let split = NodeEntry { id: node.id.split(f.id), ..node.clone() };
+            undo.push(project.apply(Command::AddNode(split.clone()))?);
+            undo.push(project.apply(Command::Rebind { id: f.id, node: split.id })?);
+        }
+        let netlist = project.netlist();
+        let names: std::collections::BTreeSet<&String> = netlist
+            .nets
+            .iter()
+            .filter(|n| {
+                n.endpoints
+                    .iter()
+                    .any(|e| drawings.iter().any(|f| *e == ecad_model::Endpoint::Node(node.id.split(f.id))))
+            })
+            .flat_map(|n| n.names.iter())
+            .collect();
+        if names.len() > 1 {
+            project.apply(Command::RemoveNode(node.id))?;
+            let pages = page_names(project, drawings.iter().map(|f| f.page));
+            findings.push(ConversionFinding {
+                kind: FindingKind::InterruptionJoinsPotentials,
+                name: node.name.clone(),
+                pages,
+            });
+        } else {
+            for cmd in undo.into_iter().rev() {
+                project.apply(cmd)?;
+            }
+        }
+    }
+    Ok(findings)
 }
 
 /// A sheet for a project saved before sheets existed: placed around everything drawn, so no
@@ -621,6 +825,18 @@ mod tests {
                 r.as_object_mut().unwrap().remove("product");
             }
         }
+        // Nodes back as the devices format 1 drew them with: a device per potential or
+        // interruption, one per junction drawing; no nodes file.
+        let nodes: Vec<NodeEntry> =
+            serde_json::from_str(&std::fs::read_to_string(root.join("nodes.json")).unwrap()).unwrap();
+        std::fs::remove_file(root.join("nodes.json")).unwrap();
+        let stand_in = |n: &NodeEntry| DeviceId::from_u128(n.id.0.as_u128() ^ 1);
+        for n in &nodes {
+            devices
+                .as_array_mut()
+                .unwrap()
+                .push(serde_json::json!({ "id": stand_in(n), "tag": n.name, "description": n.description }));
+        }
         std::fs::write(root.join("devices.json"), serde_json::to_string_pretty(&devices).unwrap()).unwrap();
         // Designations back on the drawings, no terminals file.
         let terminals: Vec<TerminalEntry> =
@@ -630,6 +846,10 @@ mod tests {
             let path = entry.unwrap().path();
             let mut page: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
             for f in page["functions"].as_array_mut().unwrap() {
+                if let Some(node) = f.as_object_mut().unwrap().remove("node") {
+                    let n = nodes.iter().find(|n| serde_json::to_value(n.id).unwrap() == node).unwrap();
+                    f["device"] = serde_json::to_value(stand_in(n)).unwrap();
+                }
                 let Some(map) = f.as_object_mut().unwrap().remove("terminals") else { continue };
                 let mut designations = serde_json::Map::new();
                 for (point, id) in map.as_object().unwrap() {
@@ -661,7 +881,19 @@ mod tests {
         assert_eq!(q.parts, p.parts);
         assert_eq!(q.devices, p.devices);
         assert_eq!(q.terminals, p.terminals, "terminals from the drawings' designations, same ids");
-        assert_eq!(q.functions, p.functions);
+        // Node drawings show nodes again, now with the ids of their stand-in devices; every
+        // other drawing is as it was, and the potentials are the same.
+        let devices_only = |p: &Project| -> Vec<ecad_model::Function> {
+            p.functions.values().filter(|f| f.node.is_none()).cloned().collect()
+        };
+        assert_eq!(devices_only(&q), devices_only(&p));
+        assert_eq!(q.nodes.len(), p.nodes.len());
+        let names = |p: &Project| {
+            let mut n: Vec<Vec<String>> = p.potentials().into_iter().map(|p| p.names).collect();
+            n.sort();
+            n
+        };
+        assert_eq!(names(&q), names(&p));
         let names: Vec<_> = q.pages_in_order().iter().map(|pg| pg.name.clone()).collect();
         let mut want: Vec<_> = p.pages_in_order().iter().map(|pg| pg.name.clone()).collect();
         want.reverse();

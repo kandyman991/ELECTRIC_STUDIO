@@ -439,3 +439,32 @@ fn layout_pages_are_added_resized_and_deleted_with_their_items() {
     e.key(Key::Undo);
     assert_eq!(e.project().panel_items.len(), items);
 }
+
+#[test]
+fn potentials_and_junctions_are_placed_as_nodes_renamed_bound_and_deleted() {
+    let mut e = editor();
+    let nodes = e.project().nodes.len();
+    let devices = e.project().devices.len();
+    let p = e.place_new(PAGE_1, &SymbolId::new("iec.supply"), Point::new(200.0, 80.0)).unwrap();
+    let j = e.place_new(PAGE_1, &SymbolId::new("iec.junction"), Point::new(200.0, 40.0)).unwrap();
+    assert_eq!(e.project().nodes.len(), nodes + 2, "two nodes");
+    assert_eq!(e.project().devices.len(), devices, "no device");
+    let node = e.project().function(p).unwrap().node.unwrap();
+    // Renaming to a name another potential has in the scope is refused: labels don't join.
+    e.select(Some(Selected::Function(p)));
+    assert!(matches!(e.rename_selected("L+"), Err(ModelError::AmbiguousNode(..))));
+    e.rename_selected("24V").unwrap();
+    assert_eq!(e.project().nodes[&node].name, "24V");
+    // Binding it to L+ is the explicit join; its own node goes.
+    e.bind_selected("L+").unwrap();
+    let l_plus = e.project().node_by_name(ecad_model::NodeKind::Potential, "L+", ecad_model::PROJECT_SCOPE).unwrap().id;
+    assert_eq!(e.project().function(p).unwrap().node, Some(l_plus));
+    assert!(!e.project().nodes.contains_key(&node));
+    // Deleting the junction takes its node; undo brings both back.
+    let jn = e.project().function(j).unwrap().node.unwrap();
+    e.delete_function(j).unwrap();
+    assert!(!e.project().nodes.contains_key(&jn));
+    e.undo().unwrap();
+    assert!(e.project().nodes.contains_key(&jn));
+    assert_eq!(e.project().function(j).unwrap().node, Some(jn));
+}
