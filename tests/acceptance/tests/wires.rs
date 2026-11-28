@@ -218,7 +218,6 @@ fn terminal_records_survive_unplace_and_undo_without_reconstruction() {
     assert_eq!(p, removed);
 }
 
-
 #[test]
 fn deleting_a_bridge_drawing_cannot_disconnect_surviving_undrawn_endpoints() {
     let mut p = conveyor().unwrap();
@@ -233,7 +232,8 @@ fn deleting_a_bridge_drawing_cannot_disconnect_surviving_undrawn_endpoints() {
             to: m,
             wire_number: None,
             spec: Default::default(),
-        })).unwrap();
+        }))
+        .unwrap();
     }
     let before = p.clone();
     assert_eq!(p.apply(Command::Unplace(f)).unwrap_err(), ecad_model::ModelError::BridgeInUse);
@@ -245,7 +245,11 @@ fn renumber_includes_undrawn_points_of_the_same_physical_group() {
     let mut p = conveyor().unwrap();
     let f = point(&p, "-X3", "1").function;
     let entry = p.terminals[&p.function(f).unwrap().terminals["1"]].clone();
-    let extra = ecad_model::TerminalEntry { id: ecad_model::TerminalId(ConnectionId::new().0), point: "extra".into(), ..entry.clone() };
+    let extra = ecad_model::TerminalEntry {
+        id: ecad_model::TerminalId(ConnectionId::new().0),
+        point: "extra".into(),
+        ..entry.clone()
+    };
     p.apply(Command::AddTerminal(extra.clone())).unwrap();
     let duplicate = ecad_model::TerminalEntry { id: ecad_model::TerminalId(ConnectionId::new().0), ..extra.clone() };
     assert!(p.apply(Command::AddTerminal(duplicate)).is_err());

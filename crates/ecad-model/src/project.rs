@@ -1398,9 +1398,8 @@ impl Project {
                 || self.functions.values().any(|g| g.id != id && g.terminals.values().any(|u| u == t))
         };
         let bridged = sym.bridged && f.terminals.values().filter(|t| survives(t)).count() > 1;
-        let groups = sym.bridges.iter().any(|g| {
-            g.iter().filter_map(|p| f.terminals.get(p)).filter(|t| survives(t)).count() > 1
-        });
+        let groups =
+            sym.bridges.iter().any(|g| g.iter().filter_map(|p| f.terminals.get(p)).filter(|t| survives(t)).count() > 1);
         if bridged || groups {
             return Err(ModelError::BridgeInUse);
         }
@@ -1480,8 +1479,11 @@ impl Project {
             .functions_of(card)
             .filter_map(|f| {
                 let Role::PlcChannel { kind } = self.role(f.id).ok()? else { return None };
-                let channel =
-                    f.terminals.values().copied().find(|t| self.terminals.get(t).is_some_and(|t| t.channel.is_some()))?;
+                let channel = f
+                    .terminals
+                    .values()
+                    .copied()
+                    .find(|t| self.terminals.get(t).is_some_and(|t| t.channel.is_some()))?;
                 if !seen.insert(channel) {
                     return None;
                 }
@@ -2155,8 +2157,11 @@ impl Project {
                 if self.role(id)?.numbered() {
                     let sym = self.symbol(&f.symbol)?;
                     let first = sym.connection_points.first().ok_or(ModelError::InvalidTerminalBindings(id))?;
-                    let first_terminal = f.terminals.get(&first.name)
-                        .and_then(|t| self.terminals.get(t)).ok_or(ModelError::InvalidTerminalBindings(id))?;
+                    let first_terminal = f
+                        .terminals
+                        .get(&first.name)
+                        .and_then(|t| self.terminals.get(t))
+                        .ok_or(ModelError::InvalidTerminalBindings(id))?;
                     let group = first_terminal.group;
                     let old_number = first_terminal.designation.clone();
                     let number = designations.values().next().cloned().unwrap_or_else(|| first.name.clone());
@@ -2168,7 +2173,11 @@ impl Project {
                     if number.trim().is_empty() {
                         return Err(ModelError::EmptyNumber);
                     }
-                    if self.terminals.values().any(|t| t.device == f.device && t.group != group && t.designation == number) {
+                    if self
+                        .terminals
+                        .values()
+                        .any(|t| t.device == f.device && t.group != group && t.designation == number)
+                    {
                         return Err(ModelError::DuplicateNumber(self.device(f.device)?.tag.clone(), number));
                     }
                     for t in self.terminals.values_mut().filter(|t| t.device == f.device && t.group == group) {
@@ -2244,11 +2253,14 @@ impl Project {
         let Some(first) = f.terminals.values().find_map(|t| self.terminals.get(t)) else {
             return Err(ModelError::InvalidTerminalBindings(id));
         };
-        if f.terminals.values().any(|t| {
-            self.terminals.get(t).is_none_or(|t| t.group != first.group || t.designation != number)
-        }) || self.terminals.values().any(|t| {
-            t.device == f.device && t.group == first.group && t.designation != number
-        }) {
+        if f.terminals
+            .values()
+            .any(|t| self.terminals.get(t).is_none_or(|t| t.group != first.group || t.designation != number))
+            || self
+                .terminals
+                .values()
+                .any(|t| t.device == f.device && t.group == first.group && t.designation != number)
+        {
             return Err(ModelError::InvalidTerminalBindings(id));
         }
         if self.terminals.values().any(|t| t.device == f.device && t.group != first.group && t.designation == number) {

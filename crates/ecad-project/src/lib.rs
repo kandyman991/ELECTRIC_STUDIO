@@ -667,8 +667,11 @@ pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>
                                 .iter()
                                 .all(|cp| f.terminals.get(&cp.name).is_some_and(|t| project.terminals.contains_key(t)))
                     };
-                if !valid || (matches!(sym.role, ecad_model::Role::PlcChannel { .. })
-                    && [ecad_model::ADDRESS, ecad_model::SYMBOL, ecad_model::COMMENT].iter().any(|k| f.properties.contains_key(*k)))
+                if !valid
+                    || (matches!(sym.role, ecad_model::Role::PlcChannel { .. })
+                        && [ecad_model::ADDRESS, ecad_model::SYMBOL, ecad_model::COMMENT]
+                            .iter()
+                            .any(|k| f.properties.contains_key(*k)))
                 {
                     return Err(model(&path)(ModelError::InvalidTerminalBindings(f.id)));
                 }
