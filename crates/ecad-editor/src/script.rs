@@ -149,7 +149,7 @@ impl Editor {
             cmds.push(Command::RemovePanelItem(item.id));
         }
         cmds.push(Command::RemoveDevice(device));
-        self.execute(&format!("Delete {tag}"), Command::Batch(cmds)).map_err(|e| e.to_string())
+        self.execute_removal(&format!("Delete {tag}"), cmds).map_err(|e| e.to_string())
     }
 
     /// Give a device a new tag and/or description, in one step.

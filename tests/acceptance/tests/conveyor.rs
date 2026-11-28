@@ -481,6 +481,8 @@ fn the_format_1_conveyor_converts_to_the_same_project() {
     let order = |p: &Project| p.pages_in_order().iter().map(|pg| pg.id).collect::<Vec<_>>();
     assert_eq!(order(&a), order(&built), "pages in the same order, now with sparse keys");
     assert!(a.pages.values().all(|pg| pg.order % ecad_model::PAGE_STEP == 0));
+    assert_eq!(a.pages, built.pages, "the built conveyor has the same sparse keys (S0)");
+    assert!(a.numbering.is_empty() && built.numbering.is_empty(), "conversion reserves and retires nothing");
     // The same drawings, byte for byte.
     for page in a.pages_in_order() {
         assert_eq!(

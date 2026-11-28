@@ -70,7 +70,7 @@ fn the_place_tool_numbers_new_devices_and_undo_removes_them() {
 }
 
 #[test]
-fn the_wire_tool_connects_two_points_and_reuses_free_numbers() {
+fn the_wire_tool_connects_two_points_and_never_reuses_a_removed_number() {
     let mut e = editor();
     // Remove W2 (between -S1:14 at 0,32 and -K1:A1 at 0,20) by clicking it and pressing Delete.
     click(&mut e, 0.2, 26.0);
@@ -85,8 +85,14 @@ fn the_wire_tool_connects_two_points_and_reuses_free_numbers() {
     e.pointer_move(Point::new(0.1, 20.4));
     assert!(e.overlays().iter().any(|o| matches!(o, Overlay::RubberBand { points: p } if p.len() == 2)));
     click(&mut e, 0.1, 20.4);
-    assert_eq!(wire_numbers(&e), ["W1", "W2", "W3"]);
-    assert_eq!(e.undo_label(), Some("Draw wire W2"));
+    // Sequential (D22): the removed W2 is retired, not handed out again (D23).
+    assert_eq!(wire_numbers(&e), ["W1", "W3", "W4"]);
+    assert_eq!(e.undo_label(), Some("Draw wire W4"));
+    assert!(e.project().numbering.retired.contains_key(&ecad_model::Identifier::Wire { number: "W2".into() }));
+    // Undoing the deletion reclaims W2 with the wire, exactly.
+    e.key(Key::Undo);
+    e.key(Key::Undo);
+    assert_eq!(e.project(), &start_circuit().unwrap());
 }
 
 #[test]

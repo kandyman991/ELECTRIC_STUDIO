@@ -397,18 +397,18 @@ impl Editor {
         Ok(())
     }
 
-    /// Add a page after the current one, named with the next free number, and show it.
+    /// Add a page after the current one, named by the page policy, and show it.
     pub fn add_page(&mut self) -> Result<(), ModelError> {
-        let order: Vec<PageId> = self.project.pages_in_order().iter().map(|p| p.id).collect();
-        let at = order.iter().position(|p| *p == self.page).map_or(order.len(), |i| i + 1);
-        let highest = self.project.pages.values().filter_map(|p| p.name.parse::<u32>().ok()).max().unwrap_or(0);
-        let name = (highest + 1..).map(|n| n.to_string()).find(|n| !self.project.pages.values().any(|p| &p.name == n));
-        let page = Page::new(&name.unwrap_or_default(), 0);
+        // Inserted after the current page without renaming or reordering any other (D25):
+        // after 3 it is 3a; after the last page the next number.
+        let page = Page::new("", 0);
         let id = page.id;
-        let mut new_order = order;
-        new_order.insert(at, id);
-        let label = format!("Add page {}", page.name);
-        self.execute(&label, Command::Batch(vec![Command::AddPage(page), Command::ReorderPages(new_order)]))?;
+        let cmds = self.project.insert_page(Some(self.page), page);
+        let name = match cmds.first() {
+            Some(Command::AddPage(p)) => p.name.clone(),
+            _ => String::new(),
+        };
+        self.execute(&format!("Add page {name}"), Command::Batch(cmds))?;
         self.set_page(id)
     }
 
@@ -455,7 +455,7 @@ impl Editor {
         cmds.push(Command::RemovePage(page));
         let index = order.iter().position(|p| *p == page).unwrap_or(0);
         let next = if index > 0 { order[index - 1] } else { order[1] };
-        self.execute(&format!("Delete page {name}"), Command::Batch(cmds))?;
+        self.execute_removal(&format!("Delete page {name}"), cmds)?;
         self.set_page(next)
     }
 
@@ -614,7 +614,7 @@ impl Editor {
     /// Remove a cable no wire runs in.
     pub fn remove_cable(&mut self, id: ecad_model::CableId) -> Result<(), ModelError> {
         let tag = self.project.cables.get(&id).map(|c| c.tag.clone()).unwrap_or_default();
-        self.execute(&format!("Remove cable {tag}"), Command::RemoveCable(id))
+        self.execute_removal(&format!("Remove cable {tag}"), vec![Command::RemoveCable(id)])
     }
 
     /// Set the selected wire's cross-section and colour, and put it in `cable` (by tag; empty
@@ -638,7 +638,14 @@ impl Editor {
                 .find(|k| k.tag == cable)
                 .map(|k| k.id)
                 .ok_or_else(|| ModelError::UnknownCable(cable.to_owned()))?;
-            Some(ecad_model::CableCore { cable: id, core: core.to_owned() })
+            // No core given: the one it already has in this cable, or the cable's next free
+            // core (resource-aware, S0); a full cable is reported.
+            let core = match (core.trim(), &self.project.connection(c)?.spec.cable) {
+                ("", Some(k)) if k.cable == id => k.core.clone(),
+                ("", _) => self.project.allocate_core(id)?,
+                (core, _) => core.to_owned(),
+            };
+            Some(ecad_model::CableCore { cable: id, core })
         };
         let spec =
             ecad_model::WireSpec { cross_section: cross_section.to_owned(), colour: colour.to_owned(), cable: core };
@@ -968,7 +975,7 @@ impl Editor {
             if self.project.drawings_of_node(n).count() == 1 && !self.project.wire_uses(ecad_model::Endpoint::Node(n)) {
                 cmds.push(Command::RemoveNode(n));
             }
-            return self.execute(&label, Command::Batch(cmds));
+            return self.execute_removal(&label, cmds);
         }
         if self.project.functions.values().filter(|x| x.device == device).count() == 1 {
             if let Some(item) = self.project.panel_item_of(device) {
@@ -976,13 +983,13 @@ impl Editor {
             }
             cmds.push(Command::RemoveDevice(device));
         }
-        self.execute(&label, Command::Batch(cmds))
+        self.execute_removal(&label, cmds)
     }
 
     /// Delete a wire, undoably.
     pub(crate) fn delete_wire(&mut self, c: ConnectionId) -> Result<(), ModelError> {
         let label = format!("Delete wire {}", self.wire_name(c));
-        self.execute(&label, Command::Disconnect(c))
+        self.execute_removal(&label, vec![Command::Disconnect(c)])
     }
 
     /// The project's potentials, computed once per change.
@@ -1274,7 +1281,7 @@ impl Editor {
                 position: at,
                 rotation: Rotation::R0,
                 // A new terminal strip starts at terminal 1; contacts keep their own numbers.
-                designations: self.project.next_designations(device, symbol),
+                designations: self.project.allocate_designations(device, symbol)?,
                 // A PLC channel gets the next free address.
                 properties: self.project.new_drawing_properties(symbol),
                 mirrored: false,
@@ -1330,7 +1337,8 @@ impl Editor {
         at: Point,
     ) -> Result<FunctionId, ModelError> {
         let tag = self.project.device(device)?.tag.clone();
-        let designations = self.project.next_designations(device, symbol);
+        // A full strip or card is reported, and nothing is placed (S0).
+        let designations = self.project.allocate_designations(device, symbol)?;
         let mut terminals: Vec<&String> = designations.values().collect();
         terminals.sort();
         let numbered = self.project.symbol(symbol).is_ok_and(|s| s.role.numbered());
@@ -1404,12 +1412,12 @@ impl Editor {
             return Ok(());
         }
         let old_tag = self.project.device(func.device)?.tag.clone();
-        let designations = self.project.next_designations(target, &func.symbol);
+        let designations = self.project.allocate_designations(target, &func.symbol)?;
         let mut cmds = vec![Command::Reassign { id: f, device: target, designations, terminals: Default::default() }];
         if self.project.functions_of(func.device).count() == 1 {
             cmds.push(Command::RemoveDevice(func.device));
         }
-        self.execute(&format!("Rewire {old_tag} to {tag}"), Command::Batch(cmds))
+        self.execute_removal(&format!("Rewire {old_tag} to {tag}"), cmds)
     }
 
     fn wire_click(&mut self, hit: Option<Hit>) {
@@ -1466,6 +1474,13 @@ impl Editor {
                 Ok(id)
             }
         }
+    }
+
+    /// A removal as one undo step that retires the identifiers it frees and renumbers nothing
+    /// (D22, D23; [`ecad_model::Project::removal`]).
+    pub(crate) fn execute_removal(&mut self, label: &str, cmds: Vec<Command>) -> Result<(), ModelError> {
+        let cmds = self.project.removal(cmds)?;
+        self.execute(label, Command::Batch(cmds))
     }
 
     fn execute(&mut self, label: &str, cmd: Command) -> Result<(), ModelError> {
