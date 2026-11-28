@@ -70,7 +70,7 @@ are attached to each CI run of the "Windows build" workflow (unsigned for now).
 | `ecad-rules` | Checks on the model (unconnected points, potential clashes, missing parts…), live in the editor and in `ecad check` |
 | `ecad-reports` | Reports as queries on the model: wire list, BOM, terminal diagram, PLC I/O list |
 | `ecad-exchange` | Tag exchange with PLC tools: the TIA Portal PLC tag table (.xlsx), out and back |
-| `ecad-mcp` | MCP server for one project: AI assistants read it and, with `--write`, edit it with undo (docs/MCP.md) |
+| `ecad-mcp` | MCP server for one project: AI assistants query it and prepare proposals, which a person approves in the app (docs/MCP.md) |
 | `ecad-cli` | The `ecad` command: check, export and reports for scripts and CI |
 | `apps/ecad-app` | The editor application (`electric-studio`): a thin egui shell over `ecad_editor::Session` |
 

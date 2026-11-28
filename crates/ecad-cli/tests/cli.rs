@@ -13,6 +13,14 @@ fn text(o: &Output) -> String {
     format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
 }
 
+/// A person allows trusted automation classes in the app (the desktop session) and saves.
+fn allow(dir: &str, classes: &[ecad_model::policy::AutomationClass]) {
+    let mut s = ecad_editor::session::Session::open(Path::new(dir)).unwrap();
+    s.handle(ecad_editor::session::UiEvent::SetAutomation { classes: classes.to_vec() });
+    s.handle(ecad_editor::session::UiEvent::Save);
+    assert!(s.frame(None, [0, 0, 0]).status.starts_with("Saved"), "{}", s.frame(None, [0, 0, 0]).status);
+}
+
 fn sample(dir: &Path, kind: &str) -> String {
     let p = dir.join(kind);
     let s = p.to_str().unwrap().to_owned();
@@ -83,14 +91,20 @@ fn tia_tags_go_out_and_renamed_symbols_come_back() {
     tags.push(ecad_exchange::tia::Tag { name: "Spare".into(), address: "%I7.7".into(), ..tags[0].clone() });
     let file = dir.path().join("from-tia.xlsx");
     std::fs::write(&file, ecad_exchange::tia::to_xlsx(&tags).unwrap()).unwrap();
+    // Without --apply a dry run; outside the automation scope, refused.
     let o = ecad(&["import-tia", &plc, file.to_str().unwrap()]);
+    assert!(o.status.success() && text(&o).contains("dry run"), "{}", text(&o));
+    let o = ecad(&["import-tia", &plc, file.to_str().unwrap(), "--apply"]);
+    assert_eq!(o.status.code(), Some(2), "{}", text(&o));
+    allow(&plc, &[ecad_model::policy::AutomationClass::Import]);
+    let o = ecad(&["import-tia", &plc, file.to_str().unwrap(), "--apply"]);
     assert!(o.status.success(), "{}", text(&o));
     assert!(text(&o).contains("no channel at %I7.7 Spare"), "{}", text(&o));
     assert!(text(&o).contains("updated 1 PLC channels"), "{}", text(&o));
     let csv = String::from_utf8(ecad(&["report", &plc, "plc-io-list"]).stdout).unwrap();
     assert!(csv.contains("-KF1,0,DI,I0.0,Guard_Door_Closed,"), "{csv}");
     // A file that isn't a tag table fails without touching the project.
-    let o = ecad(&["import-tia", &plc, out.join("bom.csv").to_str().unwrap()]);
+    let o = ecad(&["import-tia", &plc, out.join("bom.csv").to_str().unwrap(), "--apply"]);
     assert_eq!(o.status.code(), Some(2), "{}", text(&o));
     // Exporting a project without PLC into the same folder removes the older table.
     let start = sample(dir.path(), "start");
@@ -111,19 +125,20 @@ fn a_dxf_goes_behind_a_page_and_comes_off_again() {
         .map(|e| e.unwrap().path())
         .find(|p| p.extension().is_some_and(|x| x == "dxf"))
         .unwrap();
-    let o = ecad(&["import-dxf", &start, "#1", dxf.to_str().unwrap()]);
+    allow(&start, &[ecad_model::policy::AutomationClass::Import]);
+    let o = ecad(&["import-dxf", &start, "#1", dxf.to_str().unwrap(), "--apply"]);
     assert!(o.status.success(), "{}", text(&o));
     assert!(text(&o).contains("1:1 as drawn"), "{}", text(&o));
     let underlays = Path::new(&start).join("underlays");
     assert_eq!(std::fs::read_dir(&underlays).unwrap().count(), 1);
     // The check doesn't see it; the export doesn't draw it.
     assert!(ecad(&["check", &start]).status.success());
-    let o = ecad(&["import-dxf", &start, "Z9", dxf.to_str().unwrap()]);
+    let o = ecad(&["import-dxf", &start, "Z9", dxf.to_str().unwrap(), "--apply"]);
     assert_eq!(o.status.code(), Some(2));
     assert!(text(&o).contains("no page `Z9`"), "{}", text(&o));
-    assert!(ecad(&["remove-underlay", &start, "#1"]).status.success());
+    assert!(ecad(&["remove-underlay", &start, "#1", "--apply"]).status.success());
     assert_eq!(std::fs::read_dir(&underlays).unwrap().count(), 0);
-    assert_eq!(ecad(&["remove-underlay", &start, "#1"]).status.code(), Some(2));
+    assert_eq!(ecad(&["remove-underlay", &start, "#1", "--apply"]).status.code(), Some(2));
 }
 
 #[test]
@@ -138,11 +153,12 @@ fn a_dwg_and_chosen_units_go_through_the_worker() {
         .find(|p| p.extension().is_some_and(|x| x == "dwg"))
         .unwrap();
     // The DWG reader runs only in a worker process: `ecad` starts a copy of itself.
-    let o = ecad(&["import-dxf", &start, "#1", dwg.to_str().unwrap()]);
+    allow(&start, &[ecad_model::policy::AutomationClass::Import]);
+    let o = ecad(&["import-dxf", &start, "#1", dwg.to_str().unwrap(), "--apply"]);
     assert!(o.status.success(), "{}", text(&o));
     assert!(text(&o).contains("in mm, 1:1 as drawn"), "{}", text(&o));
     // Chosen units win over the file's.
-    let o = ecad(&["import-dxf", &start, "#1", dwg.to_str().unwrap(), "--units", "inch"]);
+    let o = ecad(&["import-dxf", &start, "#1", dwg.to_str().unwrap(), "--units", "inch", "--apply"]);
     assert!(text(&o).contains("in inch as chosen") && text(&o).contains("shrunk"), "{}", text(&o));
     let o = ecad(&["import-dxf", &start, "#1", dwg.to_str().unwrap(), "--units", "furlong"]);
     assert_eq!(o.status.code(), Some(2));
@@ -193,7 +209,8 @@ fn usage_errors_exit_with_2() {
 fn numbering_is_listed_reserved_and_renumbering_is_previewed_before_it_applies() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = sample(tmp.path(), "conveyor");
-    let o = ecad(&["reserve", &dir, "tag:-K10..-K12", "address:I3.0..I3.3", "--note", "extension"]);
+    allow(&dir, &[ecad_model::policy::AutomationClass::Numbering]);
+    let o = ecad(&["reserve", &dir, "tag:-K10..-K12", "address:I3.0..I3.3", "--note", "extension", "--apply"]);
     assert!(o.status.success(), "{}", text(&o));
     assert!(text(&o).contains("reserved -K10, -K11, -K12, I3.0"), "{}", text(&o));
     let o = ecad(&["numbering", &dir, "--json"]);
@@ -201,15 +218,15 @@ fn numbering_is_listed_reserved_and_renumbering_is_previewed_before_it_applies()
     assert_eq!(v["reserved"].as_array().unwrap().len(), 7, "{v}");
     assert_eq!(v["reserved"][0]["note"], "extension");
     // Reserving one in use is refused and saves nothing.
-    let o = ecad(&["reserve", &dir, "tag:-K1"]);
+    let o = ecad(&["reserve", &dir, "tag:-K1", "--apply"]);
     assert_eq!(o.status.code(), Some(2), "{}", text(&o));
-    let o = ecad(&["unreserve", &dir, "tag:-K12"]);
+    let o = ecad(&["unreserve", &dir, "tag:-K12", "--apply"]);
     assert!(o.status.success(), "{}", text(&o));
-    let o = ecad(&["retire", &dir, "wire:W999"]);
+    let o = ecad(&["retire", &dir, "wire:W999", "--apply"]);
     assert!(o.status.success(), "{}", text(&o));
-    let o = ecad(&["reclaim", &dir, "wire:W999"]);
+    let o = ecad(&["reclaim", &dir, "wire:W999", "--apply"]);
     assert!(text(&o).contains("reclaimed wire W999"), "{}", text(&o));
-    // A renumbering preview changes nothing; --apply does it.
+    // A renumbering preview changes nothing; --apply is refused (a global operation).
     let before = std::fs::read(Path::new(&dir).join("project.json")).unwrap();
     let o = ecad(&["renumber", &dir, "pages", "--json"]);
     assert!(o.status.success(), "{}", text(&o));

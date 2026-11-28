@@ -35,6 +35,8 @@ pub const STALE_LOCK: Duration = Duration::from_secs(120);
 
 /// The folders that hold project files, besides the project folder itself.
 const SUBDIRS: [&str; 3] = ["pages", "symbols", "underlays"];
+/// Every folder a save stages files in: the project's, the manifest's and the workflow's.
+const STAGE_DIRS: [&str; 7] = ["pages", "symbols", "underlays", ".ecad", "proposals", "approvals", "changes"];
 
 #[derive(Serialize, Deserialize)]
 struct Journal {
@@ -51,7 +53,7 @@ thread_local! {
 }
 
 /// Before each change to the folder: in tests, where an injected failure happens.
-fn step(path: &Path) -> Result<()> {
+pub(crate) fn step(path: &Path) -> Result<()> {
     #[cfg(test)]
     {
         let fail = FAIL_AT.with(|f| match f.get() {
@@ -169,7 +171,7 @@ pub fn project_files(dir: &Path) -> Result<Vec<String>> {
 /// Staged files left by a save that stopped part way.
 fn staged_files(dir: &Path) -> Result<Vec<String>> {
     let mut out = Vec::new();
-    for sub in std::iter::once("").chain(SUBDIRS) {
+    for sub in std::iter::once("").chain(STAGE_DIRS) {
         for name in names_in(&dir.join(sub))? {
             if name.ends_with(STAGED) || name == format!("{JOURNAL}.tmp") {
                 out.push(if sub.is_empty() { name } else { format!("{sub}/{name}") });
@@ -223,6 +225,30 @@ pub(crate) fn commit(dir: &Path, files: &[(String, Vec<u8>)]) -> Result<()> {
     apply(dir, &journal)
 }
 
+/// Write `files` (path inside the folder, contents) as one step, deleting nothing: a restore
+/// of single files. The caller holds the [`Lock`].
+pub(crate) fn commit_partial(dir: &Path, files: &[(String, Vec<u8>)]) -> Result<()> {
+    let mut replace = Vec::new();
+    for (name, bytes) in files {
+        if let Some(parent) = dir.join(name).parent() {
+            std::fs::create_dir_all(parent).map_err(io(parent))?;
+        }
+        write_synced(&dir.join(staged(name)), bytes)?;
+        replace.push(name.clone());
+    }
+    if replace.is_empty() {
+        return Ok(());
+    }
+    let journal = Journal { replace, delete: Vec::new() };
+    let text =
+        serde_json::to_vec_pretty(&journal).map_err(|source| ProjectError::Json { path: dir.join(JOURNAL), source })?;
+    let tmp = dir.join(format!("{JOURNAL}.tmp"));
+    write_synced(&tmp, &text)?;
+    rename(&tmp, &dir.join(JOURNAL))?;
+    sync_dir(dir);
+    apply(dir, &journal)
+}
+
 /// Carry out a written journal; safe to repeat.
 fn apply(dir: &Path, journal: &Journal) -> Result<()> {
     for name in &journal.replace {
@@ -234,7 +260,7 @@ fn apply(dir: &Path, journal: &Journal) -> Result<()> {
     for name in &journal.delete {
         remove(&dir.join(name))?;
     }
-    for sub in SUBDIRS {
+    for sub in STAGE_DIRS {
         sync_dir(&dir.join(sub));
     }
     remove(&dir.join(JOURNAL))?;

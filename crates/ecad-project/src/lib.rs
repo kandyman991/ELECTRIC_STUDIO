@@ -38,8 +38,10 @@ use ecad_model::{
 };
 
 pub mod csv;
+pub mod state;
 pub mod store;
 use serde::{Deserialize, Serialize};
+pub use state::{Revision, Verification};
 use std::path::{Path, PathBuf};
 
 /// The format this program writes. It reads this and format 1.
@@ -65,6 +67,12 @@ pub enum ProjectError {
     TooBig { path: PathBuf, limit: usize },
     #[error("{path}: invalid format-2 record: {reason}")]
     Canonical { path: PathBuf, reason: String },
+    #[error(
+        "{dir}: changed outside Electric Studio ({summary}); reconcile first: restore the committed files or accept the changes"
+    )]
+    External { dir: PathBuf, summary: String },
+    #[error("cancelled")]
+    Cancelled,
 }
 
 /// Largest underlay file read back: a little over what [`ecad_model::underlay::MAX_POINTS`]
@@ -101,6 +109,12 @@ struct ProjectFile {
     naming: Naming,
     #[serde(default, skip_serializing_if = "is_default_wire_lengths")]
     wire_lengths: ecad_model::WireLengthSettings,
+    /// Devices marked safety-related (AI0, D19).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    safety_related: Vec<DeviceId>,
+    /// Operation classes trusted automation may apply (AI0, D42).
+    #[serde(default, skip_serializing_if = "ecad_model::policy::Automation::is_empty")]
+    automation: ecad_model::policy::Automation,
     pages: Vec<Page>,
 }
 
@@ -315,7 +329,7 @@ fn symbol_file_name(id: &str) -> Result<String> {
 }
 
 /// Every file of a project, as (path inside the folder, contents).
-fn render(project: &Project) -> Result<Vec<(String, Vec<u8>)>> {
+pub(crate) fn render(project: &Project) -> Result<Vec<(String, Vec<u8>)>> {
     let mut files = Vec::new();
     let pages: Vec<Page> = project.pages_in_order().into_iter().cloned().collect();
     let head = ProjectFile {
@@ -325,6 +339,8 @@ fn render(project: &Project) -> Result<Vec<(String, Vec<u8>)>> {
         info: project.info.clone(),
         naming: project.naming.clone(),
         wire_lengths: project.wire_length_settings,
+        safety_related: project.safety_related.iter().copied().collect(),
+        automation: project.automation.clone(),
         pages,
     };
     files.push(("project.json".to_owned(), render_json(Path::new("project.json"), &head)?));
@@ -428,6 +444,19 @@ pub fn save(project: &Project, dir: &Path) -> Result<()> {
 /// [`fingerprint`]): another program's save in between is refused with
 /// [`ProjectError::Changed`], and the folder is left alone. Returns the new fingerprint.
 pub fn save_checked(project: &Project, dir: &Path, expected: Option<Fingerprint>) -> Result<Fingerprint> {
+    save_with(project, dir, expected, state::Extras::default()).map(|(f, _)| f)
+}
+
+/// [`save_checked`], committing `extras` (workflow files: change records, consumed approvals)
+/// in the same transaction, with the manifest (D43). Refused over outside changes (the folder
+/// differs from its committed manifest): those are reconciled first. Returns the new
+/// fingerprint and committed revision.
+pub fn save_with(
+    project: &Project,
+    dir: &Path,
+    expected: Option<Fingerprint>,
+    extras: state::Extras,
+) -> Result<(Fingerprint, Revision)> {
     let files = render(project)?;
     for d in [dir.to_owned(), dir.join("pages"), dir.join("symbols"), dir.join("underlays")] {
         std::fs::create_dir_all(&d).map_err(io(&d))?;
@@ -439,8 +468,26 @@ pub fn save_checked(project: &Project, dir: &Path, expected: Option<Fingerprint>
     {
         return Err(ProjectError::Changed(dir.to_owned()));
     }
-    store::commit(dir, &files)?;
-    fingerprint(dir)
+    commit_rendered(dir, &files, &extras)
+}
+
+/// [`save_with`] for a caller that holds the folder's [`store::Lock`] and has recovered it
+/// (an apply that checked the folder, the proposal and its approval under the same lock).
+pub fn save_locked(project: &Project, dir: &Path, extras: state::Extras) -> Result<(Fingerprint, Revision)> {
+    let files = render(project)?;
+    for d in [dir.to_owned(), dir.join("pages"), dir.join("symbols"), dir.join("underlays")] {
+        std::fs::create_dir_all(&d).map_err(io(&d))?;
+    }
+    commit_rendered(dir, &files, &extras)
+}
+
+fn commit_rendered(dir: &Path, files: &[(String, Vec<u8>)], extras: &state::Extras) -> Result<(Fingerprint, Revision)> {
+    let v = state::verify_files(dir)?;
+    if v.committed.is_some() && !v.clean() {
+        return Err(ProjectError::External { dir: dir.to_owned(), summary: v.summary() });
+    }
+    let revision = state::commit(dir, files, extras, v.committed.is_some())?;
+    Ok((fingerprint(dir)?, revision))
 }
 
 /// What a project folder holds now, to tell whether someone else saved over it: a hash of
@@ -448,6 +495,13 @@ pub fn save_checked(project: &Project, dir: &Path, expected: Option<Fingerprint>
 pub type Fingerprint = u64;
 
 /// The folder's [`Fingerprint`].
+/// The engineering content identity of `project` as a committed revision names it (the digest
+/// of its rendered files): what the folder's revision would say if `project` were saved.
+pub fn content_digest(project: &Project) -> Result<String> {
+    let hashed: Vec<(String, String)> = render(project)?.into_iter().map(|(n, b)| (n, state::sha256(&b))).collect();
+    Ok(state::digest(hashed.iter().map(|(n, h)| (n.as_str(), h.as_str()))))
+}
+
 pub fn fingerprint(dir: &Path) -> Result<Fingerprint> {
     use std::hash::{Hash, Hasher};
     let mut names = store::project_files(dir)?;
@@ -565,6 +619,7 @@ pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>
     project.naming = head.naming;
     // Through the command, so a hand-edited file can't bring in settings the editor would refuse.
     project.apply(Command::SetWireLengthSettings(head.wire_lengths)).map_err(model(&path))?;
+    project.apply(Command::SetAutomation(head.automation.clone())).map_err(model(&path))?;
     let legacy = head.format < 2;
     let mut pages = head.pages;
     if legacy {
@@ -642,6 +697,17 @@ pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>
         if !node_only.contains(&d.id) {
             project.apply(Command::AddDevice(d)).map_err(model(&path))?;
         }
+    }
+    let head_path = dir.join("project.json");
+    let mut marked = std::collections::BTreeSet::new();
+    for device in &head.safety_related {
+        if !marked.insert(*device) {
+            return Err(ProjectError::Canonical {
+                path: head_path,
+                reason: "a safety-related device is listed twice".into(),
+            });
+        }
+        project.apply(Command::SetSafetyRelated { device: *device, related: true }).map_err(model(&head_path))?;
     }
     let path = dir.join("nodes.json");
     if !legacy {
@@ -999,8 +1065,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         save(&p, dir.path()).unwrap();
         // Write it back as format 1 would have: parts.json without ids, devices by number,
-        // dense page order.
+        // dense page order, and no committed manifest (format 1 had none).
         let root = dir.path();
+        std::fs::remove_dir_all(root.join(".ecad")).unwrap();
         let products: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(root.join("products.json")).unwrap()).unwrap();
         let parts: Vec<serde_json::Value> = products
@@ -1211,6 +1278,57 @@ mod tests {
             assert_eq!(load(dir.path()).unwrap(), new);
         }
         assert!(saw_old && saw_new, "failures before and after the journal were both tried");
+    }
+
+    #[test]
+    fn an_interrupted_commit_with_workflow_files_is_one_generation_or_the_other() {
+        // An approval consumed with its change and record: at every injected failure the
+        // folder reopens at the old generation (approval issued, no record) or the new one
+        // (consumed, record present), and verifies clean either way.
+        let (a, b) = two_revisions();
+        let issued = br#"{"state":"issued"}"#.to_vec();
+        let consumed = br#"{"state":"consumed"}"#.to_vec();
+        let record = br#"{"outcome":"applied"}"#.to_vec();
+        let (mut saw_old, mut saw_new) = (false, false);
+        for n in 0.. {
+            let dir = tempfile::tempdir().unwrap();
+            save(&a, dir.path()).unwrap();
+            state::commit_workflow(dir.path(), vec![("approvals/x.json".into(), issued.clone())]).unwrap();
+            let old = state::committed(dir.path()).unwrap();
+            let extras = state::Extras {
+                workflow: vec![
+                    ("approvals/x.json".into(), consumed.clone()),
+                    ("changes/r.json".into(), record.clone()),
+                ],
+            };
+            store::FAIL_AT.with(|f| f.set(Some(n)));
+            let result = save_with(&b, dir.path(), None, extras);
+            store::FAIL_AT.with(|f| f.set(None));
+            let back = load(dir.path()).unwrap_or_else(|e| panic!("step {n}: {e}"));
+            let v = state::verify(dir.path(), &state::Quiet).unwrap();
+            assert!(v.clean(), "step {n}: {}", v.summary());
+            let now = state::committed(dir.path()).unwrap();
+            let approval = std::fs::read(dir.path().join("approvals/x.json")).unwrap();
+            if now == old {
+                assert!(result.is_err());
+                assert_eq!(back, a, "step {n}");
+                assert_eq!(approval, issued, "step {n}: the approval is still unused");
+                assert!(!dir.path().join("changes/r.json").exists(), "step {n}");
+                saw_old = true;
+            } else {
+                assert_eq!(now.generation, old.generation + 1, "step {n}");
+                assert_eq!(back, b, "step {n}");
+                assert_eq!(approval, consumed, "step {n}");
+                assert_eq!(std::fs::read(dir.path().join("changes/r.json")).unwrap(), record, "step {n}");
+                saw_new = true;
+            }
+            if result.is_ok() {
+                assert!(n > 5, "the commit took {n} steps");
+                break;
+            }
+            assert!(n < 500);
+        }
+        assert!(saw_old && saw_new);
     }
 
     #[test]

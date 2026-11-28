@@ -114,6 +114,12 @@ jobs:
         with:
           python-version: "3.13"
       - run: cargo build -p ecad-mcp -p ecad-cli --locked
-      # The MCP Python SDK as a real client: initialize, list tools, read, edit, save.
+      # The MCP Python SDK as a real client: initialize, list tools, query, prepare and preview
+      # the AI0 pilot proposal (nothing applied)...
       - run: pip install "mcp>=1.10,<3"
       - run: python crates/ecad-mcp/tests/client/check.py target/debug/ecad-mcp target/debug/ecad "$RUNNER_TEMP"
+      # ...then that exact proposal is reviewed and approved in the desktop session, applied as
+      # one transaction, undone in one step, and checked with the CLI.
+      - run: cargo test -p ecad-mcp --test pilot --locked -- --ignored the_official_client_s_proposal_is_approved_in_the_desktop_session
+        env:
+          ECAD_PILOT: ${{ runner.temp }}/pilot.json

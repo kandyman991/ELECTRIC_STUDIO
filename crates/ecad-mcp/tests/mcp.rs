@@ -18,8 +18,8 @@ fn request(id: u64, method: &str, params: Value) -> Value {
 }
 
 /// A server past `initialize`, as a client would have it.
-fn open(dir: &std::path::Path, writable: bool) -> Server {
-    let mut s = Server::open(dir, writable).unwrap();
+fn open(dir: &std::path::Path) -> Server {
+    let mut s = Server::open(dir).unwrap();
     let init = s.handle(&request(0, "initialize", json!({ "protocolVersion": "2025-06-18" }))).unwrap();
     assert!(init["result"].is_object(), "{init}");
     assert!(s.handle(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" })).is_none());
@@ -70,7 +70,11 @@ fn a_client_talks_to_the_binary_over_stdio() {
     assert_eq!(list["id"], 2);
     let names: Vec<&str> =
         list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert!(names.contains(&"run_checks") && !names.contains(&"connect"), "read only by default: {names:?}");
+    assert!(names.contains(&"run_checks") && names.contains(&"prepare_connect"), "{names:?}");
+    assert!(
+        !names.iter().any(|n| ["connect", "save", "undo", "redo"].contains(n)),
+        "no tool changes the project: {names:?}"
+    );
     send(request(3, "tools/call", json!({ "name": "report", "arguments": { "name": "plc-io-list" } })));
     let report = read();
     let csv = report["result"]["content"][0]["text"].as_str().unwrap();
@@ -87,7 +91,7 @@ fn a_client_talks_to_the_binary_over_stdio() {
 #[test]
 fn the_read_tools_describe_the_project() {
     let dir = project(ecad_model::reference::reference_project().unwrap());
-    let mut s = open(dir.path(), false);
+    let mut s = open(dir.path());
     let (o, failed) = call(&mut s, "project_overview", json!({}));
     assert!(!failed);
     assert_eq!(o["errors"], 0);
@@ -115,13 +119,8 @@ fn the_read_tools_describe_the_project() {
     let (n, _) = call(&mut s, "numbering", json!({}));
     assert_eq!(n["policies"]["device tags"], "sequential", "{n}");
     assert!(n["reserved"].as_array().unwrap().is_empty());
-    let (before, _) = call(&mut s, "project_overview", json!({}));
-    let (r, failed) = call(&mut s, "preview_renumbering", json!({ "scope": "pages" }));
-    assert!(!failed && r["applied"] == false && r["changes"].is_array(), "{r}");
-    let (after, _) = call(&mut s, "project_overview", json!({}));
-    assert_eq!(after, before, "a preview changes nothing");
-    let (e, failed) = call(&mut s, "preview_renumbering", json!({ "scope": "terminals" }));
-    assert!(failed, "{e}");
+    let (r, failed) = call(&mut s, "release_check", json!({}));
+    assert!(!failed && r["note"].as_str().unwrap().contains("not electrical"), "{r}");
     // Mistakes come back as tool errors the model can read.
     let (e, failed) = call(&mut s, "device_details", json!({ "tag": "-NOPE" }));
     assert!(failed && e == "no device `-NOPE`", "{e}");
@@ -130,71 +129,90 @@ fn the_read_tools_describe_the_project() {
 }
 
 #[test]
-fn edits_need_write_and_are_saved_only_on_save() {
+fn operations_are_only_prepared_never_applied() {
     let dir = project(ecad_model::sample::start_circuit().unwrap());
-    let mut ro = open(dir.path(), false);
-    let reply = ro.handle(&request(4, "tools/call", json!({ "name": "connect", "arguments": {} }))).unwrap();
+    let on_disk = ecad_project::fingerprint(dir.path()).unwrap();
+    let mut s = open(dir.path());
+    // Editing tools of old are gone, and say what to do instead.
+    let reply = s.handle(&request(4, "tools/call", json!({ "name": "connect", "arguments": {} }))).unwrap();
     assert_eq!(reply["error"]["code"], -32602);
-    assert!(reply["error"]["message"].as_str().unwrap().contains("--write"));
-
-    let mut s = open(dir.path(), true);
-    let (placed, failed) =
-        call(&mut s, "place_symbol", json!({ "symbol": "iec.coil", "page": "#1", "x": 200, "y": 100 }));
-    assert!(!failed, "{placed}");
-    let tag = placed["tag"].as_str().unwrap().to_owned();
-    assert_eq!(placed["unsaved_changes"], true);
-    let (second, failed) =
-        call(&mut s, "place_symbol", json!({ "symbol": "iec.coil", "page": "#1", "x": 240, "y": 100 }));
-    assert!(!failed);
-    let other = second["tag"].as_str().unwrap().to_owned();
-    let (wired, failed) = call(&mut s, "connect", json!({ "from": format!("{tag}:A2"), "to": format!("{other}:A1") }));
-    assert!(!failed, "{wired}");
-    assert!(wired["wire"].is_string());
-    let (e, failed) = call(&mut s, "connect", json!({ "from": format!("{tag}:A2"), "to": format!("{other}:A2") }));
-    assert!(failed && e.as_str().unwrap().contains("already"), "{e}");
-    // Not on disk yet.
-    let on_disk = ecad_project::load(dir.path()).unwrap().devices.len();
-    assert_eq!(on_disk, ecad_model::sample::start_circuit().unwrap().devices.len());
-    let (undone, _) = call(&mut s, "undo", json!({}));
-    assert!(undone["undid"].as_str().unwrap().starts_with("Draw wire"));
-    call(&mut s, "redo", json!({}));
-    // A wire between two points' terminals, not drawn: listed as such, saved in wires.json.
-    let (added, failed) =
-        call(&mut s, "add_wire", json!({ "from": format!("{other}:A2"), "to": "M:1", "number": "W77" }));
-    assert!(!failed && added["drawn"] == false, "{added}");
-    let (wires, _) = call(&mut s, "list_wires", json!({}));
-    let w77 = wires["wires"].as_array().unwrap().iter().find(|w| w["wire"] == "W77").unwrap().clone();
-    assert_eq!(w77["drawn"], false);
-    let (nodes, _) = call(&mut s, "list_devices", json!({}));
-    assert!(nodes["nodes"].as_array().unwrap().iter().any(|n| n["name"] == "M" && n["kind"] == "potential"));
-    call(&mut s, "edit_device", json!({ "tag": tag, "new_tag": "-K10", "description": "Added over MCP" }));
-    let (saved, failed) = call(&mut s, "save", json!({}));
-    assert!(!failed, "{saved}");
-    let back = ecad_project::load(dir.path()).unwrap();
-    assert_eq!(back.device_by_tag("-K10").unwrap().description, "Added over MCP");
-    assert_eq!(back.undrawn.values().filter(|w| w.wire_number.as_deref() == Some("W77")).count(), 1);
-    let (o, _) = call(&mut s, "project_overview", json!({}));
-    assert_eq!(o["unsaved_changes"], false);
+    assert!(reply["error"]["message"].as_str().unwrap().contains("prepare_connect"), "{reply}");
+    // One change set of several operations, previewed, stored as a proposal.
+    let (r, failed) = call(
+        &mut s,
+        "prepare_change",
+        json!({
+            "title": "Add a relay and wire it",
+            "rationale": "test",
+            "operations": [
+                { "op": "place_symbol", "args": { "symbol": "iec.coil", "page": "#1", "x": 200, "y": 100 } },
+                { "op": "place_symbol", "args": { "symbol": "iec.coil", "page": "#1", "x": 240, "y": 100 } },
+                { "op": "edit_device", "args": { "tag": "-K1", "description": "over MCP" } },
+            ],
+        }),
+    );
+    assert!(!failed, "{r}");
+    let id = r["proposal"].as_str().unwrap().to_owned();
+    assert_eq!(r["impact"]["devices"].as_array().unwrap().len(), 3, "{r}");
+    // Nothing changed: the engineering files are as they were.
+    assert_eq!(ecad_project::fingerprint(dir.path()).unwrap(), on_disk);
+    let (list, _) = call(&mut s, "list_proposals", json!({}));
+    assert_eq!(list["proposals"][0]["id"], id.as_str());
+    assert_eq!(list["proposals"][0]["status"], "pending");
+    let (p, failed) = call(&mut s, "preview_change", json!({ "id": id }));
+    assert!(!failed && p["stale"] == false, "{p}");
+    // Bad operations are refused before anything is stored.
+    let (e, failed) = call(
+        &mut s,
+        "prepare_change",
+        json!({ "title": "x", "operations": [{ "op": "import_tia", "args": { "file": "/etc/passwd" } }] }),
+    );
+    assert!(failed && e.as_str().unwrap().contains("unknown operation"), "{e}");
+    let (e, failed) = call(&mut s, "prepare_edit_device", json!({ "tag": "-NOPE" }));
+    assert!(failed, "{e}");
+    let (e, failed) = call(&mut s, "prepare_change", json!({ "title": "x", "operations": [] }));
+    assert!(failed, "{e}");
+    assert_eq!(ecad_editor::change::proposals(dir.path()).unwrap().len(), 1);
 }
 
 #[test]
-fn plc_channels_and_devices_change_by_name() {
-    let dir = project(ecad_model::sample::with_plc().unwrap());
-    let mut s = open(dir.path(), true);
-    let (_, failed) = call(&mut s, "set_plc_channel", json!({ "card": "-KF1", "channel": "0", "symbol": "Door_Shut" }));
+fn an_assistant_cant_weaken_a_safety_classification() {
+    let dir = project(ecad_model::conveyor::conveyor().unwrap());
+    let mut s = open(dir.path());
+    let (e, failed) = call(&mut s, "prepare_mark_safety_related", json!({ "tag": "-S0", "related": "no" }));
+    assert!(failed && e.as_str().unwrap().contains("safety classification"), "{e}");
+    // Deleting a safety-related device takes its marking with it: refused too.
+    let (e, failed) = call(&mut s, "prepare_delete_device", json!({ "tag": "-K3" }));
+    assert!(failed && e.as_str().unwrap().contains("safety classification"), "{e}");
+    // Marking one is a proposal like any other.
+    let (r, failed) = call(&mut s, "prepare_mark_safety_related", json!({ "tag": "-Q0", "related": "yes" }));
+    assert!(!failed, "{r}");
+    assert!(!r["impact"]["safety_direct"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn a_stale_server_refuses_to_prepare_until_reloaded() {
+    let dir = project(ecad_model::sample::start_circuit().unwrap());
+    let mut s = open(dir.path());
+    // Someone commits a change after the server loaded.
+    let mut p = ecad_project::load(dir.path()).unwrap();
+    let k1 = p.device_by_tag("-K1").unwrap().id;
+    p.apply(ecad_model::Command::SetDescription { id: k1, description: "changed".into() }).unwrap();
+    ecad_project::save(&p, dir.path()).unwrap();
+    let (e, failed) = call(&mut s, "prepare_edit_device", json!({ "tag": "-K1", "new_tag": "-K9" }));
+    assert!(failed && e.as_str().unwrap().contains("stale"), "{e}");
+    call(&mut s, "reload", json!({}));
+    let (_, failed) = call(&mut s, "prepare_edit_device", json!({ "tag": "-K1", "new_tag": "-K9" }));
     assert!(!failed);
-    let (e, failed) = call(&mut s, "set_plc_channel", json!({ "card": "-KF1", "channel": "1", "address": "I0.0" }));
-    assert!(failed, "duplicate address refused: {e}");
-    let (_, failed) = call(&mut s, "delete_device", json!({ "tag": "-KF1" }));
-    assert!(!failed);
-    let (e, failed) = call(&mut s, "device_details", json!({ "tag": "-KF1" }));
-    assert!(failed, "{e}");
+    // A folder changed outside Electric Studio doesn't open until reconciled in the app.
+    std::fs::write(dir.path().join("devices.json"), "[]").unwrap();
+    assert!(Server::open(dir.path()).is_err());
 }
 
 #[test]
 fn the_protocol_edges_are_answered() {
     let dir = project(ecad_model::sample::start_circuit().unwrap());
-    let mut s = Server::open(dir.path(), false).unwrap();
+    let mut s = Server::open(dir.path()).unwrap();
     // Nothing but ping before initialize.
     assert_eq!(s.handle(&request(1, "ping", json!({}))).unwrap()["result"], json!({}));
     let early = s.handle(&request(2, "tools/list", json!({}))).unwrap();
@@ -232,46 +250,35 @@ fn the_protocol_edges_are_answered() {
 }
 
 #[test]
-fn every_tool_declares_its_hints() {
+fn every_tool_declares_its_hints_and_comes_from_the_registry() {
     let dir = project(ecad_model::sample::start_circuit().unwrap());
-    let mut s = open(dir.path(), true);
+    let mut s = open(dir.path());
     let list = s.handle(&request(5, "tools/list", json!({}))).unwrap();
     let tools = list["result"]["tools"].as_array().unwrap();
-    let hint = |name: &str, key: &str| {
-        let t = tools.iter().find(|t| t["name"] == name).unwrap_or_else(|| panic!("{name}"));
-        t["annotations"][key].as_bool().unwrap()
-    };
     for t in tools {
         assert_eq!(t["inputSchema"]["type"], "object", "{t}");
         assert_eq!(t["inputSchema"]["additionalProperties"], false, "{t}");
+        assert_eq!(t["annotations"]["destructiveHint"], false, "no tool changes the project: {t}");
     }
-    for read in [
-        "project_overview",
-        "list_devices",
-        "device_details",
-        "list_wires",
-        "run_checks",
-        "report",
-        "list_symbols",
-        "numbering",
-        "preview_renumbering",
-    ] {
-        assert!(hint(read, "readOnlyHint") && !hint(read, "destructiveHint"), "{read}");
+    // Generated: every query offered as itself, every operation as prepare_<name>.
+    for d in ecad_editor::registry::DEFS.iter().filter(|d| d.mcp) {
+        let name = if d.class == ecad_editor::registry::Class::Query {
+            d.name.to_owned()
+        } else {
+            format!("prepare_{}", d.name)
+        };
+        let t = tools.iter().find(|t| t["name"] == name.as_str()).unwrap_or_else(|| panic!("{name}"));
+        assert_eq!(t["annotations"]["readOnlyHint"], d.class == ecad_editor::registry::Class::Query, "{name}");
     }
-    for adds in ["place_symbol", "connect"] {
-        assert!(!hint(adds, "readOnlyHint") && !hint(adds, "destructiveHint"), "{adds}");
-    }
-    for changes in ["delete_wire", "delete_device", "edit_device", "set_plc_channel", "undo", "redo", "save", "reload"]
-    {
-        assert!(!hint(changes, "readOnlyHint") && hint(changes, "destructiveHint"), "{changes}");
+    for d in ecad_editor::registry::DEFS.iter().filter(|d| !d.mcp) {
+        assert!(!tools.iter().any(|t| t["name"].as_str().unwrap().ends_with(d.name)), "{} is CLI and app only", d.name);
     }
 }
 
 #[test]
 fn arguments_that_dont_fit_the_schema_change_nothing() {
     let dir = project(ecad_model::sample::start_circuit().unwrap());
-    let mut s = open(dir.path(), true);
-    let before = s.editor().project().clone();
+    let mut s = open(dir.path());
     let on_disk = ecad_project::fingerprint(dir.path()).unwrap();
     let place = |extra: Value| {
         let mut args = json!({ "symbol": "iec.coil", "page": "#1", "x": 200, "y": 100 });
@@ -281,60 +288,19 @@ fn arguments_that_dont_fit_the_schema_change_nothing() {
         args
     };
     let cases = [
-        ("place_symbol", place(json!({ "device": 5 })), "`device` must be a string"),
-        ("place_symbol", place(json!({ "x": "200" })), "`x` must be a number"),
-        ("place_symbol", place(json!({ "colour": "red" })), "unknown argument `colour`"),
-        ("place_symbol", json!({ "symbol": "iec.coil", "page": "#1", "x": 1 }), "`y` is needed"),
-        ("connect", json!({ "from": "-S1:13", "to": null }), "`to` must be a string"),
+        ("prepare_place_symbol", place(json!({ "device": 5 })), "`device` must be a string"),
+        ("prepare_place_symbol", place(json!({ "x": "200" })), "`x` must be a number"),
+        ("prepare_place_symbol", place(json!({ "colour": "red" })), "unknown argument `colour`"),
+        ("prepare_place_symbol", json!({ "symbol": "iec.coil", "page": "#1", "x": 1 }), "`y` is needed"),
+        ("prepare_connect", json!({ "from": "-S1:13", "to": null }), "`to` must be a string"),
         ("report", json!({ "name": "motors" }), "`name` must be one of"),
-        ("save", json!({ "force": true }), "unknown argument `force` (arguments: none)"),
+        ("reload", json!({ "force": true }), "unknown argument `force`"),
         ("project_overview", json!([1]), "the arguments must be an object"),
     ];
     for (tool, args, why) in cases {
         let (e, failed) = call(&mut s, tool, args.clone());
         assert!(failed && e.as_str().unwrap().contains(why), "{tool} {args}: {e}");
     }
-    assert_eq!(s.editor().project(), &before);
-    assert_eq!(s.editor().undo_label(), None);
     assert_eq!(ecad_project::fingerprint(dir.path()).unwrap(), on_disk);
-}
-
-#[test]
-fn a_save_over_someone_elses_is_refused_until_reload() {
-    let dir = project(ecad_model::sample::start_circuit().unwrap());
-    let mut a = open(dir.path(), true);
-    let mut b = open(dir.path(), true);
-    // Nothing to save: nothing written.
-    let on_disk = ecad_project::fingerprint(dir.path()).unwrap();
-    let (r, failed) = call(&mut a, "save", json!({}));
-    assert!(!failed && r["saved"] == false, "{r}");
-    assert_eq!(ecad_project::fingerprint(dir.path()).unwrap(), on_disk);
-    // A saves an edit.
-    call(&mut a, "edit_device", json!({ "tag": "-K1", "description": "from A" }));
-    let (r, failed) = call(&mut a, "save", json!({}));
-    assert!(!failed && r["saved"] == true, "{r}");
-    // B, still holding the old project, edits and tries to save: refused, the folder keeps A's.
-    call(&mut b, "edit_device", json!({ "tag": "-S1", "description": "from B" }));
-    let (e, failed) = call(&mut b, "save", json!({}));
-    assert!(failed && e.as_str().unwrap().contains("changed on disk"), "{e}");
-    let saved = ecad_project::load(dir.path()).unwrap();
-    assert_eq!(saved.device_by_tag("-K1").unwrap().description, "from A");
-    assert_eq!(saved.device_by_tag("-S1").unwrap().description, "Start", "as before B");
-    // B reloads (dropping its edit), redoes it, and saves both.
-    let (r, _) = call(&mut b, "reload", json!({}));
-    assert_eq!(r["dropped_unsaved_changes"], true);
-    call(&mut b, "edit_device", json!({ "tag": "-S1", "description": "from B" }));
-    let (_, failed) = call(&mut b, "save", json!({}));
-    assert!(!failed);
-    let saved = ecad_project::load(dir.path()).unwrap();
-    assert_eq!(saved.device_by_tag("-K1").unwrap().description, "from A");
-    assert_eq!(saved.device_by_tag("-S1").unwrap().description, "from B");
-    // The desktop editor is held to the same rule.
-    let mut desk = ecad_editor::session::Session::open(dir.path()).unwrap();
-    call(&mut a, "reload", json!({}));
-    call(&mut a, "edit_device", json!({ "tag": "-K1", "description": "A again" }));
-    call(&mut a, "save", json!({}));
-    desk.handle(ecad_editor::session::UiEvent::Rename { tag: "-K1".into() });
-    desk.handle(ecad_editor::session::UiEvent::Save);
-    assert_eq!(ecad_project::load(dir.path()).unwrap().device_by_tag("-K1").unwrap().description, "A again");
+    assert!(ecad_editor::change::proposals(dir.path()).unwrap().is_empty());
 }

@@ -1,564 +1,191 @@
-//! The tools: what they take, and what they do.
+//! The tools, generated from the engineering registry ([`ecad_editor::registry`], D16): every
+//! query as a read tool, every operation offered to assistants as a `prepare_<name>` tool, and
+//! the change-set tools (`prepare_change`, `preview_change`, `list_proposals`) and `reload`.
+//! No tool changes the project (D32): a prepared change set is stored as a proposal for a
+//! person to review and approve in the app.
 
 use crate::Server;
-use ecad_editor::script::{find_device, find_page};
-use ecad_model::Project;
+use ecad_editor::change::{self, OpCall};
+use ecad_editor::registry::{self, Class, Def};
 use serde_json::{Value, json};
 
-/// What a tool does to the project, for the client's hints: declared per tool, never guessed
-/// from its name. Hints describe; they don't authorise (only `--write` does).
-#[derive(Clone, Copy)]
-enum Effect {
-    /// Only reads.
-    Reads,
-    /// Adds to the project and changes nothing already there.
-    Adds,
-    /// Changes or removes what is there (in memory, undoable).
-    Changes,
-    /// Overwrites or throws away saved or unsaved work: `save`, `reload`.
-    Overwrites,
+fn hints(read_only: bool) -> Value {
+    json!({ "readOnlyHint": read_only, "destructiveHint": false, "idempotentHint": read_only, "openWorldHint": false })
 }
 
-/// A tool's definition: name, description, JSON Schema of its arguments, and hints.
-fn tool(name: &str, title: &str, description: &str, properties: Value, required: &[&str], effect: Effect) -> Value {
-    let (read_only, destructive, idempotent) = match effect {
-        Effect::Reads => (true, false, true),
-        Effect::Adds => (false, false, false),
-        Effect::Changes => (false, true, false),
-        Effect::Overwrites => (false, true, false),
-    };
-    json!({
-        "name": name,
-        "title": title,
-        "description": description,
-        "inputSchema": { "type": "object", "properties": properties, "required": required, "additionalProperties": false },
-        "annotations": {
-            "readOnlyHint": read_only,
-            "destructiveHint": destructive,
-            "idempotentHint": idempotent,
-            "openWorldHint": false,
+fn with_proposal_fields(mut schema: Value) -> Value {
+    if let Some(p) = schema["properties"].as_object_mut() {
+        p.insert(
+            "title".into(),
+            json!({ "type": "string", "description": "What the change is, in a few words (for the reviewer)" }),
+        );
+        p.insert(
+            "rationale".into(),
+            json!({ "type": "string", "description": "Why, in your words (for the reviewer)" }),
+        );
+    }
+    schema
+}
+
+/// The tool list.
+pub fn list() -> Vec<Value> {
+    let mut tools = Vec::new();
+    for d in registry::DEFS.iter().filter(|d| d.mcp) {
+        if d.class == Class::Query {
+            tools.push(json!({
+                "name": d.name, "title": d.title, "description": d.description,
+                "inputSchema": registry::schema(d), "annotations": hints(true),
+            }));
+        } else {
+            tools.push(json!({
+                "name": format!("prepare_{}", d.name),
+                "title": format!("Prepare: {}", d.title),
+                "description": format!("{} Prepares a change set (a proposal) and its preview; nothing changes until a person approves it in the app.", d.description),
+                "inputSchema": with_proposal_fields(registry::schema(d)),
+                "annotations": hints(false),
+            }));
+        }
+    }
+    let ops: Vec<&str> = registry::DEFS.iter().filter(|d| d.mcp && d.class != Class::Query).map(|d| d.name).collect();
+    tools.push(json!({
+        "name": "prepare_change",
+        "title": "Prepare a change set",
+        "description": format!("Prepare one change set of several operations, reviewed and approved as one transaction (one undo step). Each operation is {{\"op\": name, \"args\": {{…}}}} with the arguments of its prepare_ tool. Operations: {}.", ops.join(", ")),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "title": { "type": "string", "description": "What the change is" },
+                "rationale": { "type": "string", "description": "Why" },
+                "operations": { "type": "array", "description": "The operations, in order", "items": { "type": "object" } },
+            },
+            "required": ["title", "operations"],
+            "additionalProperties": false,
         },
-    })
+        "annotations": hints(false),
+    }));
+    tools.push(json!({
+        "name": "preview_change",
+        "title": "Preview a proposal",
+        "description": "A stored proposal's preview against the project as it is now: affected devices (old and new tags), terminals, wires, pages, checks before and after, and direct and indirect safety impact; and its status.",
+        "inputSchema": { "type": "object", "properties": { "id": { "type": "string", "description": "The proposal's id" } }, "required": ["id"], "additionalProperties": false },
+        "annotations": hints(true),
+    }));
+    tools.push(json!({
+        "name": "list_proposals",
+        "title": "List proposals",
+        "description": "The proposals in the project folder with their status: pending, approved (for the CLI), applied or rejected.",
+        "inputSchema": { "type": "object", "properties": {}, "required": [], "additionalProperties": false },
+        "annotations": hints(true),
+    }));
+    tools.push(json!({
+        "name": "reload",
+        "title": "Reload",
+        "description": "Load the project folder again, as last committed (after a person applied or saved changes).",
+        "inputSchema": { "type": "object", "properties": {}, "required": [], "additionalProperties": false },
+        "annotations": hints(true),
+    }));
+    tools
 }
 
-/// Check arguments against a tool's schema: an object, no unknown fields, every required one,
-/// each of its type (and in its list, for an enum).
+/// Check arguments against a tool's schema.
 pub fn validate(definition: &Value, args: &Value) -> Result<(), String> {
+    let name = definition["name"].as_str().unwrap_or_default();
+    let Some(map) = args.as_object() else { return Err("the arguments must be an object".into()) };
+    if let Some(def) = name.strip_prefix("prepare_").and_then(registry::find).or_else(|| registry::find(name)) {
+        let mut rest = map.clone();
+        rest.remove("title");
+        rest.remove("rationale");
+        return registry::validate(def, &Value::Object(rest));
+    }
     let schema = &definition["inputSchema"];
-    let Some(args) = args.as_object() else { return Err("the arguments must be an object".into()) };
     let properties = schema["properties"].as_object().cloned().unwrap_or_default();
-    for (key, value) in args {
-        let Some(property) = properties.get(key) else {
-            let known: Vec<&String> = properties.keys().collect();
-            let known = if known.is_empty() {
-                "none".to_owned()
-            } else {
-                known.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ")
-            };
-            return Err(format!("unknown argument `{key}` (arguments: {known})"));
-        };
+    for (key, value) in map {
+        let Some(property) = properties.get(key) else { return Err(format!("unknown argument `{key}`")) };
         let fits = match property["type"].as_str() {
             Some("string") => value.is_string(),
-            Some("number") => value.as_f64().is_some_and(f64::is_finite),
+            Some("array") => value.is_array(),
             _ => true,
         };
         if !fits {
             return Err(format!("`{key}` must be a {}", property["type"].as_str().unwrap_or("value")));
         }
-        if let Some(allowed) = property["enum"].as_array()
-            && !allowed.contains(value)
-        {
-            let list: Vec<String> = allowed.iter().filter_map(Value::as_str).map(str::to_owned).collect();
-            return Err(format!("`{key}` must be one of: {}", list.join(", ")));
-        }
     }
     for key in schema["required"].as_array().into_iter().flatten().filter_map(Value::as_str) {
-        if !args.contains_key(key) {
+        if !map.contains_key(key) {
             return Err(format!("`{key}` is needed"));
         }
     }
     Ok(())
 }
 
-fn string(description: &str) -> Value {
-    json!({ "type": "string", "description": description })
+fn op_def(name: &str) -> Result<&'static Def, String> {
+    registry::find(name)
+        .filter(|d| d.mcp && d.class != Class::Query)
+        .ok_or_else(|| format!("unknown operation `{name}`"))
 }
 
-fn number(description: &str) -> Value {
-    json!({ "type": "number", "description": description })
-}
-
-/// The tools on offer: the read tools, and with `writable` the edit tools too.
-pub fn list(writable: bool) -> Vec<Value> {
-    let mut tools = vec![
-        tool(
-            "project_overview",
-            "Project overview",
-            "The project's name, pages, how many devices, symbols and wires it has, its errors and warnings, and whether there are unsaved changes.",
-            json!({}),
-            &[],
-            Effect::Reads,
-        ),
-        tool(
-            "list_devices",
-            "List devices",
-            "Every device (by tag) with its description, parts and where it is drawn, and every node (potential, interruption, junction) by kind, name and scope with its drawings. Optionally only those drawn on one page.",
-            json!({ "page": string("A page name, or #n for the n-th page") }),
-            &[],
-            Effect::Reads,
-        ),
-        tool(
-            "device_details",
-            "Device details",
-            "One device: its drawings (symbol, page, position, properties) and each connection point with the wire on it and where that wire goes.",
-            json!({ "tag": string("The device's tag, like -K1") }),
-            &["tag"],
-            Effect::Reads,
-        ),
-        tool(
-            "list_wires",
-            "List wires",
-            "The wire list: wire number, potential, both ends as TAG:POINT, cross-section, colour, cable and estimated length. Optionally only wires at one device.",
-            json!({ "device": string("Only wires with an end on this device, like -K1") }),
-            &[],
-            Effect::Reads,
-        ),
-        tool(
-            "run_checks",
-            "Run checks",
-            "The project's checks: errors and warnings (unconnected points, duplicate tags or addresses, missing parts, layout clashes and more), each with its page location.",
-            json!({}),
-            &[],
-            Effect::Reads,
-        ),
-        tool(
-            "report",
-            "Report",
-            &format!("One report as CSV: {}.", ecad_reports::REPORTS.join(", ")),
-            json!({ "name": { "type": "string", "enum": ecad_reports::REPORTS, "description": "The report" } }),
-            &["name"],
-            Effect::Reads,
-        ),
-        tool(
-            "list_symbols",
-            "List symbols",
-            "Symbols that can be placed, with their id, description, category and connection points. Optionally filtered by a word in the id, description or category.",
-            json!({ "search": string("A word to look for, like coil or terminal") }),
-            &[],
-            Effect::Reads,
-        ),
-        tool(
-            "numbering",
-            "Numbering",
-            "The numbering policies (sequential or lowest free, per kind), the page suffix style, the capacities of PLC cards and strips, and the reserved and retired identifiers, each with its note. New identifiers skip reserved and retired ones; nothing is renumbered automatically.",
-            json!({}),
-            &[],
-            Effect::Reads,
-        ),
-        tool(
-            "preview_renumbering",
-            "Preview renumbering",
-            "Preview an explicit global renumbering: every name it would change (from, to). Changes nothing; renumbering is applied by a person in the app or with `ecad renumber --apply`.",
-            json!({
-                "scope": { "type": "string", "enum": ["wires", "devices", "pages", "terminals"], "description": "What to renumber" },
-                "strip": string("For terminals: the strip's tag, like -X1"),
-            }),
-            &["scope"],
-            Effect::Reads,
-        ),
-    ];
-    if writable {
-        tools.extend([
-            tool(
-                "place_symbol",
-                "Place symbol",
-                "Place a symbol on a page at x, y mm (snapped to the 4 mm grid). Without `device` it is a new device with the project's next tag; with `device` it is another drawing of that device (a relay's contact, a terminal of a strip).",
-                json!({
-                    "symbol": string("A symbol id from list_symbols, like iec.coil"),
-                    "page": string("A page name, or #n for the n-th page"),
-                    "x": number("mm from the left of the page"),
-                    "y": number("mm from the bottom of the page"),
-                    "device": string("An existing device to add this drawing to, like -K1"),
-                }),
-                &["symbol", "page", "x", "y"],
-                Effect::Adds,
-            ),
-            tool(
-                "connect",
-                "Connect",
-                "Draw a wire between two free connection points, written TAG:POINT as drawn (-S1:14 to -K1:A1). It takes its potential's wire number.",
-                json!({ "from": string("One end, like -S1:14"), "to": string("The other end, like -K1:A1") }),
-                &["from", "to"],
-                Effect::Adds,
-            ),
-            tool(
-                "add_wire",
-                "Add wire (not drawn)",
-                "Add a wire between the terminals or nodes two points show (TAG:POINT as drawn), without drawing it: it is in the wire list, netlist and checks as not drawn yet.",
-                json!({ "from": string("One end, like -S1:14"), "to": string("The other end, like -K1:A1"), "number": string("Its wire number, if any") }),
-                &["from", "to"],
-                Effect::Adds,
-            ),
-            tool(
-                "delete_wire",
-                "Delete wire",
-                "Delete the wire at a connection point.",
-                json!({ "at": string("A connection point the wire is on, like -K1:A1") }),
-                &["at"],
-                Effect::Changes,
-            ),
-            tool(
-                "delete_device",
-                "Delete device",
-                "Delete a device: all its drawings, the wires on them, and its place on a panel layout.",
-                json!({ "tag": string("The device's tag, like -K1") }),
-                &["tag"],
-                Effect::Changes,
-            ),
-            tool(
-                "edit_device",
-                "Edit device",
-                "Give a device a new tag and/or description.",
-                json!({ "tag": string("The device's tag now"), "new_tag": string("Its new tag"), "description": string("Its new description") }),
-                &["tag"],
-                Effect::Changes,
-            ),
-            tool(
-                "set_plc_channel",
-                "Set PLC channel",
-                "Set a PLC channel's address (I0.3, IW256), symbol and comment. Leave a field out to keep it, or give \"\" to clear it.",
-                json!({
-                    "card": string("The PLC card's tag, like -KF1"),
-                    "channel": string("The channel number drawn on the card, like 3"),
-                    "address": string("Like I0.3, Q1.0, IW256"),
-                    "symbol": string("The PLC tag name"),
-                    "comment": string("The comment"),
-                }),
-                &["card", "channel"],
-                Effect::Changes,
-            ),
-            tool("undo", "Undo", "Undo the last change.", json!({}), &[], Effect::Changes),
-            tool("redo", "Redo", "Redo the last undone change.", json!({}), &[], Effect::Changes),
-            tool(
-                "save",
-                "Save",
-                "Write the project to its folder, replacing what is saved there. Until then changes are only in this server. Refused if someone else saved the folder since this server loaded or last saved it; does nothing without unsaved changes.",
-                json!({}),
-                &[],
-                Effect::Overwrites,
-            ),
-            tool(
-                "reload",
-                "Reload",
-                "Load the project folder again, as last saved (by anyone). Drops this server's unsaved changes and undo history.",
-                json!({}),
-                &[],
-                Effect::Overwrites,
-            ),
-        ]);
-    }
-    tools
-}
-
-fn text<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
-    args.get(key).and_then(Value::as_str)
-}
-
-fn required<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
-    text(args, key).ok_or_else(|| format!("`{key}` is needed"))
-}
-
-fn required_number(args: &Value, key: &str) -> Result<f64, String> {
-    args.get(key).and_then(Value::as_f64).ok_or_else(|| format!("`{key}` must be a number"))
-}
-
-/// Run a tool. Its value is JSON (an object, or a string for CSV text), or a message saying
-/// what went wrong.
+/// Run a tool.
 pub fn call(server: &mut Server, name: &str, args: &Value) -> Result<Value, String> {
     match name {
-        "project_overview" => Ok(overview(server)),
-        "list_devices" => list_devices(server.editor.project(), text(args, "page")),
-        "device_details" => device_details(server.editor.project(), required(args, "tag")?),
-        "list_wires" => list_wires(server.editor.project(), text(args, "device")),
-        "run_checks" => run_checks(server.editor.project()),
-        "report" => {
-            let name = required(args, "name")?;
-            let csv = ecad_reports::csv(server.editor.project(), name).map_err(|e| e.to_string())?;
-            csv.map(Value::String).ok_or_else(|| format!("unknown report `{name}`"))
-        }
-        "list_symbols" => Ok(list_symbols(server.editor.project(), text(args, "search"))),
-        "numbering" => Ok(numbering(server.editor.project())),
-        "preview_renumbering" => {
-            let p = server.editor.project();
-            let scope = match required(args, "scope")? {
-                "wires" => ecad_model::renumber::Scope::Wires,
-                "devices" => ecad_model::renumber::Scope::Devices,
-                "pages" => ecad_model::renumber::Scope::Pages,
-                "terminals" => ecad_model::renumber::Scope::Terminals(ecad_editor::script::find_device(
-                    p,
-                    required(args, "strip")?,
-                )?),
-                other => return Err(format!("unknown scope `{other}`")),
-            };
-            let r = p.preview_renumbering(scope).map_err(|e| e.to_string())?;
-            let changes: Vec<Value> =
-                r.changes.iter().map(|c| json!({ "what": c.what, "from": c.from, "to": c.to })).collect();
-            Ok(json!({ "changes": changes, "applied": false }))
-        }
-        "place_symbol" => {
-            let page = find_page(server.editor.project(), required(args, "page")?)?;
-            let (x, y) = (required_number(args, "x")?, required_number(args, "y")?);
-            let f = server.editor.script_place(required(args, "symbol")?, page, x, y, text(args, "device"))?;
-            let p = server.editor.project();
-            let func = p.function(f).map_err(|e| e.to_string())?;
-            let tag = p.label_of(func).to_owned();
-            let points = points_of(p, func);
-            changed(server, json!({ "tag": tag, "x": func.position.x, "y": func.position.y, "points": points }))
-        }
-        "connect" => {
-            let id = server.editor.script_connect(required(args, "from")?, required(args, "to")?)?;
-            let wire = server.editor.project().connection(id).ok().and_then(|c| c.wire_number.clone());
-            changed(server, json!({ "wire": wire }))
-        }
-        "add_wire" => {
-            let id =
-                server.editor.script_add_wire(required(args, "from")?, required(args, "to")?, text(args, "number"))?;
-            changed(server, json!({ "wire": id.0.to_string(), "drawn": false }))
-        }
-        "delete_wire" => {
-            let wire = server.editor.script_disconnect(required(args, "at")?)?;
-            changed(server, json!({ "deleted_wire": wire }))
-        }
-        "delete_device" => {
-            let tag = required(args, "tag")?;
-            server.editor.script_delete_device(tag)?;
-            changed(server, json!({ "deleted": tag }))
-        }
-        "edit_device" => {
-            let tag = required(args, "tag")?;
-            server.editor.script_edit_device(tag, text(args, "new_tag"), text(args, "description"))?;
-            changed(server, json!({ "tag": text(args, "new_tag").unwrap_or(tag) }))
-        }
-        "set_plc_channel" => {
-            let (card, channel) = (required(args, "card")?, required(args, "channel")?);
-            let (address, symbol, comment) = (text(args, "address"), text(args, "symbol"), text(args, "comment"));
-            server.editor.script_set_plc_channel(card, channel, address, symbol, comment)?;
-            changed(server, json!({ "channel": format!("{card}:{channel}") }))
-        }
-        "undo" | "redo" => {
-            let done = if name == "undo" { server.editor.undo() } else { server.editor.redo() };
-            let label = done.map_err(|e| e.to_string())?;
-            let key = if name == "undo" { "undid" } else { "redid" };
-            changed(server, json!({ key: label }))
-        }
-        "save" => server.save(),
         "reload" => server.reload(),
-        other => Err(format!("unknown tool `{other}`")),
-    }
-}
-
-/// An edit's result, with whether the project now has unsaved changes and what undo would do.
-fn changed(server: &Server, mut value: Value) -> Result<Value, String> {
-    value["unsaved_changes"] = json!(server.editor.is_dirty());
-    value["undo"] = json!(server.editor.undo_label());
-    Ok(value)
-}
-
-fn overview(server: &Server) -> Value {
-    let p = server.editor.project();
-    let checks = ecad_rules::check(p);
-    let errors = checks.iter().filter(|c| c.severity == ecad_rules::Severity::Error).count();
-    let pages: Vec<Value> = p
-        .pages_in_order()
-        .iter()
-        .enumerate()
-        .map(|(n, page)| json!({ "number": n + 1, "name": page.name, "description": page.description }))
-        .collect();
-    json!({
-        "project": p.name,
-        "folder": server.dir.display().to_string(),
-        "pages": pages,
-        "devices": p.devices.len(),
-        "symbols_placed": p.functions.len(),
-        "wires": p.connections.len(),
-        "errors": errors,
-        "warnings": checks.len() - errors,
-        "unsaved_changes": server.editor.is_dirty(),
-        "undo": server.editor.undo_label(),
-        "redo": server.editor.redo_label(),
-        "can_edit": server.writable,
-    })
-}
-
-fn numbering(p: &Project) -> Value {
-    use ecad_model::numbering::Kind;
-    let n = &p.numbering;
-    let entries = |m: &std::collections::BTreeMap<ecad_model::Identifier, String>| -> Vec<Value> {
-        m.iter().map(|(id, note)| json!({ "identifier": p.describe_identifier(id), "note": note })).collect()
-    };
-    let policies: serde_json::Map<String, Value> = Kind::ALL
-        .iter()
-        .map(|k| (k.label().to_owned(), serde_json::to_value(n.policies.strategy(*k)).unwrap_or_default()))
-        .collect();
-    let capacities: Vec<Value> = n
-        .capacities
-        .iter()
-        .map(|(d, c)| json!({ "device": p.device(*d).map(|d| d.tag.clone()).unwrap_or_default(), "capacity": c }))
-        .collect();
-    json!({
-        "policies": policies,
-        "page_suffix": n.policies.page_suffix,
-        "capacities": capacities,
-        "reserved": entries(&n.reserved),
-        "retired": entries(&n.retired),
-    })
-}
-
-fn page_name(p: &Project, page: ecad_model::PageId) -> String {
-    p.page(page).map(|pg| pg.name.clone()).unwrap_or_default()
-}
-
-fn list_devices(p: &Project, page: Option<&str>) -> Result<Value, String> {
-    let only = page.map(|name| find_page(p, name)).transpose()?;
-    let mut devices: Vec<&ecad_model::Device> = p.devices.values().collect();
-    devices.sort_by(|a, b| a.tag.cmp(&b.tag));
-    let list: Vec<Value> = devices
-        .into_iter()
-        .filter(|d| only.is_none_or(|pg| p.functions_of(d.id).any(|f| f.page == pg)))
-        .map(|d| {
-            let drawings: Vec<Value> = p
-                .functions_of(d.id)
-                .map(|f| json!({ "symbol": f.symbol.0, "page": page_name(p, f.page), "x": f.position.x, "y": f.position.y }))
+        "list_proposals" => {
+            let list = change::proposals(&server.dir)?;
+            let rows: Vec<Value> = list
+                .iter()
+                .map(|l| json!({ "id": l.change_set.id, "title": l.change_set.title, "actor": l.change_set.actor.label(), "status": l.status, "hash": l.hash, "base": l.change_set.base.to_string() }))
                 .collect();
-            let parts: Vec<Value> = d.parts.iter().map(|r| part_json(p, r)).collect();
-            json!({ "tag": d.tag, "description": d.description, "parts": parts, "drawings": drawings })
-        })
-        .collect();
-    // Potentials, interruptions and junctions are nodes (D1), found by kind, name and scope.
-    let nodes: Vec<Value> = p
-        .nodes
-        .values()
-        .filter(|n| only.is_none_or(|pg| p.drawings_of_node(n.id).any(|f| f.page == pg)))
-        .map(|n| {
-            let drawings: Vec<Value> = p
-                .drawings_of_node(n.id)
-                .map(|f| json!({ "symbol": f.symbol.0, "page": page_name(p, f.page), "x": f.position.x, "y": f.position.y }))
-                .collect();
-            json!({ "kind": n.kind.label(), "name": n.name, "scope": n.scope, "description": n.description, "drawings": drawings })
-        })
-        .collect();
-    Ok(json!({ "devices": list, "nodes": nodes }))
-}
-
-/// A device's product: its number and maker as the catalogue has them, its id, the quantity.
-fn part_json(p: &Project, r: &ecad_model::PartRef) -> Value {
-    let part = p.parts.get(&r.product);
-    json!({
-        "product": r.product.0.to_string(),
-        "number": part.map(|x| x.number.as_str()),
-        "manufacturer": part.map(|x| x.manufacturer.as_str()),
-        "quantity": r.quantity,
-    })
-}
-
-/// A drawing's connection points as drawn, each with its wire and that wire's other end.
-fn points_of(p: &Project, f: &ecad_model::Function) -> Vec<Value> {
-    let Ok(symbol) = p.symbol(&f.symbol) else { return Vec::new() };
-    symbol
-        .connection_points
-        .iter()
-        .map(|cp| {
-            let r = ecad_model::ConnectionRef::new(f.id, &cp.name);
-            let wire = p.connection_at(&r).map(|c| {
-                let other = if c.from == r { &c.to } else { &c.from };
-                let to = p.describe(other).map(|(t, pt)| format!("{t}:{pt}")).unwrap_or_default();
-                json!({ "number": c.wire_number, "to": to })
-            });
-            json!({ "point": p.designation(f, &cp.name), "wire": wire })
-        })
-        .collect()
-}
-
-fn device_details(p: &Project, tag: &str) -> Result<Value, String> {
-    // A node by name, if no device has the tag (scripts that treat L+ as a device).
-    if p.device_by_tag(tag).is_none() && p.functions.values().any(|f| f.node.is_some() && p.label_of(f) == tag) {
-        let drawings: Vec<Value> = p
-            .functions
-            .values()
-            .filter(|f| f.node.is_some() && p.label_of(f) == tag)
-            .map(|f| json!({ "symbol": f.symbol.0, "page": page_name(p, f.page), "x": f.position.x, "y": f.position.y, "points": points_of(p, f) }))
-            .collect();
-        return Ok(json!({ "tag": tag, "node": true, "drawings": drawings }));
+            Ok(json!({ "proposals": rows }))
+        }
+        "preview_change" => {
+            let id = args["id"].as_str().unwrap_or_default();
+            let cs = change::read_proposal(&server.dir, id)?;
+            let impact = change::preview(server.editor.project(), &cs, &ecad_project::state::Quiet)?;
+            let (a, r) = (change::approvals(&server.dir)?, change::records(&server.dir)?);
+            Ok(
+                json!({ "id": cs.id, "hash": cs.hash(), "status": change::status(&a, &r, &cs.id), "base": cs.base.to_string(), "current": server.revision.to_string(), "stale": cs.base != server.revision, "impact": impact }),
+            )
+        }
+        "prepare_change" => {
+            let ops: Vec<OpCall> = args["operations"]
+                .as_array()
+                .ok_or("`operations` must be an array")?
+                .iter()
+                .map(|o| {
+                    let op = o["op"].as_str().ok_or("each operation needs `op`")?;
+                    let def = op_def(op)?;
+                    let call_args = o.get("args").cloned().unwrap_or(json!({}));
+                    registry::validate(def, &call_args).map_err(|e| format!("{op}: {e}"))?;
+                    Ok(OpCall { op: op.to_owned(), args: call_args })
+                })
+                .collect::<Result<_, String>>()?;
+            server.prepare(
+                args["title"].as_str().unwrap_or_default(),
+                args["rationale"].as_str().unwrap_or_default(),
+                ops,
+            )
+        }
+        other => {
+            if let Some(op) = other.strip_prefix("prepare_") {
+                op_def(op)?;
+                let mut call_args = args.clone();
+                let (title, rationale) = match call_args.as_object_mut() {
+                    Some(m) => (
+                        m.remove("title").and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default(),
+                        m.remove("rationale").and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default(),
+                    ),
+                    None => (String::new(), String::new()),
+                };
+                return server.prepare(&title, &rationale, vec![OpCall { op: op.to_owned(), args: call_args }]);
+            }
+            let mut value = registry::query(server.editor.project(), other, args)?;
+            if other == "project_overview" {
+                value["folder"] = json!(server.dir.display().to_string());
+                value["revision"] = json!(server.revision.to_string());
+                value["can_edit"] = json!(false);
+                value["how_to_change"] =
+                    json!("prepare a change set with a prepare_ tool; a person reviews and approves it in the app");
+            }
+            Ok(value)
+        }
     }
-    let id = find_device(p, tag)?;
-    let d = p.device(id).map_err(|e| e.to_string())?;
-    let drawings: Vec<Value> = p
-        .functions_of(id)
-        .map(|f| {
-            json!({
-                "symbol": f.symbol.0,
-                "page": page_name(p, f.page),
-                "x": f.position.x,
-                "y": f.position.y,
-                "properties": p.properties_of(f),
-                "points": points_of(p, f),
-            })
-        })
-        .collect();
-    let parts: Vec<Value> = d.parts.iter().map(|r| part_json(p, r)).collect();
-    Ok(json!({ "tag": d.tag, "description": d.description, "parts": parts, "drawings": drawings }))
-}
-
-fn list_wires(p: &Project, device: Option<&str>) -> Result<Value, String> {
-    if let Some(tag) = device {
-        find_device(p, tag)?;
-    }
-    let rows = ecad_reports::wire_list(p).map_err(|e| e.to_string())?;
-    let wires: Vec<Value> = rows
-        .iter()
-        .filter(|r| device.is_none_or(|t| r.from_tag == t || r.to_tag == t))
-        .map(|r| {
-            json!({
-                "wire": r.wire,
-                "potential": r.potential,
-                "from": format!("{}:{}", r.from_tag, r.from_point),
-                "to": format!("{}:{}", r.to_tag, r.to_point),
-                "cross_section": r.cross_section,
-                "colour": r.colour,
-                "cable": r.cable,
-                "core": r.core,
-                "length_mm": r.length,
-                "drawn": r.route != "not drawn",
-            })
-        })
-        .collect();
-    Ok(json!({ "wires": wires }))
-}
-
-fn run_checks(p: &Project) -> Result<Value, String> {
-    let checks = ecad_rules::check(p);
-    let errors = checks.iter().filter(|c| c.severity == ecad_rules::Severity::Error).count();
-    let list: Vec<Value> = checks
-        .iter()
-        .map(|c| json!({ "rule": c.rule, "severity": c.severity, "message": c.message, "location": c.location }))
-        .collect();
-    Ok(json!({ "errors": errors, "warnings": checks.len() - errors, "checks": list }))
-}
-
-fn list_symbols(p: &Project, search: Option<&str>) -> Value {
-    let needle = search.map(str::to_lowercase);
-    let list: Vec<Value> = p
-        .symbols
-        .values()
-        .filter(|s| {
-            needle.as_deref().is_none_or(|n| {
-                [&s.id.0, &s.description, &s.category].iter().any(|t| t.to_lowercase().contains(n))
-            })
-        })
-        .map(|s| {
-            let points: Vec<&str> = s.connection_points.iter().map(|c| c.name.as_str()).collect();
-            json!({ "id": s.id.0, "description": s.description, "category": s.category, "tag_prefix": s.tag_prefix, "points": points })
-        })
-        .collect();
-    json!({ "symbols": list })
 }

@@ -1,14 +1,15 @@
 //! An MCP (Model Context Protocol) server for one Electric Studio project.
 //!
 //! It speaks JSON-RPC 2.0 over stdin and stdout, one message per line, as MCP's stdio
-//! transport does. Read tools describe the project (pages, devices, wires, checks, reports,
-//! the symbol library). With `--write`, edit tools change it through the editor's commands,
-//! one undo step each; changes stay in memory until the `save` tool writes the project folder.
-//! Without `--write` the edit tools aren't offered at all.
+//! transport does. Its tools are generated from the engineering registry
+//! (`ecad_editor::registry`): queries read the project as last committed; operations only
+//! **prepare** change sets, stored as proposals in the project folder (`proposals/`) with their
+//! preview. Nothing an MCP client does changes the project (D18, D32): a person reviews and
+//! approves the exact proposal in the app, which applies it as one transaction. There is no
+//! write mode (`--write` was removed in AI0).
 //!
-//! Saving is safe beside the editor and other servers: the folder is written as one step
-//! (`ecad_project::store`), one saver at a time, and a save is refused if someone else saved
-//! since this server loaded or last saved (then `reload` brings their version in).
+//! The server labels everything it prepares as the connected assistant's: the actor is
+//! assigned here, from the client's own `initialize` information, recorded as a claim (D31).
 //!
 //! Every message is checked before anything runs: the JSON-RPC envelope (`jsonrpc`, `id`,
 //! `method`, `params`), the MCP lifecycle (`initialize` first, once), and a tool's arguments
@@ -26,11 +27,11 @@ pub const PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-2
 const INSTRUCTIONS: &str = "\
 This server holds one Electric Studio electrical schematic project. Devices have tags like -K1; \
 a connection point is written TAG:POINT as drawn (-K1:A1, -X1:3). Pages are named as in the \
-project (list them with project_overview). Start with project_overview and run_checks. Edit tools, \
-when offered, change the project in memory with one undo step each; nothing reaches the project \
-folder until you call save. If save says the project changed on disk, someone else saved it: \
-reload to get their version (your unsaved changes are dropped). Positions are mm on the page, \
-snapped to a 4 mm grid.";
+project (list them with project_overview). Start with project_overview and run_checks. You can't \
+change the project: prepare_ tools and prepare_change prepare a change set (a proposal) with its \
+preview, and a person reviews and approves it in the Electric Studio app, which applies it as one \
+step. preview_change and list_proposals show where proposals stand. If a proposal is stale (the \
+project changed), reload and prepare it again. Positions are mm on the page, snapped to a 4 mm grid.";
 
 /// JSON-RPC error codes.
 const PARSE_ERROR: i64 = -32700;
@@ -51,9 +52,10 @@ enum Phase {
 pub struct Server {
     dir: PathBuf,
     editor: Editor,
-    writable: bool,
-    /// The folder as loaded or last saved, so a save over someone else's is refused.
-    seen: Option<ecad_project::Fingerprint>,
+    /// The committed revision loaded: what proposals are prepared against.
+    revision: ecad_project::Revision,
+    /// The connected assistant, as trusted code labels it (its name a claim).
+    actor: ecad_editor::change::Actor,
     phase: Phase,
 }
 
@@ -61,10 +63,15 @@ pub struct Server {
 struct RpcError(i64, String);
 
 impl Server {
-    /// Open the project in `dir`. With `writable` false the edit tools aren't offered.
-    pub fn open(dir: &Path, writable: bool) -> Result<Server, String> {
-        let (editor, seen) = load(dir)?;
-        Ok(Server { dir: dir.to_owned(), editor, writable, seen, phase: Phase::New })
+    /// Open the project in `dir`, read-only: an assistant prepares proposals, never applies.
+    pub fn open(dir: &Path) -> Result<Server, String> {
+        let (editor, revision) = load(dir)?;
+        let actor = ecad_editor::change::Actor::Assistant {
+            client: "unknown".into(),
+            client_version: String::new(),
+            session: ecad_editor::change::new_id(),
+        };
+        Ok(Server { dir: dir.to_owned(), editor, revision, actor, phase: Phase::New })
     }
 
     pub fn editor(&self) -> &Editor {
@@ -131,7 +138,7 @@ impl Server {
             }
             ("initialize", _) => Err(RpcError(INVALID_REQUEST, "already initialized".into())),
             (_, Phase::New) => Err(RpcError(INVALID_REQUEST, "not initialized: send `initialize` first".into())),
-            ("tools/list", _) => Ok(json!({ "tools": tools::list(self.writable) })),
+            ("tools/list", _) => Ok(json!({ "tools": tools::list() })),
             ("tools/call", _) => self.call(&params),
             (other, _) => Err(RpcError(METHOD_NOT_FOUND, format!("unknown method `{other}`"))),
         };
@@ -141,7 +148,20 @@ impl Server {
         })
     }
 
-    fn initialize(&self, params: &Map<String, Value>) -> Value {
+    fn initialize(&mut self, params: &Map<String, Value>) -> Value {
+        // The client says who it is; that is recorded as its claim, never trusted as identity.
+        if let ecad_editor::change::Actor::Assistant { client, client_version, .. } = &mut self.actor {
+            let info = params.get("clientInfo");
+            *client = info
+                .and_then(|i| i.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .chars()
+                .take(80)
+                .collect();
+            *client_version =
+                info.and_then(|i| i.get("version")).and_then(Value::as_str).unwrap_or("").chars().take(40).collect();
+        }
         let asked = params.get("protocolVersion").and_then(Value::as_str).unwrap_or_default();
         let version = PROTOCOL_VERSIONS.iter().find(|v| **v == asked).unwrap_or(&PROTOCOL_VERSIONS[0]);
         json!({
@@ -154,10 +174,14 @@ impl Server {
 
     fn call(&mut self, params: &Map<String, Value>) -> Result<Value, RpcError> {
         let name = params.get("name").and_then(Value::as_str).ok_or(RpcError(INVALID_PARAMS, "no tool name".into()))?;
-        let offered = tools::list(self.writable);
+        let offered = tools::list();
         let Some(definition) = offered.iter().find(|t| t["name"] == name) else {
-            let why = if tools::list(true).iter().any(|t| t["name"] == name) {
-                format!("`{name}` edits the project; start the server with --write to allow it")
+            let why = if ["save", "undo", "redo", "place_symbol", "connect", "delete_device", "edit_device"]
+                .contains(&name)
+            {
+                format!(
+                    "`{name}` would change the project, and MCP clients can't (D32): use prepare_{name} to propose it for a person to approve in the app"
+                )
             } else {
                 format!("unknown tool `{name}`")
             };
@@ -182,49 +206,59 @@ impl Server {
         })
     }
 
-    /// Save, unless there is nothing to save or someone else saved since this server loaded
-    /// or last saved.
-    fn save(&mut self) -> Result<Value, String> {
-        if !self.editor.is_dirty() {
-            return Ok(json!({ "saved": false, "reason": "no unsaved changes" }));
-        }
-        // A format 1 conversion with ambiguous mappings is saved by a person, in the app.
-        let findings = ecad_project::conversion_findings(&self.dir).map_err(|e| e.to_string())?;
-        if !findings.is_empty() {
-            let list: Vec<String> = findings.iter().map(ToString::to_string).collect();
-            return Err(format!(
-                "not saved: converting this format 1 project kept these apart without merging them, and a person must decide: {}",
-                list.join("; ")
-            ));
-        }
-        match ecad_project::save_checked(self.editor.project(), &self.dir, self.seen) {
-            Ok(seen) => {
-                self.seen = Some(seen);
-                self.editor.mark_saved();
-                Ok(json!({ "saved": true, "folder": self.dir.display().to_string() }))
-            }
-            Err(e @ ecad_project::ProjectError::Changed(_)) => Err(format!(
-                "{e}. Call reload to get the saved version (this drops your unsaved changes), then redo them."
-            )),
-            Err(e) => Err(e.to_string()),
-        }
+    /// Prepare a change set against the loaded revision and store it as a proposal.
+    fn prepare(
+        &mut self,
+        title: &str,
+        rationale: &str,
+        ops: Vec<ecad_editor::change::OpCall>,
+    ) -> Result<Value, String> {
+        use ecad_editor::change;
+        let cs =
+            change::prepare(self.editor.project(), self.revision.clone(), self.actor.clone(), title, rationale, ops)?;
+        let impact = change::preview(self.editor.project(), &cs, &ecad_project::state::Quiet)?;
+        change::save_proposal(&self.dir, &cs)?;
+        Ok(json!({
+            "proposal": cs.id,
+            "hash": cs.hash(),
+            "base": cs.base.to_string(),
+            "status": "pending: a person reviews and approves it in the Electric Studio app",
+            "impact": impact,
+        }))
     }
 
-    /// Load the folder again, dropping unsaved changes.
+    /// Load the folder again, as last committed.
     fn reload(&mut self) -> Result<Value, String> {
-        let dropped = self.editor.is_dirty();
-        let (editor, seen) = load(&self.dir)?;
+        let (editor, revision) = load(&self.dir)?;
         self.editor = editor;
-        self.seen = seen;
-        Ok(json!({ "reloaded": self.dir.display().to_string(), "dropped_unsaved_changes": dropped }))
+        self.revision = revision;
+        Ok(json!({ "reloaded": self.dir.display().to_string(), "revision": self.revision.to_string() }))
     }
 }
 
-/// The project for editing, and the folder's fingerprint as loaded.
-fn load(dir: &Path) -> Result<(Editor, Option<ecad_project::Fingerprint>), String> {
-    let (editor, seen) =
-        ecad_editor::session::load_editor_checked(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    Ok((editor, Some(seen)))
+/// The project as committed, and its revision. A folder changed outside Electric Studio is
+/// refused until a person reconciles it in the app (D43).
+fn load(dir: &Path) -> Result<(Editor, ecad_project::Revision), String> {
+    let v =
+        ecad_project::state::verify(dir, &ecad_project::state::Quiet).map_err(|e| format!("{}: {e}", dir.display()))?;
+    if v.committed.is_some() && !v.clean() {
+        return Err(format!(
+            "{}: changed outside Electric Studio ({}); a person reconciles it in the app",
+            dir.display(),
+            v.summary()
+        ));
+    }
+    let (editor, _) = ecad_editor::session::load_editor_checked(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    // A project saved before AI0 is adopted (its first manifest), so proposals have a base.
+    let revision = ecad_editor::change::adopt(
+        dir,
+        ecad_editor::change::Actor::Assistant {
+            client: "ecad-mcp".into(),
+            client_version: env!("CARGO_PKG_VERSION").into(),
+            session: String::new(),
+        },
+    )?;
+    Ok((editor, revision))
 }
 
 fn error_reply(id: Value, RpcError(code, message): RpcError) -> Value {

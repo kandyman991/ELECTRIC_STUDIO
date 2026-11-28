@@ -104,7 +104,8 @@ fn the_session_asks_for_a_second_save_and_the_cli_for_accept_conversion() {
     let dir = tmp.path().join("p");
     copy_dir(&fixture(), &dir);
     let mut s = ecad_editor::Session::open(&dir).unwrap();
-    assert!(s.frame(None, [0, 0, 0]).status.contains("kept apart"));
+    let st = s.frame(None, [0, 0, 0]).status;
+    assert!(st.contains("kept apart"), "{st}");
     s.save();
     assert!(s.frame(None, [0, 0, 0]).status.starts_with("Not saved yet"));
     assert_eq!(ecad_project::format_of(&dir).unwrap(), 1, "nothing written");

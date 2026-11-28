@@ -332,6 +332,11 @@ impl Project {
             if self.numbering.capacities.contains_key(&device) {
                 out.push(Command::SetCapacity { device, capacity: None });
             }
+            // A removed safety-related device takes its marking with it; the change's preview
+            // reports it as a safety impact (D19).
+            if self.safety_related.contains(&device) {
+                out.push(Command::SetSafetyRelated { device, related: false });
+            }
         }
         out.extend(cmds);
         let mut after = self.clone();

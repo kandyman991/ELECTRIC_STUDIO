@@ -222,7 +222,9 @@ fn a_page_inserted_after_3_is_3a_and_no_other_page_changes() {
         .filter(|(name, bytes)| files_before.get(*name) != Some(bytes))
         .map(|(name, _)| name)
         .collect();
-    // project.json lists the pages; the new page has a file of its own; nothing else changes.
+    // project.json lists the pages; the new page has a file of its own; nothing else changes
+    // (besides the committed manifest and the retained copy of the new contents, AI0).
+    let changed: Vec<&String> = changed.into_iter().filter(|n| !n.starts_with(".ecad/")).collect();
     assert_eq!(changed.len(), 2, "{changed:?}");
     assert!(changed.iter().any(|n| n.as_str() == "project.json"));
     assert!(changed.iter().any(|n| n.contains(&id.0.to_string())));

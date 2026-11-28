@@ -18,6 +18,7 @@ pub mod numbering;
 pub mod panel;
 pub mod parts;
 pub mod plc_address;
+pub mod policy;
 pub mod potential;
 pub mod project;
 pub mod reference;

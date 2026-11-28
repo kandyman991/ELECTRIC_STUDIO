@@ -183,6 +183,44 @@ pub enum UiEvent {
     PreviewRenumbering {
         scope: RenumberScope,
     },
+    /// Read the proposals in the project folder again (AI0).
+    RefreshProposals,
+    /// Open a proposal in the review panel: its preview against the project as open.
+    ReviewProposal {
+        id: String,
+    },
+    CloseReview,
+    /// Approve the proposal under review and apply it, as one transaction and one undo step.
+    /// The separate confirmations it needs (safety impact, global operation) are given here.
+    ApproveProposal {
+        confirm_safety: bool,
+        confirm_global: bool,
+    },
+    /// Approve the proposal under review for `ecad apply` (trusted automation's proposals).
+    ApproveForCli {
+        confirm_safety: bool,
+        confirm_global: bool,
+    },
+    RejectProposal,
+    /// Accept changes made outside Electric Studio as a new revision (D43).
+    AcceptOutsideChanges {
+        acknowledge_incomplete: bool,
+    },
+    /// Put the last committed files back.
+    RestoreCommitted,
+    /// Verify the folder against its committed manifest, in the background.
+    VerifyProject,
+    CancelTask,
+    /// Run the shared release validation.
+    ReleaseCheck,
+    /// Set the project's automation scope (D42): which classes trusted automation may apply.
+    SetAutomation {
+        classes: Vec<ecad_model::policy::AutomationClass>,
+    },
+    /// Mark the selected device safety-related, or unmark it.
+    SetSafetyRelated {
+        related: bool,
+    },
     /// Apply the renumbering being previewed, as one undo step.
     ConfirmRenumbering,
     CancelRenumbering,
@@ -362,6 +400,8 @@ pub enum SelectionInfo {
         plc: Option<PlcInfo>,
         /// The labels of the boxes around this drawing, outermost first (`+A101 -XCPR1`).
         location: String,
+        /// Marked safety-related (D19).
+        safety_related: bool,
     },
     Wire {
         number: Option<String>,
@@ -528,6 +568,20 @@ pub struct Frame {
     pub prompt: Option<String>,
     /// A renumbering previewed and waiting to be confirmed or cancelled.
     pub renumbering: Option<RenumberingInfo>,
+    /// Proposals in the folder (AI0).
+    pub proposals: Vec<review::ProposalRow>,
+    /// The proposal open in the review panel.
+    pub review: Option<review::ReviewInfo>,
+    /// Outside changes waiting to be reconciled.
+    pub reconcile: Option<review::ReconcileInfo>,
+    /// A long operation running, with its progress.
+    pub task: Option<review::TaskInfo>,
+    /// The last release check.
+    pub release: Option<ecad_rules::release::Release>,
+    /// The project's automation scope.
+    pub automation: Vec<ecad_model::policy::AutomationClass>,
+    /// The committed revision, as `ecad apply --expect` takes it.
+    pub committed: String,
     /// The window may close now.
     pub close: bool,
 }
@@ -577,7 +631,18 @@ pub struct Session {
     conversion: Vec<String>,
     /// A previewed renumbering waiting for confirmation (S0).
     renumbering: Option<ecad_model::renumber::Renumbering>,
+    /// The committed revision loaded or last saved, and the editor's revision then (AI0).
+    committed: ecad_project::Revision,
+    committed_at: u64,
+    review: Option<review::Review>,
+    proposals: Vec<review::ProposalRow>,
+    reconcile: Option<review::Reconcile>,
+    task: Option<review::Running>,
+    release: Option<ecad_rules::release::Release>,
 }
+
+mod review;
+pub use review::{ProposalRow, ReconcileInfo, ReviewInfo, TaskInfo};
 
 fn first_page_editor(project: Project) -> Result<Editor, String> {
     let page = *project.pages.keys().next().ok_or("the project has no pages")?;
@@ -617,8 +682,20 @@ fn blank_project(dir: &Path) -> Project {
 impl Session {
     /// Open the project in `dir`, or create the sample project there when the folder has none.
     pub fn open(dir: &Path) -> Result<Self, String> {
+        let mut unloadable = None;
         let (editor, seen) = if dir.join("project.json").exists() {
-            load_editor_checked(dir)?
+            match load_editor_checked(dir) {
+                Ok(loaded) => loaded,
+                // Damaged or invalid files with a committed manifest: open the last commit, to
+                // restore it (D43); the files on disk are never overwritten in place.
+                Err(e) if ecad_project::state::committed(dir).is_ok_and(|r| r.generation > 0) => {
+                    let p =
+                        ecad_project::state::load_committed(dir).map_err(|c| format!("{e}; the last commit: {c}"))?;
+                    unloadable = Some(e);
+                    (first_page_editor(p)?, ecad_project::fingerprint(dir).map_err(|e| e.to_string())?)
+                }
+                Err(e) => return Err(e),
+            }
         } else {
             let p = ecad_model::sample::start_circuit().map_err(|e| e.to_string())?;
             let seen = ecad_project::save_checked(&p, dir, None).map_err(|e| e.to_string())?;
@@ -636,7 +713,19 @@ impl Session {
             seen: Some(seen),
             conversion: Vec::new(),
             renumbering: None,
+            committed: ecad_project::Revision { project: String::new(), generation: 0, content: String::new() },
+            committed_at: 0,
+            review: None,
+            proposals: Vec::new(),
+            reconcile: None,
+            task: None,
+            release: None,
         };
+        session.after_open();
+        if let Some(e) = unloadable {
+            let v = ecad_project::state::verify(dir, &ecad_project::state::Quiet).unwrap_or_default();
+            session.note_outside_changes(&v, Some(e));
+        }
         session.note_conversion();
         Ok(session)
     }
@@ -675,6 +764,7 @@ impl Session {
 
     pub fn handle(&mut self, ev: UiEvent) {
         self.message = None;
+        self.poll_task();
         // While a question is open, only the answer and view changes are accepted.
         if self.pending.is_some()
             && !matches!(ev, UiEvent::Confirm { .. } | UiEvent::Resize { .. } | UiEvent::CloseRequested)
@@ -779,6 +869,36 @@ impl Session {
                 self.report(r);
             }
             UiEvent::Save => self.save(),
+            UiEvent::RefreshProposals => self.refresh_proposals(),
+            UiEvent::ReviewProposal { id } => self.review_proposal(&id),
+            UiEvent::CloseReview => self.review = None,
+            UiEvent::ApproveProposal { confirm_safety, confirm_global } => {
+                self.approve_and_apply(crate::change::Confirmations { safety: confirm_safety, global: confirm_global });
+            }
+            UiEvent::ApproveForCli { confirm_safety, confirm_global } => {
+                self.approve_for_cli(crate::change::Confirmations { safety: confirm_safety, global: confirm_global });
+            }
+            UiEvent::RejectProposal => self.reject_proposal(),
+            UiEvent::AcceptOutsideChanges { acknowledge_incomplete } => {
+                self.accept_outside_changes(acknowledge_incomplete)
+            }
+            UiEvent::RestoreCommitted => self.restore_committed(),
+            UiEvent::VerifyProject => self.start_verify(),
+            UiEvent::CancelTask => self.cancel_task(),
+            UiEvent::ReleaseCheck => self.release_check(),
+            UiEvent::SetAutomation { classes } => {
+                let a = ecad_model::policy::Automation { allowed: classes.into_iter().collect() };
+                let r = self.editor.run("Set automation scope", vec![ecad_model::Command::SetAutomation(a)]);
+                self.report(r);
+            }
+            UiEvent::SetSafetyRelated { related } => match self.selected_device() {
+                Some(device) => {
+                    let label = if related { "Mark safety-related" } else { "Unmark safety-related" };
+                    let r = self.editor.run(label, vec![ecad_model::Command::SetSafetyRelated { device, related }]);
+                    self.report(r);
+                }
+                None => self.message = Some("Select a device first".into()),
+            },
             UiEvent::Fit => self.fit(),
             UiEvent::Open { path } => self.request(Pending::Open(path)),
             UiEvent::New { path } => self.request(Pending::New(path)),
@@ -1056,6 +1176,7 @@ impl Session {
         self.seen = Some(seen);
         self.dir = dir;
         self.panning = None;
+        self.after_open();
         self.note_conversion();
         self.fit();
     }
@@ -1080,15 +1201,38 @@ impl Session {
             ));
             return;
         }
+        if self.reconcile.is_some() {
+            self.message = Some("Not saved: the folder changed outside Electric Studio; restore the committed files or accept the changes first".into());
+            return;
+        }
         let upgrade = ecad_project::upgrade_note(&self.dir);
-        self.message = Some(match ecad_project::save_checked(self.editor.project(), &self.dir, self.seen) {
-            Ok(seen) => {
+        // The person's edits since the last save, undo steps included, as a change record.
+        let mut extras = ecad_project::state::Extras::default();
+        if !self.editor.actions().is_empty() {
+            let mut r = crate::change::ChangeRecord::new(
+                crate::change::Actor::person(),
+                crate::change::RecordKind::Edits,
+                "Edits in the app",
+                "applied",
+            );
+            r.steps = self.editor.actions().to_vec();
+            r.base = Some(self.committed.clone());
+            r.result = self.editor.project().content_hash().ok();
+            extras.workflow.push(r.file());
+        }
+        self.message = Some(match ecad_project::save_with(self.editor.project(), &self.dir, self.seen, extras) {
+            Ok((seen, revision)) => {
                 self.seen = Some(seen);
+                self.committed = revision;
                 self.editor.mark_saved();
+                self.committed_at = self.editor.revision();
                 match upgrade {
                     Some(note) => format!("Saved to {}: {note}", self.dir.display()),
                     None => format!("Saved to {}", self.dir.display()),
                 }
+            }
+            Err(e @ ecad_project::ProjectError::External { .. }) => {
+                format!("Save failed: {e}. Your changes are still open here")
             }
             Err(e @ ecad_project::ProjectError::Changed(_)) => {
                 format!(
@@ -1341,6 +1485,7 @@ impl Session {
                     Role::Single => Vec::new(),
                 };
                 Some(SelectionInfo::Device {
+                    safety_related: project.safety_related.contains(&d.id),
                     tag: d.tag.clone(),
                     description: d.description.clone(),
                     symbol: f.symbol.0.clone(),
@@ -1588,6 +1733,13 @@ impl Session {
                 })
                 .collect(),
             prompt,
+            proposals: self.proposals.clone(),
+            review: self.review_info(),
+            reconcile: self.reconcile_info(),
+            task: self.task_info(),
+            release: self.release.clone(),
+            automation: project.automation.allowed.iter().copied().collect(),
+            committed: self.committed.to_string(),
             renumbering: self.renumbering.as_ref().map(|r| RenumberingInfo {
                 title: match r.scope {
                     ecad_model::renumber::Scope::Wires => "Renumber all wires".into(),
