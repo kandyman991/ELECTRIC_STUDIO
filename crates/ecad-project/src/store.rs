@@ -14,15 +14,13 @@
 //! journal means it didn't: staged files are deleted and the folder is the project before the
 //! save. Either way it loads as one complete revision.
 //!
-//! `.ecad-lock`, created exclusively for the length of a save, keeps two programs (the editor
-//! and the MCP server) from saving the same folder at once; one left behind by a crash is
-//! taken over after [`STALE_LOCK`].
+//! `.ecad-lock` is a persistent file with an exclusive OS lock held for the transaction.
+//! Closing the handle, including on process exit, releases the lock. Never unlink it.
 
 use crate::{ProjectError, Result, io};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::path::Path;
 
 /// The journal of a save in progress.
 pub const JOURNAL: &str = ".ecad-save.json";
@@ -30,8 +28,6 @@ pub const JOURNAL: &str = ".ecad-save.json";
 pub const LOCK: &str = ".ecad-lock";
 /// A new file waiting to replace its target.
 pub const STAGED: &str = ".ecad-new";
-/// A lock older than this is left over from a crash.
-pub const STALE_LOCK: Duration = Duration::from_secs(120);
 
 /// The folders that hold project files, besides the project folder itself.
 const SUBDIRS: [&str; 3] = ["pages", "symbols", "underlays"];
@@ -287,41 +283,29 @@ pub fn recover(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The folder's save lock, released when dropped.
+/// The folder's save lock, released by the OS when the handle is closed.
 pub struct Lock {
-    path: PathBuf,
+    _file: std::fs::File,
 }
 
 impl Lock {
     /// Take the lock, or fail with [`ProjectError::Busy`] while another program holds it.
     pub fn take(dir: &Path) -> Result<Lock> {
         let path = dir.join(LOCK);
-        for attempt in 0..2 {
-            match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(mut f) => {
-                    let _ = writeln!(f, "{}", std::process::id());
-                    return Ok(Lock { path });
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && attempt == 0 => {
-                    let age = std::fs::metadata(&path).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
-                    if age.is_some_and(|a| a > STALE_LOCK) {
-                        let _ = std::fs::remove_file(&path);
-                        continue;
-                    }
-                    return Err(ProjectError::Busy(dir.to_owned()));
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    return Err(ProjectError::Busy(dir.to_owned()));
-                }
-                Err(e) => return Err(io(&path)(e)),
-            }
+        if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(ProjectError::Canonical { path, reason: "unsafe lock file".into() });
         }
-        Err(ProjectError::Busy(dir.to_owned()))
-    }
-}
-
-impl Drop for Lock {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(io(&path))?;
+        match file.try_lock() {
+            Ok(()) => Ok(Lock { _file: file }),
+            Err(std::fs::TryLockError::WouldBlock) => Err(ProjectError::Busy(dir.to_owned())),
+            Err(std::fs::TryLockError::Error(e)) => Err(io(&path)(e)),
+        }
     }
 }
