@@ -473,9 +473,7 @@ pub fn compare(before: &Project, after: &Project, progress: &dyn Progress) -> Re
         i.safety_indirect.push("topology of a safety-related potential changed".into());
     }
     for (id, node) in before.nodes.iter().chain(&after.nodes) {
-        if safety_endpoints.contains(&ecad_model::Endpoint::Node(*id))
-            && before.nodes.get(id) != after.nodes.get(id)
-        {
+        if safety_endpoints.contains(&ecad_model::Endpoint::Node(*id)) && before.nodes.get(id) != after.nodes.get(id) {
             i.safety_indirect.push(format!("node {} (on a safety-related potential)", node.name));
         }
     }
