@@ -118,16 +118,26 @@ Known limitations and review points (M10):
   can't be removed while bridged. There is no editor panel for bridges yet (script/model only).
 - **Saving refuses a project with unresolved drawn wire ends** (R1), rather than writing
   something load would reject.
-- **Undrawn report rows** say `not drawn` in the location column; undrawn strip terminals are
-  paired by point order within their group.
+- **Undrawn report rows** identify canonical physical points and bridge components, with
+  `not drawn` in the location column for points lacking representations. When no complete
+  symbol representation supplies inside/outside order, the two legacy columns are ordered
+  point slots, not inferred cabinet/field sides. Drawn and undrawn wires are aggregated by
+  terminal identity across repeated representations.
+- **Bridge mutation consistency:** removing a depicted bridge is refused until its
+  representation is reconciled; save validates the same invariant as load. Detaching a
+  drawing retains any bridge component touching a surviving terminal, including intermediate
+  points without direct wires. Only wholly unused components are discarded.
+- Format 2 was not released before M10 acceptance; interim development snapshots without
+  `bridges.json` are refused, not silently reconstructed. Preserve the format 1 source for
+  deterministic migration.
 - **Node drawings are `Function`s** with `device: DeviceId::NONE` (nil, omitted on disk) and
   `node: Some(id)`, rather than a separate `NodeDrawing` type: routing, rendering, selection
   and editing work unchanged. Code that needs a device checks `f.node` first.
 - **A drawn wire's ends are not stored twice in memory:** they are read from its graphics
   through the persistent terminal and node maps, which renumbering, moving and re-routing
   never change; `wires.json` stores them, and load verifies they agree.
-- **Wire numbering** (`renumber_all_wires`, per-potential numbering) applies to drawn wires;
-  an undrawn wire keeps the number it is given.
+- **Wire numbering** (`renumber_all_wires`, per-potential numbering) includes drawn and
+  undrawn wires; ordinary graphical edits do not renumber either.
 - **The editor UI** has no panel for undrawn wires yet (they are added by script or MCP and
   shown by the wire list and checks); schematic generation (M13) draws them.
 - **New potentials placed in the editor** are new nodes; joining one to an existing
