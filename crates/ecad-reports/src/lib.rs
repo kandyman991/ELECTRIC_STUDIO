@@ -629,8 +629,8 @@ pub fn netlist_csv(project: &Project) -> Result<String, ModelError> {
             .unresolved
             .iter()
             .map(|u| {
-                let tag = project.function(u.end.function).ok().and_then(|f| project.device(f.device).ok());
-                format!("{}:{}", tag.map(|d| d.tag.clone()).unwrap_or_default(), u.end.point)
+                let tag = project.function(u.end.function).map(|f| project.label_of(f).to_owned()).unwrap_or_default();
+                format!("{tag}:{}", u.end.point)
             })
             .collect();
         return Err(ModelError::IncompleteNetlist(ends.join(", ")));
@@ -657,7 +657,9 @@ pub fn netlist_csv(project: &Project) -> Result<String, ModelError> {
                         NodeKind::Potential => "potential",
                         NodeKind::Interruption => "interruption",
                     };
-                    (n.id.0, kind.to_owned(), tag(n.device), String::new(), String::new(), n.name.clone())
+                    // A node is no device (M10c): its name stands in the device column.
+                    let designation = if n.kind == NodeKind::Junction { String::new() } else { n.name.clone() };
+                    (n.id.0, kind.to_owned(), n.name.clone(), String::new(), String::new(), designation)
                 }
             };
             let drawn: Vec<String> =
@@ -862,6 +864,7 @@ mod tests {
         let designations = p.next_designations(strip, &symbol);
         let page = p.function(ecad_model::sample::X2_1).unwrap().page;
         p.place(ecad_model::Function {
+            node: None,
             terminals: Default::default(),
             id: ecad_model::FunctionId::new(),
             device: strip,

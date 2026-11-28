@@ -5,7 +5,7 @@
 
 use crate::view::Viewport;
 use crate::{Editor, Key, Overlay, Primitive, Selected, Tool};
-use ecad_model::{Page, PageId, Part, PartRef, Point, ProductId, Project, Role, SymbolId};
+use ecad_model::{DeviceId, Page, PageId, Part, PartRef, Point, ProductId, Project, Role, SymbolId};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -546,6 +546,9 @@ pub struct Session {
     /// The folder as last loaded or saved, so a save over someone else's (the MCP server's,
     /// another window's) is refused rather than lost.
     seen: Option<ecad_project::Fingerprint>,
+    /// Ambiguous mappings found converting a format 1 project (section 9, D33): until saved
+    /// once knowingly, a save says what they are and asks to be repeated.
+    conversion: Vec<String>,
 }
 
 fn first_page_editor(project: Project) -> Result<Editor, String> {
@@ -593,7 +596,7 @@ impl Session {
             let seen = ecad_project::save_checked(&p, dir, None).map_err(|e| e.to_string())?;
             (first_page_editor(p)?, seen)
         };
-        Ok(Session {
+        let mut session = Session {
             editor,
             view: Viewport::default(),
             dir: dir.to_owned(),
@@ -603,7 +606,10 @@ impl Session {
             pending: None,
             closing: false,
             seen: Some(seen),
-        })
+            conversion: Vec::new(),
+        };
+        session.note_conversion();
+        Ok(session)
     }
 
     pub fn editor(&self) -> &Editor {
@@ -989,10 +995,30 @@ impl Session {
         self.seen = Some(seen);
         self.dir = dir;
         self.panning = None;
+        self.note_conversion();
         self.fit();
     }
 
+    /// What converting the folder's format 1 project found ambiguous, said on opening.
+    fn note_conversion(&mut self) {
+        self.conversion = ecad_project::conversion_findings(&self.dir)
+            .map(|f| f.iter().map(ToString::to_string).collect())
+            .unwrap_or_default();
+        if !self.conversion.is_empty() {
+            self.message =
+                Some(format!("Converted from format 1; kept apart, nothing merged: {}", self.conversion.join("; ")));
+        }
+    }
+
     pub fn save(&mut self) {
+        // Ambiguous conversions: say what they are; the next save is the knowing one.
+        if !self.conversion.is_empty() {
+            self.message = Some(format!(
+                "Not saved yet: converting from format 1 kept these apart without merging them: {}. Save again to save it so",
+                std::mem::take(&mut self.conversion).join("; ")
+            ));
+            return;
+        }
         let upgrade = ecad_project::upgrade_note(&self.dir);
         self.message = Some(match ecad_project::save_checked(self.editor.project(), &self.dir, self.seen) {
             Ok(seen) => {
@@ -1192,7 +1218,16 @@ impl Session {
             }
             Selected::Function(f) => {
                 let f = project.function(f).ok()?;
-                let d = project.device(f.device).ok()?;
+                // A node drawing shows its node as the "device": its name and description.
+                let stand_in;
+                let d = match f.node {
+                    Some(n) => {
+                        let node = project.nodes.get(&n)?;
+                        stand_in = ecad_model::Device::new(DeviceId::NONE, &node.name, &node.description);
+                        &stand_in
+                    }
+                    None => project.device(f.device).ok()?,
+                };
                 let role = project.role(f.id).ok()?;
                 let references = match role {
                     Role::Main => project
@@ -1212,7 +1247,7 @@ impl Session {
                         .unwrap_or_default(),
                     // Potential and interruption points: the device's other drawings.
                     Role::Potential | Role::Interruption => project
-                        .functions_of(d.id)
+                        .drawings_of_node(f.node?)
                         .filter(|g| g.id != f.id)
                         .filter_map(|g| {
                             let at = project.function_location(g.id).ok()?;

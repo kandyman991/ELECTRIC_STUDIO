@@ -36,6 +36,7 @@ pub fn start_circuit() -> Result<Project> {
     for (dev, tag, desc, sym, fun, (x, y), rotation) in devices {
         let device = p.add_device(Device::new(DeviceId::from_u128(dev), tag, desc))?;
         p.place(Function {
+            node: None,
             terminals: Default::default(),
             id: FunctionId::from_u128(fun),
             device,
@@ -111,6 +112,7 @@ pub fn with_contacts() -> Result<Project> {
         let symbol = SymbolId::new(symbol);
         let designations = p.next_designations(k1, &symbol);
         p.place(Function {
+            node: None,
             terminals: Default::default(),
             id,
             device: k1,
@@ -142,6 +144,7 @@ pub fn with_potentials() -> Result<Project> {
             p.add_device(Device::new(device, tag, ""))?;
         }
         p.place(Function {
+            node: None,
             terminals: Default::default(),
             id: fid(f),
             device,
@@ -203,6 +206,7 @@ pub fn with_terminals() -> Result<Project> {
     for (id, y) in [(X2_1, 56.0), (X2_2, 26.0)] {
         let designations = p.next_designations(strip, &symbol);
         p.place(Function {
+            node: None,
             terminals: Default::default(),
             id,
             device: strip,
@@ -283,6 +287,7 @@ pub fn with_plc() -> Result<Project> {
         let designations = p.next_designations(dev, &symbol);
         let properties = p.new_drawing_properties(&symbol);
         p.place(Function {
+            node: None,
             terminals: Default::default(),
             id: f,
             device: dev,
@@ -366,6 +371,7 @@ pub fn with_power() -> Result<Project> {
         let symbol = SymbolId::new(sym);
         let designations = p.next_designations(dev, &symbol);
         p.place(Function {
+            node: None,
             terminals: Default::default(),
             id: fid(f),
             device: dev,
@@ -517,6 +523,7 @@ pub fn library_overview() -> Result<Project> {
             p.add_device(Device::new(device, &tag, ""))?;
             let designations = p.next_designations(device, &id);
             p.place(Function {
+                node: None,
                 terminals: Default::default(),
                 id: FunctionId::from_u128(next_id),
                 device,

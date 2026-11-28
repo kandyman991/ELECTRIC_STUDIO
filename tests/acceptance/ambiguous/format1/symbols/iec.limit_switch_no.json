@@ -1,0 +1,102 @@
+{
+  "id": "iec.limit_switch_no",
+  "description": "Limit switch, normally open",
+  "tag_prefix": "-SQ",
+  "role": {
+    "type": "Contact",
+    "kind": "NormallyOpen"
+  },
+  "category": "Sensors and switches",
+  "graphics": [
+    {
+      "Line": {
+        "a": {
+          "x": 0.0,
+          "y": 8.0
+        },
+        "b": {
+          "x": 0.0,
+          "y": 3.0
+        }
+      }
+    },
+    {
+      "Line": {
+        "a": {
+          "x": 0.0,
+          "y": 3.0
+        },
+        "b": {
+          "x": -3.0,
+          "y": -3.0
+        }
+      }
+    },
+    {
+      "Line": {
+        "a": {
+          "x": 0.0,
+          "y": -3.0
+        },
+        "b": {
+          "x": 0.0,
+          "y": -8.0
+        }
+      }
+    },
+    {
+      "Line": {
+        "a": {
+          "x": -1.5,
+          "y": 0.0
+        },
+        "b": {
+          "x": -3.1,
+          "y": 1.2
+        }
+      }
+    },
+    {
+      "Line": {
+        "a": {
+          "x": -3.1,
+          "y": 1.2
+        },
+        "b": {
+          "x": -3.1,
+          "y": -1.2
+        }
+      }
+    },
+    {
+      "Line": {
+        "a": {
+          "x": -3.1,
+          "y": -1.2
+        },
+        "b": {
+          "x": -1.5,
+          "y": 0.0
+        }
+      }
+    }
+  ],
+  "connection_points": [
+    {
+      "name": "13",
+      "at": {
+        "x": 0.0,
+        "y": 8.0
+      },
+      "leaves": "Up"
+    },
+    {
+      "name": "14",
+      "at": {
+        "x": 0.0,
+        "y": -8.0
+      },
+      "leaves": "Down"
+    }
+  ]
+}

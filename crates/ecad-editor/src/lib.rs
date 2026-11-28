@@ -429,8 +429,15 @@ impl Editor {
         for b in self.project.boxes_on(page) {
             cmds.push(Command::RemoveBox(b.id));
         }
-        // Devices drawn only on this page go with it.
-        let mut devices: Vec<DeviceId> = on_page.iter().map(|f| f.device).collect();
+        // Devices and nodes drawn only on this page go with it.
+        let mut nodes: Vec<ecad_model::NodeId> = on_page.iter().filter_map(|f| f.node).collect();
+        nodes.sort();
+        nodes.dedup();
+        let nodes_going: Vec<ecad_model::NodeId> = nodes
+            .into_iter()
+            .filter(|n| self.project.functions.values().all(|f| f.node != Some(*n) || f.page == page))
+            .collect();
+        let mut devices: Vec<DeviceId> = on_page.iter().filter(|f| f.node.is_none()).map(|f| f.device).collect();
         devices.sort();
         devices.dedup();
         let going: Vec<DeviceId> = devices
@@ -440,6 +447,7 @@ impl Editor {
         // The page's plate and items, and the footprints of the devices that go with it.
         cmds.extend(self.clear_panel_commands(page, &going));
         cmds.extend(going.into_iter().map(Command::RemoveDevice));
+        cmds.extend(nodes_going.into_iter().map(Command::RemoveNode));
         if self.project.underlays.contains_key(&page) {
             cmds.push(Command::SetUnderlay { page, underlay: None });
         }
@@ -523,18 +531,55 @@ impl Editor {
         self.selection = s;
     }
 
-    /// Rename the selected symbol's device.
+    /// Rename the selected symbol's device, or its node (a potential, interruption or junction).
+    /// A node takes a name another node of its kind already has in its scope only through
+    /// [`Editor::bind_selected`]: matching a label never joins networks (D33).
     pub fn rename_selected(&mut self, tag: &str) -> Result<(), ModelError> {
         let Some(Selected::Function(f)) = self.selection else { return Ok(()) };
+        if let Some(n) = self.project.function(f)?.node {
+            let node = self.project.nodes.get(&n).ok_or(ModelError::NoNode(n.0))?.clone();
+            let name = tag.trim();
+            if self
+                .project
+                .nodes
+                .values()
+                .any(|o| o.id != n && o.kind == node.kind && o.scope == node.scope && o.name == name)
+            {
+                return Err(ModelError::AmbiguousNode(node.kind.label(), name.to_owned(), node.scope));
+            }
+            let label = format!("Rename {} to {name}", node.name);
+            return self.execute(&label, Command::SetNode(ecad_model::NodeEntry { name: name.to_owned(), ..node }));
+        }
         let device = self.project.function(f)?.device;
         let old = self.project.device(device)?.tag.clone();
         let label = format!("Rename {old} to {tag}");
         self.execute(&label, Command::RenameDevice { id: device, tag: tag.to_owned() })
     }
 
+    /// Make the selected node drawing (a potential or interruption point) show the node of its
+    /// kind named `name` in its scope: the explicit way to join it to that network (D33).
+    pub fn bind_selected(&mut self, name: &str) -> Result<(), ModelError> {
+        let Some(Selected::Function(f)) = self.selection else { return Ok(()) };
+        let func = self.project.function(f)?;
+        let old = func.node.ok_or(ModelError::NotANodeSymbol)?;
+        let node = self.project.nodes.get(&old).ok_or(ModelError::NoNode(old.0))?;
+        let target = self.project.node_by_name(node.kind, name, &node.scope)?.id;
+        let mut cmds = vec![Command::Rebind { id: f, node: target }];
+        if self.project.drawings_of_node(old).count() == 1 {
+            cmds.push(Command::RemoveNode(old));
+        }
+        self.execute(&format!("Bind {} to {}", node.name, name.trim()), Command::Batch(cmds))
+    }
+
     /// Set the selected symbol's device description.
     pub fn describe_selected(&mut self, description: &str) -> Result<(), ModelError> {
         let Some(Selected::Function(f)) = self.selection else { return Ok(()) };
+        if let Some(n) = self.project.function(f)?.node {
+            let node = self.project.nodes.get(&n).ok_or(ModelError::NoNode(n.0))?.clone();
+            let label = format!("Describe {}", node.name);
+            let node = ecad_model::NodeEntry { description: description.trim().to_owned(), ..node };
+            return self.execute(&label, Command::SetNode(node));
+        }
         let device = self.project.function(f)?.device;
         let label = format!("Describe {}", self.tag_of(f));
         self.execute(&label, Command::SetDescription { id: device, description: description.trim().to_owned() })
@@ -913,8 +958,16 @@ impl Editor {
     /// footprint on a layout), undoably.
     pub(crate) fn delete_function(&mut self, f: FunctionId) -> Result<(), ModelError> {
         let label = format!("Delete {}", self.tag_of(f));
-        let device = self.project.function(f)?.device;
+        let func = self.project.function(f)?;
+        let device = func.device;
         let mut cmds = vec![Command::Unplace(f)];
+        // A node goes with its last drawing.
+        if let Some(n) = func.node {
+            if self.project.drawings_of_node(n).count() == 1 {
+                cmds.push(Command::RemoveNode(n));
+            }
+            return self.execute(&label, Command::Batch(cmds));
+        }
         if self.project.functions.values().filter(|x| x.device == device).count() == 1 {
             if let Some(item) = self.project.panel_item_of(device) {
                 cmds.push(Command::RemovePanelItem(item.id));
@@ -1157,7 +1210,7 @@ impl Editor {
     }
 
     fn tag_of(&self, f: FunctionId) -> String {
-        self.project.function(f).and_then(|f| self.project.device(f.device)).map(|d| d.tag.clone()).unwrap_or_default()
+        self.project.function(f).map(|f| self.project.label_of(f).to_owned()).unwrap_or_default()
     }
 
     fn wire_name(&self, c: ConnectionId) -> String {
@@ -1177,6 +1230,29 @@ impl Editor {
         self.project.symbol(symbol)?;
         // The project's tag format: -K1, or A2SB1 with the page in front.
         let tag = self.project.new_tag(symbol, page);
+        // A junction, potential or interruption point is a new node (D1), not a device.
+        if let Some(kind) = self.project.node_kind_of(symbol) {
+            let node = ecad_model::NodeId::new();
+            let function = FunctionId::new();
+            let cmd = Command::Batch(vec![
+                Command::AddNode(ecad_model::NodeEntry::new(node, kind, &tag)),
+                Command::Place(Function {
+                    node: Some(node),
+                    terminals: Default::default(),
+                    id: function,
+                    device: DeviceId::NONE,
+                    symbol: symbol.clone(),
+                    page,
+                    position: at,
+                    rotation: Rotation::R0,
+                    designations: Default::default(),
+                    properties: Default::default(),
+                    mirrored: false,
+                }),
+            ]);
+            self.execute(&format!("Place {tag}"), cmd)?;
+            return Ok(function);
+        }
         // A black box is one particular device: it starts with the box's description.
         let description = match self.project.symbol(symbol) {
             Ok(s) if s.id.0.starts_with("box.") => s.description.clone(),
@@ -1187,6 +1263,7 @@ impl Editor {
         let cmd = Command::Batch(vec![
             Command::AddDevice(Device::new(device, &tag, &description)),
             Command::Place(Function {
+                node: None,
                 terminals: Default::default(),
                 id: function,
                 device,
@@ -1216,6 +1293,33 @@ impl Editor {
 
     /// Place another drawing of `device` (a contact of a relay, a terminal of a strip) on
     /// `page`, undoably.
+    /// Place another drawing of `node` (a potential point on another page) on `page`, undoably.
+    pub(crate) fn place_node_drawing(
+        &mut self,
+        page: PageId,
+        symbol: &SymbolId,
+        node: ecad_model::NodeId,
+        at: Point,
+    ) -> Result<FunctionId, ModelError> {
+        let name = self.project.nodes.get(&node).ok_or(ModelError::NoNode(node.0))?.name.clone();
+        let function = FunctionId::new();
+        let f = Function {
+            node: Some(node),
+            terminals: Default::default(),
+            id: function,
+            device: DeviceId::NONE,
+            symbol: symbol.clone(),
+            page,
+            position: at,
+            rotation: Rotation::R0,
+            designations: Default::default(),
+            properties: Default::default(),
+            mirrored: false,
+        };
+        self.execute(&format!("Place {name}"), Command::Place(f))?;
+        Ok(function)
+    }
+
     pub(crate) fn place_another(
         &mut self,
         page: PageId,
@@ -1237,6 +1341,7 @@ impl Editor {
         };
         let function = FunctionId::new();
         let cmd = Command::Place(Function {
+            node: None,
             terminals: Default::default(),
             id: function,
             device,

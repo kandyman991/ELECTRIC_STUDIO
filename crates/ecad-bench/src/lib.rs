@@ -150,10 +150,23 @@ fn copy_commands(base: &Project, k: usize) -> Result<Vec<Command>> {
         d.tag = format!("{machine}{}", d.tag);
         out.push(Command::AddDevice(d));
     }
+    // Each machine's potentials keep their names in a scope of their own (D33): one line of
+    // machines, independent networks with the same labels.
+    for n in base.nodes.values() {
+        let mut n = n.clone();
+        n.id = ecad_model::NodeId(remap(k, n.id.0));
+        if n.kind != ecad_model::NodeKind::Junction {
+            n.scope = machine.clone();
+        }
+        out.push(Command::AddNode(n));
+    }
     for f in base.functions.values() {
         let mut f = f.clone();
         f.id = FunctionId(remap(k, f.id.0));
-        f.device = device_id(f.device);
+        if !f.device.is_none() {
+            f.device = device_id(f.device);
+        }
+        f.node = f.node.map(|n| ecad_model::NodeId(remap(k, n.0)));
         f.page = page_id(f.page);
         // New terminals for the copy, with the same designations.
         f.designations = base.designations_of(&f);

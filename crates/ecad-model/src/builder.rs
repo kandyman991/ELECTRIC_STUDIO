@@ -46,17 +46,77 @@ impl Builder {
     }
 
     pub(crate) fn describe(&mut self, tag: &str, description: &str) -> Result<()> {
+        // A potential is a node, described as one.
+        if let Ok(n) = self.p.node_by_name(crate::NodeKind::Potential, tag, crate::PROJECT_SCOPE) {
+            let node = crate::NodeEntry { description: description.into(), ..n.clone() };
+            return self.p.apply(Command::SetNode(node)).map(drop);
+        }
         let id = self.device(tag)?;
         self.p.apply(Command::SetDescription { id, description: description.into() }).map(drop)
     }
 
     /// A drawing of `tag` with `symbol` at (x, y), numbered as the model numbers it.
     pub(crate) fn put_r(&mut self, tag: &str, symbol: &str, x: f64, y: f64, rotation: Rotation) -> Result<F> {
-        let device = self.device(tag)?;
         let symbol = SymbolId::new(symbol);
+        if let Some(kind) = crate::connectivity::node_kind(self.p.symbol(&symbol)?) {
+            return self.put_node(kind, tag, symbol, x, y, rotation);
+        }
+        let device = self.device(tag)?;
         let designations = self.p.next_designations(device, &symbol);
         let properties = self.p.new_drawing_properties(&symbol);
         self.place(device, symbol, x, y, rotation, designations, properties)
+    }
+
+    /// A drawing of a node: a potential or interruption found by its name (in the project
+    /// scope) or new, or a new junction. Ids are drawn from the counter as format 1's devices
+    /// took them, so the nodes get the ids a format 1 conversion gives them.
+    fn put_node(
+        &mut self,
+        kind: crate::NodeKind,
+        name: &str,
+        symbol: SymbolId,
+        x: f64,
+        y: f64,
+        rotation: Rotation,
+    ) -> Result<F> {
+        let node = match kind {
+            // The junction keeps the name its device had (`J<n>`).
+            crate::NodeKind::Junction => {
+                self.id();
+                None
+            }
+            _ => match self.p.node_by_name(kind, name, crate::PROJECT_SCOPE) {
+                Ok(n) => Some(n.id),
+                Err(_) => {
+                    let n = crate::NodeId::for_device(DeviceId::from_u128(self.id()));
+                    self.p.apply(Command::AddNode(crate::NodeEntry::new(n, kind, name)))?;
+                    Some(n)
+                }
+            },
+        };
+        let id = F::from_u128(self.id());
+        let node = match node {
+            Some(n) => n,
+            None => {
+                let n = crate::NodeId::for_junction(id);
+                self.p.apply(Command::AddNode(crate::NodeEntry::new(n, kind, name)))?;
+                n
+            }
+        };
+        self.p.place(Function {
+            node: Some(node),
+            terminals: Default::default(),
+            id,
+            device: DeviceId::NONE,
+            symbol,
+            page: self.page,
+            position: Point::new(x, y),
+            rotation,
+            designations: BTreeMap::new(),
+            properties: BTreeMap::new(),
+            mirrored: false,
+        })?;
+        Ok(id)
     }
 
     pub(crate) fn put(&mut self, tag: &str, symbol: &str, x: f64, y: f64) -> Result<F> {
@@ -76,6 +136,7 @@ impl Builder {
     ) -> Result<F> {
         let id = F::from_u128(self.id());
         self.p.place(Function {
+            node: None,
             terminals: Default::default(),
             id,
             device,

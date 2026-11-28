@@ -927,6 +927,7 @@ mod tests {
         p.add_device(crate::Device::new(device, "-WB1", "")).unwrap();
         let f = crate::FunctionId::new();
         p.place(crate::Function {
+            node: None,
             terminals: Default::default(),
             id: f,
             device,
@@ -945,6 +946,7 @@ mod tests {
             p.add_device(crate::Device::new(jd, &format!("J{}", 90 + k), "")).unwrap();
             let j = crate::FunctionId::new();
             p.place(crate::Function {
+                node: None,
                 terminals: Default::default(),
                 id: j,
                 device: jd,

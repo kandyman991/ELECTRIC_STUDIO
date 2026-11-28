@@ -1,0 +1,112 @@
+{
+  "id": "iec.terminal_pe",
+  "description": "PE terminal",
+  "tag_prefix": "-X",
+  "role": {
+    "type": "Terminal"
+  },
+  "bridged": true,
+  "hide_point_labels": true,
+  "category": "Wiring",
+  "graphics": [
+    {
+      "Circle": {
+        "center": {
+          "x": 0.0,
+          "y": 0.0
+        },
+        "radius": 1.2
+      }
+    },
+    {
+      "Line": {
+        "a": {
+          "x": 0.0,
+          "y": 1.2
+        },
+        "b": {
+          "x": 0.0,
+          "y": 4.0
+        }
+      }
+    },
+    {
+      "Line": {
+        "a": {
+          "x": 0.0,
+          "y": -1.2
+        },
+        "b": {
+          "x": 0.0,
+          "y": -4.0
+        }
+      }
+    },
+    {
+      "Line": {
+        "a": {
+          "x": 1.2,
+          "y": 0.0
+        },
+        "b": {
+          "x": 2.4,
+          "y": 0.0
+        }
+      }
+    },
+    {
+      "Line": {
+        "a": {
+          "x": 2.4,
+          "y": 1.2
+        },
+        "b": {
+          "x": 2.4,
+          "y": -1.2
+        }
+      }
+    },
+    {
+      "Line": {
+        "a": {
+          "x": 3.0,
+          "y": 0.8
+        },
+        "b": {
+          "x": 3.0,
+          "y": -0.8
+        }
+      }
+    },
+    {
+      "Line": {
+        "a": {
+          "x": 3.6,
+          "y": 0.4
+        },
+        "b": {
+          "x": 3.6,
+          "y": -0.4
+        }
+      }
+    }
+  ],
+  "connection_points": [
+    {
+      "name": "1",
+      "at": {
+        "x": 0.0,
+        "y": 4.0
+      },
+      "leaves": "Up"
+    },
+    {
+      "name": "2",
+      "at": {
+        "x": 0.0,
+        "y": -4.0
+      },
+      "leaves": "Down"
+    }
+  ]
+}

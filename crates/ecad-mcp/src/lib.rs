@@ -188,6 +188,15 @@ impl Server {
         if !self.editor.is_dirty() {
             return Ok(json!({ "saved": false, "reason": "no unsaved changes" }));
         }
+        // A format 1 conversion with ambiguous mappings is saved by a person, in the app.
+        let findings = ecad_project::conversion_findings(&self.dir).map_err(|e| e.to_string())?;
+        if !findings.is_empty() {
+            let list: Vec<String> = findings.iter().map(ToString::to_string).collect();
+            return Err(format!(
+                "not saved: converting this format 1 project kept these apart without merging them, and a person must decide: {}",
+                list.join("; ")
+            ));
+        }
         match ecad_project::save_checked(self.editor.project(), &self.dir, self.seen) {
             Ok(seen) => {
                 self.seen = Some(seen);

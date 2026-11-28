@@ -102,7 +102,7 @@ pub struct Terminal {
     pub drawings: Vec<ConnectionRef>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum NodeKind {
     /// Three or more wires meeting with no physical terminal.
@@ -113,16 +113,62 @@ pub enum NodeKind {
     Interruption,
 }
 
+impl NodeKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            NodeKind::Junction => "junction",
+            NodeKind::Potential => "potential",
+            NodeKind::Interruption => "interruption",
+        }
+    }
+}
+
+impl NodeId {
+    /// A new node's id.
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        NodeId(Uuid::new_v4())
+    }
+
+    /// The node a format 1 potential or interruption device becomes (the id M7 derived).
+    pub fn for_device(d: DeviceId) -> Self {
+        NodeId(v5(&format!("node/{}", d.0)))
+    }
+
+    /// The node a format 1 junction drawing becomes (the id M7 derived).
+    pub fn for_junction(f: FunctionId) -> Self {
+        NodeId(v5(&format!("node/junction/{}", f.0)))
+    }
+
+    /// The interruption a format 1 device drawn also as a potential becomes: kept apart.
+    pub fn interruption_of(d: DeviceId) -> Self {
+        NodeId(v5(&format!("node/{}/interruption", d.0)))
+    }
+
+    /// A node split off `self` for one drawing, when a format 1 mapping is ambiguous.
+    pub fn split(self, f: FunctionId) -> Self {
+        NodeId(v5(&format!("node/{}/{}", self.0, f.0)))
+    }
+}
+
+/// The node kind a symbol's drawings show, if they show a node.
+pub(crate) fn node_kind(sym: &SymbolDef) -> Option<NodeKind> {
+    match sym.role {
+        Role::Potential => Some(NodeKind::Potential),
+        Role::Interruption => Some(NodeKind::Interruption),
+        _ if is_junction(sym) => Some(NodeKind::Junction),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Node {
     pub id: NodeId,
     pub kind: NodeKind,
     /// The displayed name (`L+`, `I1`); empty for a junction.
     pub name: String,
-    /// The naming scope the name is unique in. Format 1 projects have one scope, `project`.
+    /// The naming scope (D33). Format 1 projects have one scope, `project`.
     pub scope: String,
-    /// The device that stands for it in format 1.
-    pub device: DeviceId,
     pub drawings: Vec<ConnectionRef>,
 }
 
@@ -142,12 +188,11 @@ pub enum Ambiguity {
     /// which, so they are kept as separate terminals until a person reconciles them. Lists
     /// every group and every terminal involved.
     SharedDesignation { device: DeviceId, designation: String, groups: Vec<GroupId>, terminals: Vec<TerminalId> },
-    /// A device drawn both as a potential point and as an interruption point. Its drawings stay
-    /// one node, as before (named, as a potential), so no net is split or renamed; M10 must
-    /// decide what it is.
-    MixedLogicalRoles { device: DeviceId, node: NodeId },
-    /// A junction device drawn more than once: each drawing is its own junction.
-    JunctionDrawnTwice { device: DeviceId, nodes: Vec<NodeId> },
+    /// A node drawn with a symbol of another kind (a potential point showing an interruption):
+    /// only possible behind the commands' back.
+    MixedLogicalRoles { node: NodeId },
+    /// A junction node drawn more than once: only possible behind the commands' back.
+    JunctionDrawnTwice { node: NodeId, drawings: Vec<FunctionId> },
 }
 
 /// The derived connectivity of a project.
@@ -209,57 +254,34 @@ impl Project {
         let mut c = Connectivity::default();
         // Groups by (device, designation), to find designations printed by more than one group.
         let mut by_designation: BTreeMap<(DeviceId, String), BTreeMap<GroupId, Vec<TerminalId>>> = BTreeMap::new();
-        // Logical roles each device is drawn with: potential, interruption.
-        let mut logical_roles: BTreeMap<DeviceId, (bool, bool)> = BTreeMap::new();
-        let mut junctions: BTreeMap<DeviceId, Vec<NodeId>> = BTreeMap::new();
-
         // Functions in id order, points in symbol order, so ambiguities list in a stable order.
         for f in self.functions.values() {
             let Ok(sym) = self.symbol(&f.symbol) else { continue };
-            let Ok(device) = self.device(f.device) else { continue };
             let refs = sym.connection_points.iter().map(|cp| ConnectionRef::new(f.id, &cp.name));
 
-            if sym.role.joins_drawings() {
-                let id = NodeId(v5(&format!("node/{}", f.device.0)));
-                let roles = logical_roles.entry(f.device).or_default();
-                if sym.role == Role::Potential {
-                    roles.0 = true;
-                } else {
-                    roles.1 = true;
+            // A node drawing: its points are the node it is bound to (D1).
+            if let Some(n) = f.node {
+                let Some(entry) = self.nodes.get(&n) else { continue };
+                if node_kind(sym) != Some(entry.kind) {
+                    c.ambiguities.push(Ambiguity::MixedLogicalRoles { node: n });
                 }
-                // The kind is settled below from all its drawings, whatever their order.
-                let node = c.nodes.entry(id).or_insert_with(|| Node {
-                    id,
-                    kind: NodeKind::Interruption,
-                    name: device.tag.clone(),
-                    scope: "project".into(),
-                    device: f.device,
+                let node = c.nodes.entry(n).or_insert_with(|| Node {
+                    id: n,
+                    kind: entry.kind,
+                    name: entry.name.clone(),
+                    scope: entry.scope.clone(),
                     drawings: Vec::new(),
                 });
                 for r in refs {
-                    c.by_point.insert((r.function, r.point.clone()), Endpoint::Node(id));
+                    c.by_point.insert((r.function, r.point.clone()), Endpoint::Node(n));
                     node.drawings.push(r);
                 }
                 continue;
             }
-            if is_junction(sym) {
-                let id = NodeId(v5(&format!("node/junction/{}", f.id.0)));
-                junctions.entry(f.device).or_default().push(id);
-                let drawings: Vec<ConnectionRef> = refs.collect();
-                for r in &drawings {
-                    c.by_point.insert((r.function, r.point.clone()), Endpoint::Node(id));
-                }
-                c.nodes.insert(
-                    id,
-                    Node {
-                        id,
-                        kind: NodeKind::Junction,
-                        name: String::new(),
-                        scope: "project".into(),
-                        device: f.device,
-                        drawings,
-                    },
-                );
+            if !bears_terminals(sym) {
+                continue;
+            }
+            if self.device(f.device).is_err() {
                 continue;
             }
 
@@ -344,14 +366,21 @@ impl Project {
         }
         c.bridges.sort();
         c.bridges.dedup();
-        for (device, (potential, interruption)) in logical_roles {
-            let id = NodeId(v5(&format!("node/{}", device.0)));
-            if let Some(node) = c.nodes.get_mut(&id) {
-                // As before M7a: drawn as a potential point anywhere, it names its net.
-                node.kind = if potential { NodeKind::Potential } else { NodeKind::Interruption };
-            }
-            if potential && interruption {
-                c.ambiguities.push(Ambiguity::MixedLogicalRoles { device, node: id });
+        // Nodes no drawing shows yet; junctions drawn more than once.
+        for n in self.nodes.values() {
+            c.nodes.entry(n.id).or_insert_with(|| Node {
+                id: n.id,
+                kind: n.kind,
+                name: n.name.clone(),
+                scope: n.scope.clone(),
+                drawings: Vec::new(),
+            });
+        }
+        for n in c.nodes.values() {
+            let mut drawings: Vec<FunctionId> = n.drawings.iter().map(|r| r.function).collect();
+            drawings.dedup();
+            if n.kind == NodeKind::Junction && drawings.len() > 1 {
+                c.ambiguities.push(Ambiguity::JunctionDrawnTwice { node: n.id, drawings });
             }
         }
         for ((device, designation), groups) in by_designation {
@@ -359,11 +388,6 @@ impl Project {
                 let terminals = groups.values().flatten().copied().collect();
                 let groups = groups.into_keys().collect();
                 c.ambiguities.push(Ambiguity::SharedDesignation { device, designation, groups, terminals });
-            }
-        }
-        for (device, nodes) in junctions {
-            if nodes.len() > 1 {
-                c.ambiguities.push(Ambiguity::JunctionDrawnTwice { device, nodes });
             }
         }
         c
@@ -501,6 +525,7 @@ mod tests {
 
     fn function(device: DeviceId, symbol: &str, x: f64, designations: &[(&str, &str)]) -> Function {
         Function {
+            node: None,
             terminals: Default::default(),
             id: FunctionId::new(),
             device,
@@ -519,6 +544,92 @@ mod tests {
         let id = f.id;
         p.place(f).unwrap();
         id
+    }
+
+    // ---- M10c: nodes ----
+
+    fn potential_drawing(node: NodeId, x: f64) -> Function {
+        Function { node: Some(node), ..function(DeviceId::NONE, "iec.supply", x, &[]) }
+    }
+
+    #[test]
+    fn potentials_are_nodes_bound_by_id_not_devices() {
+        let p = sample::with_potentials().unwrap();
+        assert!(p.device_by_tag("L+").is_none() && p.device_by_tag("J1").is_none());
+        let l_plus = p.node_by_name(NodeKind::Potential, "L+", crate::PROJECT_SCOPE).unwrap();
+        assert_eq!(l_plus.id, NodeId::for_device(DeviceId::from_u128(0x101)), "the id M7 derived");
+        assert_eq!(p.drawings_of_node(l_plus.id).count(), 2, "page 1 and page 2");
+        assert_eq!(p.nodes[&NodeId::for_junction(sample::JUNCTION_1)].kind, NodeKind::Junction);
+    }
+
+    #[test]
+    fn independent_networks_with_the_same_labels_stay_separate() {
+        let mut p = sample::start_circuit().unwrap();
+        // A second L+, of another machine: its own node, in its own scope or in the same one.
+        for scope in ["=M2", crate::PROJECT_SCOPE] {
+            let other = NodeId::new();
+            let node =
+                crate::NodeEntry { scope: scope.into(), ..crate::NodeEntry::new(other, NodeKind::Potential, "L+") };
+            p.apply(Command::AddNode(node)).unwrap();
+            let f = potential_drawing(other, 300.0 + p.functions.len() as f64 * 8.0);
+            let f_id = f.id;
+            p.place(f).unwrap();
+            let c = p.connectivity();
+            let first = c.endpoint(&ConnectionRef::new(FunctionId::from_u128(0x201), "1")).unwrap();
+            let second = c.endpoint(&ConnectionRef::new(f_id, "1")).unwrap();
+            assert_ne!(first, second, "{scope}: same label, separate networks");
+            let n = p.netlist();
+            assert!(!n.nets.iter().any(|net| net.endpoints.contains(&first) && net.endpoints.contains(&second)));
+        }
+        // Two L+ in one scope: a lookup by name refuses to choose.
+        assert_eq!(
+            p.node_by_name(NodeKind::Potential, "L+", crate::PROJECT_SCOPE).unwrap_err(),
+            ModelError::AmbiguousNode("potential", "L+".into(), crate::PROJECT_SCOPE.into())
+        );
+        assert!(p.node_by_name(NodeKind::Potential, "L+", "=M2").is_ok());
+    }
+
+    #[test]
+    fn renaming_a_node_changes_no_id_and_only_rebinding_joins_networks() {
+        let mut p = sample::with_potentials().unwrap();
+        let l_plus = p.node_by_name(NodeKind::Potential, "L+", crate::PROJECT_SCOPE).unwrap().clone();
+        let ends = |p: &Project| p.connectivity().by_point.clone();
+        let before = ends(&p);
+        let wires = p.connections.clone();
+        let undo = p.apply(Command::SetNode(crate::NodeEntry { name: "24V".into(), ..l_plus.clone() })).unwrap();
+        assert_eq!(p.nodes[&l_plus.id].name, "24V");
+        assert_eq!(ends(&p), before, "every point shows the node it did");
+        assert_eq!(p.connections, wires);
+        p.apply(undo).unwrap();
+        // A new potential point named L+ is its own node until bound explicitly.
+        let other = NodeId::new();
+        p.apply(Command::AddNode(crate::NodeEntry::new(other, NodeKind::Potential, "L+"))).unwrap();
+        let f = potential_drawing(other, 300.0);
+        let f_id = f.id;
+        p.place(f).unwrap();
+        assert_ne!(
+            p.connectivity().endpoint(&ConnectionRef::new(f_id, "1")),
+            before.get(&(FunctionId::from_u128(0x201), "1".into())).copied()
+        );
+        let undo = p.apply(Command::Rebind { id: f_id, node: l_plus.id }).unwrap();
+        assert_eq!(p.connectivity().endpoint(&ConnectionRef::new(f_id, "1")), Some(Endpoint::Node(l_plus.id)));
+        // Kinds must match; a drawn node can't be removed.
+        let m = p.node_by_name(NodeKind::Potential, "M", crate::PROJECT_SCOPE).unwrap().id;
+        let i1 = p.node_by_name(NodeKind::Interruption, "I1", crate::PROJECT_SCOPE).unwrap().id;
+        assert!(p.apply(Command::Rebind { id: f_id, node: i1 }).is_err());
+        assert_eq!(p.apply(Command::RemoveNode(m)).unwrap_err(), ModelError::NodeInUse(m.0));
+        p.apply(undo).unwrap();
+        assert_eq!(p.function(f_id).unwrap().node, Some(other));
+        // A node symbol needs a node, a device symbol a device.
+        let bare = function(DeviceId::NONE, "iec.supply", 320.0, &[]);
+        assert_eq!(p.apply(Command::Place(bare)).unwrap_err(), ModelError::NodeDrawingNeedsNode("potential"));
+        let k1 = DeviceId::from_u128(0x103);
+        let coil_on_node = Function { node: Some(m), ..function(k1, "iec.coil", 340.0, &[]) };
+        assert_eq!(p.apply(Command::Place(coil_on_node)).unwrap_err(), ModelError::NotANodeSymbol);
+        assert_eq!(
+            p.apply(Command::AddNode(crate::NodeEntry::new(NodeId::new(), NodeKind::Potential, " "))).unwrap_err(),
+            ModelError::EmptyNodeName("potential")
+        );
     }
 
     // ---- M10b: terminals as entities ----
@@ -684,54 +795,21 @@ mod tests {
         }
     }
 
-    /// A device drawn as both a potential point and an interruption point (the model allows
-    /// it): one node, named as a potential whichever drawing sorts first, its net kept whole and
-    /// still clashing with another named potential, and reported for M10.
+    /// A potential's node drawn with an interruption symbol: the commands refuse it (a drawing
+    /// shows a node of its symbol's kind); behind their back it is reported.
     #[test]
-    fn a_device_drawn_as_potential_and_interruption_keeps_its_name_in_either_order() {
-        for interruption_first in [true, false] {
-            let mut p = sample::start_circuit().unwrap();
-            let l_plus = DeviceId::from_u128(0x101);
-            let existing = p.functions_of(l_plus).next().unwrap().id;
-            // An interruption drawing of L+ whose id sorts before or after the potential's.
-            let id = if interruption_first { FunctionId::from_u128(0x1) } else { FunctionId::from_u128(0xffff) };
-            assert_eq!(id < existing, interruption_first);
-            let f = Function { id, ..function(l_plus, "iec.interruption", 100.0, &[]) };
-            p.place(f).unwrap();
-            // Wire the interruption drawing to M: L+ is now shorted to M.
-            let m = p.functions_of(DeviceId::from_u128(0x104)).next().unwrap().id;
-            let m_point = ConnectionRef::new(m, "1");
-            if let Some(old) = p.connection_at(&m_point).map(|c| c.id) {
-                p.apply(Command::Disconnect(old)).unwrap();
-            }
-            p.apply(Command::Connect(Connection {
-                id: ConnectionId::new(),
-                from: ConnectionRef::new(id, "1"),
-                to: m_point,
-                wire_number: None,
-                spec: Default::default(),
-                bend: None,
-            }))
-            .unwrap();
-            let c = p.connectivity();
-            let node = c.nodes.values().find(|n| n.device == l_plus).unwrap();
-            assert_eq!((node.kind, node.name.as_str(), node.drawings.len()), (NodeKind::Potential, "L+", 2));
-            assert!(
-                c.ambiguities
-                    .iter()
-                    .any(|a| matches!(a, Ambiguity::MixedLogicalRoles { device, .. } if *device == l_plus))
-            );
-            let clash: Vec<Net> = p.netlist().nets.into_iter().filter(|n| n.names.len() > 1).collect();
-            assert_eq!(clash.len(), 1, "order {interruption_first}");
-            assert_eq!(clash[0].names, ["L+", "M"]);
-            // Exactly as before M7a.
-            let names = |v: Vec<crate::Potential>| {
-                let mut n: Vec<Vec<String>> = v.into_iter().map(|p| p.names).collect();
-                n.sort();
-                n
-            };
-            assert_eq!(names(p.potentials()), names(p.potentials_legacy()));
-        }
+    fn a_node_drawn_with_a_symbol_of_another_kind_is_refused_or_reported() {
+        let mut p = sample::start_circuit().unwrap();
+        let l_plus = p.node_by_name(NodeKind::Potential, "L+", crate::PROJECT_SCOPE).unwrap().id;
+        let f = Function {
+            node: Some(l_plus),
+            device: DeviceId::NONE,
+            ..function(DeviceId::NONE, "iec.interruption", 100.0, &[])
+        };
+        assert_eq!(p.apply(Command::Place(f.clone())).unwrap_err(), ModelError::NodeDrawingNeedsNode("interruption"));
+        p.functions.insert(f.id, f);
+        let c = p.connectivity();
+        assert!(c.ambiguities.iter().any(|a| matches!(a, Ambiguity::MixedLogicalRoles { node } if *node == l_plus)));
     }
 
     #[test]
@@ -882,13 +960,17 @@ mod tests {
     }
 
     #[test]
-    fn a_junction_drawn_twice_is_reported() {
+    fn a_junction_drawn_twice_is_refused_or_reported() {
         let mut p = sample::with_potentials().unwrap();
-        let j1 = p.function(sample::JUNCTION_1).unwrap().device;
-        place(&mut p, j1, "iec.junction", 120.0, &[]);
+        let j1 = p.function(sample::JUNCTION_1).unwrap().node;
+        let again = Function { node: j1, ..function(DeviceId::NONE, "iec.junction", 120.0, &[]) };
+        assert_eq!(p.apply(Command::Place(again.clone())).unwrap_err(), ModelError::JunctionDrawnTwice);
+        p.functions.insert(again.id, again);
         let c = p.connectivity();
         assert!(
-            c.ambiguities.iter().any(|a| matches!(a, Ambiguity::JunctionDrawnTwice { nodes, .. } if nodes.len() == 2))
+            c.ambiguities
+                .iter()
+                .any(|a| matches!(a, Ambiguity::JunctionDrawnTwice { drawings, .. } if drawings.len() == 2))
         );
     }
 
