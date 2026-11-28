@@ -192,6 +192,14 @@ pub fn read_manifest(dir: &Path) -> Result<Option<Manifest>> {
     if let Some(p) = m.files.keys().find(|p| is_workflow(p)) {
         problems.push(format!("`{p}` is a workflow file listed as engineering"));
     }
+    for (name, entry) in m.files.iter().chain(&m.workflow) {
+        if entry.sha256.len() != 64 || !entry.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+            problems.push(format!("invalid object hash for {name}"));
+        }
+    }
+    for name in m.workflow.keys().filter(|p| !is_workflow(p)) {
+        problems.push(format!("`{name}` is not a workflow path"));
+    }
     if !problems.is_empty() {
         return Err(ProjectError::Canonical { path, reason: problems.join("; ") });
     }
@@ -683,7 +691,10 @@ pub fn restore(dir: &Path) -> Result<Vec<String>> {
     // Prepare all workflow restoration bytes before quarantining anything. A legacy
     // project with already-damaged workflow data may lack a retained copy; fail closed.
     for path in v.modified.iter().chain(&v.missing).filter(|p| is_workflow(p)) {
-        let entry = &manifest.workflow[path];
+        let entry = manifest.workflow.get(path).ok_or_else(|| ProjectError::Canonical {
+            path: dir.join(path),
+            reason: "workflow entry missing from manifest".into(),
+        })?;
         let object = dir.join(OBJECTS).join(&entry.sha256);
         let bytes = std::fs::read(&object).map_err(io(&object))?;
         if sha256(&bytes) != entry.sha256 || bytes.len() as u64 != entry.size {
@@ -697,11 +708,10 @@ pub fn restore(dir: &Path) -> Result<Vec<String>> {
     let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
     let quarantine = dir.join(QUARANTINE).join(n.to_string());
     let mut touched = Vec::new();
-    for path in v.modified.iter().chain(&v.added) {
+    for path in v.modified.iter().chain(&v.added).chain(&v.missing) {
         check_on_disk(dir, path).map_err(|reason| ProjectError::Canonical { path: dir.join(path), reason })?;
     }
     for path in v.modified.iter().chain(&v.added) {
-        check_on_disk(dir, path).map_err(|reason| ProjectError::Canonical { path: dir.join(path), reason })?;
         let target = quarantine.join(path);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(io(parent))?;
