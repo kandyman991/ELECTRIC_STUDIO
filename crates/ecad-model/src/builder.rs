@@ -30,7 +30,9 @@ impl Builder {
             name: name.into(),
             description: description.into(),
             subtitle: subtitle.into(),
-            order: order.into(),
+            // Sparse keys, as format 2 stores them, so a page can be inserted between two
+            // without touching either (D25).
+            order: crate::PAGE_STEP * (u64::from(order) + 1),
         }))?;
         self.page = id;
         Ok(())

@@ -10,6 +10,8 @@
 //!   nodes.json            junctions, potentials and interruptions (D1), with scoped names
 //!   bridges.json          internal bridges between terminals of one device (R7)
 //!   cables.json           cables, sorted by tag
+//!   numbering.json        numbering policies, reserved and retired identifiers, capacities
+//!                         (S0); optional: a project saved before S0 has the defaults
 //!   symbols/<id>.json     one file per symbol used by the project
 //!   wires.json            every wire (D1): id, its two ends (terminal or node), number, make
 //!   pages/<page-id>.json  the drawings on that page, and the wire graphics drawn there
@@ -384,6 +386,7 @@ fn render(project: &Project) -> Result<Vec<(String, Vec<u8>)>> {
     }
     wires.sort_by_key(|w| w.id);
     files.push(("wires.json".to_owned(), render_json(Path::new("wires.json"), &wires)?));
+    files.push(("numbering.json".to_owned(), render_json(Path::new("numbering.json"), &project.numbering)?));
 
     for page in project.pages.keys() {
         let file = PageFile {
@@ -793,6 +796,22 @@ pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>
     }
     if legacy {
         findings.extend(split_joining_interruptions(&mut project).map_err(model(dir))?);
+    }
+    // Numbering last, through its commands, so a reservation or retirement that conflicts with
+    // an assignment (in use, both reserved and retired, out of a capacity) is refused, never
+    // silently dropped or reallocated. Optional: projects saved before S0 have the defaults.
+    let path = dir.join("numbering.json");
+    if path.exists() {
+        let n: ecad_model::Numbering = read_json(&path)?;
+        project.apply(Command::SetNumberingPolicies(n.policies)).map_err(model(&path))?;
+        for (device, capacity) in n.capacities {
+            project.apply(Command::SetCapacity { device, capacity: Some(capacity) }).map_err(model(&path))?;
+        }
+        let records = |m: std::collections::BTreeMap<ecad_model::Identifier, String>| {
+            m.into_iter().map(|(id, note)| ecad_model::Record { id, note }).collect::<Vec<_>>()
+        };
+        project.apply(Command::Reserve(records(n.reserved))).map_err(model(&path))?;
+        project.apply(Command::Retire(records(n.retired))).map_err(model(&path))?;
     }
     project.sheet = match sheet {
         Some(s) => s,

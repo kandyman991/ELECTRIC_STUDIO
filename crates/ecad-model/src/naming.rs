@@ -140,6 +140,7 @@ fn valid(format: &str, allowed: &[&str]) -> bool {
 }
 
 /// The first name `before{n}after`, n from 1, for which `taken` is false.
+#[cfg(test)]
 fn first_free(before: &str, width: usize, after: &str, taken: impl Fn(&str) -> bool) -> String {
     (1..).map(|n| format!("{before}{n:0width$}{after}")).find(|s| !taken(s)).unwrap_or_default()
 }
@@ -156,7 +157,14 @@ impl Project {
         let page = self.page(page).map(|p| p.name.clone()).unwrap_or_default();
         let parts = if is_device { split(&self.naming.tag_format, &page, &prefix[1..]) } else { None };
         match parts {
-            Some((before, width, after)) => first_free(&before, width, &after, |t| self.device_by_tag(t).is_some()),
+            // Sequential by default (D22): after the highest tag ever given in this series.
+            Some((before, width, after)) => self.next_in_series(
+                crate::numbering::Kind::Tag,
+                (&before, width, &after),
+                |t| self.device_by_tag(t).is_some() || self.nodes.values().any(|n| n.name == t),
+                self.devices.values().map(|d| d.tag.clone()),
+                |tag| crate::numbering::Identifier::Tag { tag },
+            ),
             None => self.next_tag(if prefix.is_empty() { "-" } else { &prefix }),
         }
     }
@@ -179,17 +187,28 @@ impl Project {
     }
 
     fn wire_number_taken(&self, number: &str) -> bool {
-        self.connections.values().any(|c| c.wire_number.as_deref() == Some(number))
-            || self.undrawn.values().any(|w| w.wire_number.as_deref() == Some(number))
+        self.wire_number_in_use(number)
+            || !self.available(&crate::numbering::Identifier::Wire { number: number.to_owned() })
     }
 
-    /// The first free number from the wire format on `page`.
+    /// The next number from the wire format on `page`, by the wire numbering policy
+    /// (sequential by default, D22), skipping reserved and retired numbers.
     pub fn next_wire_number(&self, page: PageId) -> String {
         let page = self.page(page).map(|p| p.name.clone()).unwrap_or_default();
-        match split(&self.naming.wire_format, &page, "") {
-            Some((before, width, after)) => first_free(&before, width, &after, |n| self.wire_number_taken(n)),
-            None => first_free("W", 0, "", |n| self.wire_number_taken(n)),
-        }
+        let (before, width, after) =
+            split(&self.naming.wire_format, &page, "").unwrap_or(("W".into(), 0, String::new()));
+        let numbers = self
+            .connections
+            .values()
+            .filter_map(|c| c.wire_number.clone())
+            .chain(self.undrawn.values().filter_map(|w| w.wire_number.clone()));
+        self.next_in_series(
+            crate::numbering::Kind::Wire,
+            (&before, width, &after),
+            |n| self.wire_number_in_use(n),
+            numbers,
+            |number| crate::numbering::Identifier::Wire { number },
+        )
     }
 
     /// The number for a new wire from `from` to `to`, and the wires that must take it too. Per

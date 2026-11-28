@@ -206,24 +206,19 @@ impl Editor {
 
     /// Add a layout page after the current one, with a plate of this size, and show it.
     pub fn add_layout_page(&mut self, width: f64, height: f64) -> Result<(), ModelError> {
-        let order: Vec<PageId> = self.project.pages_in_order().iter().map(|p| p.id).collect();
-        let at = order.iter().position(|p| *p == self.page).map_or(order.len(), |i| i + 1);
-        let name = (1..).map(|n| format!("L{n}")).find(|n| !self.project.pages.values().any(|p| &p.name == n));
+        let name = (1..).map(|n| format!("L{n}")).find(|n| {
+            !self.project.pages.values().any(|p| &p.name == n)
+                && self.project.available(&ecad_model::Identifier::Page { name: n.clone() })
+        });
         let mut page = Page::new(&name.unwrap_or_default(), 0);
         page.description = "Panel layout".into();
         let id = page.id;
-        let mut new_order = order;
-        new_order.insert(at, id);
         let label = format!("Add layout page {}", page.name);
         let panel = Some(Panel { width, height });
-        self.execute(
-            &label,
-            Command::Batch(vec![
-                Command::AddPage(page),
-                Command::ReorderPages(new_order),
-                Command::SetPanel { page: id, panel },
-            ]),
-        )?;
+        // Inserted with a key of its own: no other page changes (D25).
+        let mut cmds = self.project.insert_page(Some(self.page), page);
+        cmds.push(Command::SetPanel { page: id, panel });
+        self.execute(&label, Command::Batch(cmds))?;
         self.set_page(id)
     }
 

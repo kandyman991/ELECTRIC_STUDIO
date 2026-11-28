@@ -677,12 +677,49 @@ pub enum Command {
         id: FunctionId,
         designations: BTreeMap<String, String>,
     },
+    /// Keep identifiers or resources free for a planned extension (S0): allocation skips
+    /// them, and an explicit assignment needs them unreserved first.
+    Reserve(Vec<crate::numbering::Record>),
+    Unreserve(Vec<crate::numbering::Identifier>),
+    /// Record identifiers as retired (D23): never allocated again automatically. Removal
+    /// operations retire what they free ([`Project::removal`]).
+    Retire(Vec<crate::numbering::Record>),
+    /// Explicitly allow retired identifiers to be used again.
+    Reclaim(Vec<crate::numbering::Identifier>),
+    SetNumberingPolicies(crate::numbering::Policies),
+    /// The number of slots of a bounded device (a PLC card's channels, a strip's terminals).
+    SetCapacity {
+        device: DeviceId,
+        capacity: Option<u32>,
+    },
     /// Several commands applied together: all of them or none.
     Batch(Vec<Command>),
 }
 
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum ModelError {
+    #[error("{0} is reserved: unreserve it first")]
+    IdentifierReserved(String),
+    #[error("{0} is retired: reclaim it first")]
+    IdentifierRetired(String),
+    #[error("{0} is in use")]
+    IdentifierInUse(String),
+    #[error("{0} is already reserved")]
+    AlreadyReserved(String),
+    #[error("{0} is already retired")]
+    AlreadyRetired(String),
+    #[error("{0} is not reserved")]
+    NotReserved(String),
+    #[error("{0} is not retired")]
+    NotRetired(String),
+    #[error("{0} is not a valid identifier here")]
+    BadIdentifier(String),
+    #[error("{0}")]
+    Exhausted(String),
+    #[error("{0}: the capacity must be at least 1 and hold every slot in use or reserved")]
+    BadCapacity(String),
+    #[error("{0} has reserved resources or a capacity: remove them with it")]
+    NumberingInUse(String),
     #[error("no page {0:?}")]
     NoPage(PageId),
     #[error("a tag or wire number format needs one {{n}} (or {{n:02}}) and only {{page}} and {{letters}} (tags only)")]
@@ -887,6 +924,10 @@ pub struct Project {
     /// Rails, ducts and device footprints on the plates.
     #[serde(default)]
     pub panel_items: BTreeMap<PanelItemId, crate::panel::PanelItem>,
+    /// Numbering policies, reserved and retired identifiers, bounded resources (S0,
+    /// `numbering.json`).
+    #[serde(default, skip_serializing_if = "crate::numbering::Numbering::is_empty")]
+    pub numbering: crate::numbering::Numbering,
     /// Drawings shown behind pages to redraw over (saved in files of their own).
     #[serde(skip)]
     pub underlays: BTreeMap<PageId, crate::underlay::Underlay>,
@@ -1116,27 +1157,34 @@ impl Project {
     ///   contacts (1x, 2x, 3x…) and the second is the symbol's own (3/4 for NO, 1/2 for NC);
     /// - a terminal gets the strip's next free number on both its sides;
     /// - anything else keeps the symbol's own names (empty map).
+    ///
+    /// Without a free terminal or channel slot left: the symbol's own names (use
+    /// [`Self::allocate_designations`] to be told).
     pub fn next_designations(&self, device: DeviceId, symbol: &SymbolId) -> BTreeMap<String, String> {
-        let Ok(sym) = self.symbol(symbol) else { return BTreeMap::new() };
+        self.allocate_designations(device, symbol).unwrap_or_default()
+    }
+
+    /// [`Self::next_designations`], with exhaustion of a bounded strip or card reported (S0).
+    pub fn allocate_designations(&self, device: DeviceId, symbol: &SymbolId) -> Result<BTreeMap<String, String>> {
+        let Ok(sym) = self.symbol(symbol) else { return Ok(BTreeMap::new()) };
         if sym.role == Role::Terminal {
-            let n = self.next_terminal_number(device);
-            return sym.connection_points.iter().map(|cp| (cp.name.clone(), n.clone())).collect();
+            let n = self.allocate_terminal_number(device)?;
+            return Ok(sym.connection_points.iter().map(|cp| (cp.name.clone(), n.clone())).collect());
         }
         if let Role::PlcChannel { .. } = sym.role {
             // Channels count from 0 on each card.
-            let used: Vec<u32> = self.plc_channels_of(device).iter().filter_map(|c| c.channel.parse().ok()).collect();
-            let n = (0..).find(|n| !used.contains(n)).unwrap_or(0).to_string();
-            return sym.connection_points.iter().map(|cp| (cp.name.clone(), n.clone())).collect();
+            let n = self.allocate_channel(device)?;
+            return Ok(sym.connection_points.iter().map(|cp| (cp.name.clone(), n.clone())).collect());
         }
         // Main contacts and everything else keep the symbol's own numbers.
         if !matches!(sym.role, Role::Contact { kind } if kind != ContactKind::Power) {
-            return BTreeMap::new();
+            return Ok(BTreeMap::new());
         }
         if let Role::Contact { kind } = sym.role
             && let Some(numbers) = self.designations_from_blocks(device, kind)
             && numbers.len() == sym.connection_points.len()
         {
-            return sym.connection_points.iter().map(|cp| cp.name.clone()).zip(numbers).collect();
+            return Ok(sym.connection_points.iter().map(|cp| cp.name.clone()).zip(numbers).collect());
         }
         let used: Vec<u32> = self
             .contacts_of(device)
@@ -1144,13 +1192,14 @@ impl Project {
             .filter_map(|c| c.terminals.split('-').next()?.parse::<u32>().ok().map(|n| n / 10))
             .collect();
         let n = (1..).find(|n| !used.contains(n)).unwrap_or(1);
-        sym.connection_points
+        Ok(sym
+            .connection_points
             .iter()
             .map(|cp| {
                 let last = cp.name.chars().last().map(String::from).unwrap_or_default();
                 (cp.name.clone(), format!("{n}{last}"))
             })
-            .collect()
+            .collect())
     }
 
     /// What a drawing shows: a device (its symbol is a device's) or a node of the symbol's kind,
@@ -1412,6 +1461,10 @@ impl Project {
         }) {
             return Err(ModelError::DuplicateTerminalPoint(t.point.clone()));
         }
+        self.check_available(&crate::numbering::Identifier::Terminal {
+            device: t.device,
+            designation: t.designation.clone(),
+        })?;
         Ok(())
     }
 
@@ -1565,36 +1618,6 @@ impl Project {
         out
     }
 
-    /// The next free PLC address of a kind, following the highest one in the project:
-    /// Siemens-style `I0.0`…`I0.7`, `I1.0` (bits wrap at 8) for digital, `IW256`, `IW258` (words
-    /// in steps of 2) for analog; `Q`/`QW` for outputs. Digital starts at `I0.0`/`Q0.0`;
-    /// analog has no start of its own (empty).
-    pub fn next_address(&self, kind: IoKind) -> String {
-        let (prefix, analog) = match kind {
-            IoKind::DigitalIn => ("I", false),
-            IoKind::DigitalOut => ("Q", false),
-            IoKind::AnalogIn => ("IW", true),
-            IoKind::AnalogOut => ("QW", true),
-        };
-        let used = self.terminals.values().filter_map(|t| {
-            let canonical = crate::plc_address::canonical(&t.channel.as_ref()?.address)?;
-            let addr = canonical.strip_prefix(prefix)?;
-            if analog {
-                addr.parse::<u32>().ok().map(|w| (w, 0))
-            } else {
-                let (byte, bit) = addr.split_once('.')?;
-                Some((byte.parse::<u32>().ok()?, bit.parse::<u32>().ok().filter(|b| *b < 8)?))
-            }
-        });
-        match (used.max(), analog) {
-            (None, true) => String::new(),
-            (None, false) => format!("{prefix}0.0"),
-            (Some((w, _)), true) => format!("{prefix}{}", w + 2),
-            (Some((byte, 7)), false) => format!("{prefix}{}.0", byte + 1),
-            (Some((byte, bit)), false) => format!("{prefix}{byte}.{}", bit + 1),
-        }
-    }
-
     /// Properties for a new drawing with `symbol`: a PLC channel gets the next free address.
     pub fn new_drawing_properties(&self, symbol: &SymbolId) -> BTreeMap<String, String> {
         match self.symbol(symbol).map(|s| s.role) {
@@ -1623,18 +1646,24 @@ impl Project {
         out
     }
 
-    /// One more than the strip's highest numeric terminal, or 1.
+    /// A strip's next terminal number ([`Self::allocate_terminal_number`]); empty when a strip
+    /// of known size is full.
     pub fn next_terminal_number(&self, strip: DeviceId) -> String {
-        let highest = self.terminals_of(strip).iter().filter_map(|t| t.number.parse::<u32>().ok()).max().unwrap_or(0);
-        (highest + 1).to_string()
+        self.allocate_terminal_number(strip).unwrap_or_default()
     }
 
-    /// The lowest free tag `<prefix><n>`, n from 1.
+    /// The lowest free name `<prefix><n>`, n from 1, for node names (junctions, potential and
+    /// interruption points) and tags outside the tag format; reserved and retired tags are
+    /// skipped.
     pub fn next_tag(&self, prefix: &str) -> String {
         // Node names count too, so a new junction or potential gets a name of its own.
         (1..)
             .map(|n| format!("{prefix}{n}"))
-            .find(|t| self.device_by_tag(t).is_none() && !self.nodes.values().any(|n| n.name == *t))
+            .find(|t| {
+                self.device_by_tag(t).is_none()
+                    && !self.nodes.values().any(|n| n.name == *t)
+                    && self.available(&crate::numbering::Identifier::Tag { tag: t.clone() })
+            })
             .unwrap_or_default()
     }
 
@@ -1672,6 +1701,9 @@ impl Project {
                 }
                 if self.panel_item_of(id).is_some() {
                     return Err(ModelError::AlreadyOnPanel(tag));
+                }
+                if self.numbering.names_device(id) {
+                    return Err(ModelError::NumberingInUse(tag));
                 }
                 let d = self.devices.remove(&id).ok_or(ModelError::NoDevice(id))?;
                 Ok(Command::AddDevice(d))
@@ -2151,6 +2183,10 @@ impl Project {
                     let tag = self.cables.get(&id).map(|c| c.tag.clone()).unwrap_or_default();
                     return Err(ModelError::CableInUse(tag));
                 }
+                if self.numbering.names_cable(id) {
+                    let tag = self.cables.get(&id).map(|c| c.tag.clone()).unwrap_or_default();
+                    return Err(ModelError::NumberingInUse(tag));
+                }
                 let cable = self.cables.remove(&id).ok_or(ModelError::NoCable(id))?;
                 Ok(Command::AddCable(cable))
             }
@@ -2275,6 +2311,12 @@ impl Project {
                     if number.trim().is_empty() {
                         return Err(ModelError::EmptyNumber);
                     }
+                    if number != old_number {
+                        self.check_available(&crate::numbering::Identifier::Terminal {
+                            device: f.device,
+                            designation: number.clone(),
+                        })?;
+                    }
                     if self
                         .terminals
                         .values()
@@ -2305,7 +2347,13 @@ impl Project {
                         Some((point.clone(), old.get(point).cloned().unwrap_or(now)))
                     })
                     .collect();
-                if let Err(e) = self.check_terminal(id) {
+                let fresh = old.keys().find_map(|point| {
+                    let t = self.terminals.get(f.terminals.get(point)?)?;
+                    let id =
+                        crate::numbering::Identifier::Terminal { device: t.device, designation: t.designation.clone() };
+                    self.check_available(&id).err()
+                });
+                if let Some(e) = fresh.map(Err).unwrap_or_else(|| self.check_terminal(id)).err() {
                     for (point, d) in old {
                         if let Some(entry) = f.terminals.get(&point).and_then(|t| self.terminals.get_mut(t)) {
                             entry.designation = d;
@@ -2315,6 +2363,12 @@ impl Project {
                 }
                 Ok(Command::SetDesignations { id, designations: undo })
             }
+            cmd @ (Command::Reserve(_)
+            | Command::Unreserve(_)
+            | Command::Retire(_)
+            | Command::Reclaim(_)
+            | Command::SetNumberingPolicies(_)
+            | Command::SetCapacity { .. }) => self.apply_numbering(cmd),
             Command::Batch(cmds) => {
                 let mut undo = Vec::with_capacity(cmds.len());
                 for cmd in cmds {
@@ -2341,7 +2395,8 @@ impl Project {
         }
         match self.device_by_tag(tag) {
             Some(d) if Some(d.id) != except => Err(ModelError::DuplicateTag(tag.to_owned())),
-            _ => Ok(()),
+            Some(_) => Ok(()),
+            None => self.check_available(&crate::numbering::Identifier::Tag { tag: tag.to_owned() }),
         }
     }
 
@@ -2375,6 +2430,9 @@ impl Project {
     /// including channels with no drawing. Another drawing of the same terminal is not another channel.
     fn check_channel(&self, terminal: &TerminalEntry) -> Result<()> {
         let Some(channel) = &terminal.channel else { return Ok(()) };
+        if let Some(address) = crate::plc_address::canonical(&channel.address) {
+            self.check_available(&crate::numbering::Identifier::Address { address })?;
+        }
         for other in self.terminals.values().filter(|t| t.id != terminal.id) {
             let Some(c) = &other.channel else { continue };
             let by =
@@ -2454,7 +2512,8 @@ impl Project {
         }
         match self.pages.values().find(|p| p.name == name) {
             Some(p) if Some(p.id) != except => Err(ModelError::DuplicatePageName(name.to_owned())),
-            _ => Ok(()),
+            Some(_) => Ok(()),
+            None => self.check_available(&crate::numbering::Identifier::Page { name: name.to_owned() }),
         }
     }
 
@@ -2522,6 +2581,7 @@ impl Project {
         if self.cables.values().any(|c| c.id != cable.id && c.tag == cable.tag) {
             return Err(ModelError::DuplicateTag(cable.tag.clone()));
         }
+        self.check_available(&crate::numbering::Identifier::Cable { tag: cable.tag.clone() })?;
         Ok(())
     }
 
@@ -2532,6 +2592,7 @@ impl Project {
         if core.core.is_empty() {
             return Err(ModelError::EmptyCore);
         }
+        self.check_available(&crate::numbering::Identifier::Core { cable: core.cable, core: core.core.clone() })?;
         let taken = self.connections.values().any(|c| c.id != wire && c.spec.cable.as_ref() == Some(core))
             || self.undrawn.values().any(|w| w.id != wire && w.spec.cable.as_ref() == Some(core));
         if taken {
@@ -2541,6 +2602,8 @@ impl Project {
     }
 
     fn check_wire_number(&self, number: &str, except: Option<ConnectionId>) -> Result<()> {
+        // Reserved and retired numbers are never in use, so this only refuses new assignments.
+        self.check_available(&crate::numbering::Identifier::Wire { number: number.to_owned() })?;
         // Per potential, wires share numbers; clashes between potentials are a check instead.
         if self.naming.wire_numbering == crate::WireNumbering::PerPotential {
             return Ok(());
