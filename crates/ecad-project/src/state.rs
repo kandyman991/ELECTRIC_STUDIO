@@ -475,7 +475,7 @@ fn write_objects(dir: &Path, files: &[(String, Entry, &[u8])]) -> Result<()> {
 /// Remove objects no committed manifest names (never during a pending reconciliation: the
 /// manifest still names the prior generation's contents then).
 fn prune(dir: &Path, m: &Manifest) {
-    let keep: BTreeSet<&str> = m.files.values().map(|e| e.sha256.as_str()).collect();
+    let keep: BTreeSet<&str> = m.files.values().chain(m.workflow.values()).map(|e| e.sha256.as_str()).collect();
     if let Ok(entries) = std::fs::read_dir(dir.join(OBJECTS)) {
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
@@ -549,6 +549,22 @@ pub(crate) fn commit(dir: &Path, files: &[(String, Vec<u8>)], extras: &Extras, v
             return Err(ProjectError::Canonical { path: dir.join(name), reason: "not a workflow file".into() });
         }
         workflow.insert(name.clone(), Entry { sha256: sha256(bytes), size: bytes.len() as u64 });
+    }
+    // Keep approval/proposal/record bytes as well as engineering bytes. Old AI0
+    // manifests did not retain workflow objects: backfill only from verified live
+    // bytes, never adopt a changed or missing approval as authoritative.
+    for (name, entry) in &workflow {
+        let object = dir.join(OBJECTS).join(&entry.sha256);
+        if let Some((_, bytes)) = extras.workflow.iter().find(|(path, _)| path == name) {
+            write_objects(dir, &[(name.clone(), entry.clone(), bytes.as_slice())])?;
+        } else if !std::fs::metadata(&object).is_ok_and(|m| m.len() == entry.size) {
+            check_on_disk(dir, name).map_err(|reason| ProjectError::Canonical { path: dir.join(name), reason })?;
+            let bytes = std::fs::read(dir.join(name)).map_err(io(&dir.join(name)))?;
+            if sha256(&bytes) != entry.sha256 || bytes.len() as u64 != entry.size {
+                return Err(ProjectError::External { dir: dir.to_owned(), summary: format!("{name} changed") });
+            }
+            write_objects(dir, &[(name.clone(), entry.clone(), bytes.as_slice())])?;
+        }
     }
     let manifest = Manifest {
         format: 1,
@@ -659,11 +675,32 @@ pub fn restore(dir: &Path) -> Result<Vec<String>> {
             reason: "nothing committed to restore".into(),
         });
     }
-    let committed = committed_files(dir)?;
+    let mut committed = committed_files(dir)?;
+    let manifest = read_manifest(dir)?.ok_or_else(|| ProjectError::Canonical {
+        path: dir.join(MANIFEST),
+        reason: "nothing committed to restore".into(),
+    })?;
+    // Prepare all workflow restoration bytes before quarantining anything. A legacy
+    // project with already-damaged workflow data may lack a retained copy; fail closed.
+    for path in v.modified.iter().chain(&v.missing).filter(|p| is_workflow(p)) {
+        let entry = &manifest.workflow[path];
+        let object = dir.join(OBJECTS).join(&entry.sha256);
+        let bytes = std::fs::read(&object).map_err(io(&object))?;
+        if sha256(&bytes) != entry.sha256 || bytes.len() as u64 != entry.size {
+            return Err(ProjectError::Canonical {
+                path: object,
+                reason: format!("retained workflow contents damaged for {path}"),
+            });
+        }
+        committed.push((path.clone(), bytes));
+    }
     let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
     let quarantine = dir.join(QUARANTINE).join(n.to_string());
     let mut touched = Vec::new();
-    for path in v.modified.iter().chain(&v.added).filter(|p| !is_workflow(p)) {
+    for path in v.modified.iter().chain(&v.added) {
+        check_on_disk(dir, path).map_err(|reason| ProjectError::Canonical { path: dir.join(path), reason })?;
+    }
+    for path in v.modified.iter().chain(&v.added) {
         check_on_disk(dir, path).map_err(|reason| ProjectError::Canonical { path: dir.join(path), reason })?;
         let target = quarantine.join(path);
         if let Some(parent) = target.parent() {
@@ -702,7 +739,10 @@ pub fn accept(
     let files = crate::render(&project)?;
     // A changed workflow file is never adopted as it is: the manifest keeps what it committed.
     let v = verify(dir, &Quiet)?;
-    if let Some(p) = v.modified.iter().chain(&v.added).find(|p| is_workflow(p)) {
+    if !v.unsafe_paths.is_empty() {
+        return Err(ProjectError::External { dir: dir.to_owned(), summary: v.summary() });
+    }
+    if let Some(p) = v.modified.iter().chain(&v.added).chain(&v.missing).find(|p| is_workflow(p)) {
         return Err(ProjectError::External {
             dir: dir.to_owned(),
             summary: format!("{p} (a workflow file) was changed outside Electric Studio: restore it first"),
