@@ -766,9 +766,10 @@ pub fn restore(dir: &Path) -> Result<Vec<String>> {
     // If only a retained object was damaged, its unchanged live file is a
     // verified source for repair. Never repair from a changed live file.
     for path in &v.damaged_objects {
-        let entry = manifest.files.get(path).or_else(|| manifest.workflow.get(path)).ok_or_else(|| {
-            ProjectError::Canonical { path: dir.join(path), reason: "missing manifest entry".into() }
-        })?;
+        let entry =
+            manifest.files.get(path).or_else(|| manifest.workflow.get(path)).ok_or_else(|| {
+                ProjectError::Canonical { path: dir.join(path), reason: "missing manifest entry".into() }
+            })?;
         check_on_disk(dir, path).map_err(|reason| ProjectError::Canonical { path: dir.join(path), reason })?;
         let bytes = std::fs::read(dir.join(path)).map_err(io(&dir.join(path)))?;
         if sha256(&bytes) != entry.sha256 || bytes.len() as u64 != entry.size {
