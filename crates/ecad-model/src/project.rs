@@ -1426,10 +1426,15 @@ impl Project {
 
     /// A PLC card's channels, in channel order.
     pub fn plc_channels_of(&self, card: DeviceId) -> Vec<ChannelRef> {
+        let mut seen = std::collections::BTreeSet::new();
         let mut out: Vec<ChannelRef> = self
             .functions_of(card)
             .filter_map(|f| {
                 let Role::PlcChannel { kind } = self.role(f.id).ok()? else { return None };
+                let channel = f.terminals.values().find(|t| self.terminals.get(t).is_some_and(|t| t.channel.is_some()))?;
+                if !seen.insert(*channel) {
+                    return None;
+                }
                 Some(ChannelRef {
                     function: f.id,
                     page: f.page,
@@ -1457,8 +1462,9 @@ impl Project {
             IoKind::AnalogIn => ("IW", true),
             IoKind::AnalogOut => ("QW", true),
         };
-        let used = self.functions.values().filter_map(|f| {
-            let addr = self.property(f, ADDRESS).strip_prefix(prefix)?;
+        let used = self.terminals.values().filter_map(|t| {
+            let canonical = crate::plc_address::canonical(&t.channel.as_ref()?.address)?;
+            let addr = canonical.strip_prefix(prefix)?;
             if analog {
                 addr.parse::<u32>().ok().map(|w| (w, 0))
             } else {
@@ -1883,6 +1889,7 @@ impl Project {
                     return Err(ModelError::DuplicateId(t.id.0));
                 }
                 self.device(t.device)?;
+                self.check_channel(&t)?;
                 let id = t.id;
                 self.terminals.insert(id, t);
                 Ok(Command::RemoveTerminal(id))
@@ -2169,35 +2176,30 @@ impl Project {
         Ok(())
     }
 
-    /// A PLC channel's address and symbol, when set, are unique in the project; addresses
-    /// however they are written.
+    /// A PLC channel's address and symbol are unique across distinct canonical channels,
+    /// including channels with no drawing. Another drawing of the same terminal is not another channel.
+    fn check_channel(&self, terminal: &TerminalEntry) -> Result<()> {
+        let Some(channel) = &terminal.channel else { return Ok(()) };
+        for other in self.terminals.values().filter(|t| t.id != terminal.id) {
+            let Some(c) = &other.channel else { continue };
+            let by = || format!("{}:{}", self.device(other.device).map(|d| d.tag.as_str()).unwrap_or(""), other.designation);
+            if !channel.address.is_empty() && crate::plc_address::same(&channel.address, &c.address) {
+                return Err(ModelError::DuplicateAddress(channel.address.clone(), by()));
+            }
+            if !channel.symbol.is_empty() && channel.symbol == c.symbol {
+                return Err(ModelError::DuplicatePlcSymbol(channel.symbol.clone(), by()));
+            }
+        }
+        Ok(())
+    }
+
     fn check_plc(&self, f: FunctionId) -> Result<()> {
         let func = self.function(f)?;
-        if !matches!(self.role(f)?, Role::PlcChannel { .. }) {
-            return Ok(());
-        }
-        for (key, is_address) in [(ADDRESS, true), (SYMBOL, false)] {
-            let value = self.property(func, key);
-            if value.is_empty() {
-                continue;
-            }
-            let other = self.functions.values().find(|g| {
-                g.id != f
-                    && matches!(self.role(g.id), Ok(Role::PlcChannel { .. }))
-                    && if is_address {
-                        // `%I0.0` and `I00.0` are the same input.
-                        crate::plc_address::same(self.property(g, key), value)
-                    } else {
-                        self.property(g, key) == value
-                    }
-            });
-            if let Some(g) = other {
-                let by = format!("{}:{}", self.device(g.device)?.tag, self.drawing_number(g.id).unwrap_or_default());
-                return Err(if is_address {
-                    ModelError::DuplicateAddress(value.to_owned(), by)
-                } else {
-                    ModelError::DuplicatePlcSymbol(value.to_owned(), by)
-                });
+        if matches!(self.role(f)?, Role::PlcChannel { .. }) {
+            for id in func.terminals.values() {
+                if let Some(t) = self.terminals.get(id) {
+                    self.check_channel(t)?;
+                }
             }
         }
         Ok(())

@@ -139,7 +139,7 @@ fn format_2_refuses_missing_or_duplicate_canonical_records() {
     let p = conveyor().unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
-    for file in ["terminals.json", "nodes.json", "wires.json"] {
+    for file in ["products.json", "terminals.json", "nodes.json", "wires.json"] {
         ecad_project::save(&p, root).unwrap();
         std::fs::remove_file(root.join(file)).unwrap();
         assert!(ecad_project::load(root).is_err(), "{file}");
@@ -187,7 +187,19 @@ fn undrawn_wire_reserves_cable_core_and_number() {
     assert!(p.apply(Command::RemoveCable(core.cable)).is_err());
     let duplicate = Wire { id: ConnectionId::new(), wire_number: None, ..wire };
     assert!(p.apply(Command::AddWire(duplicate)).is_err());
+    assert!(ecad_reports::cable_list(&p).iter().any(|r| r.core == "test-unused" && r.wire == number));
     assert_eq!(p, save_and_load(&p));
+}
+
+#[test]
+fn undrawn_wire_short_is_reported_as_an_electrical_error() {
+    let mut p = conveyor().unwrap();
+    let node = |name| Endpoint::Node(p.node_by_name(NodeKind::Potential, name, ecad_model::PROJECT_SCOPE).unwrap().id);
+    let from = node("L+");
+    let to = node("M");
+    let wire = Wire { id: ConnectionId::from_u128(1), from, to, wire_number: None, spec: Default::default() };
+    p.apply(Command::AddWire(wire)).unwrap();
+    assert!(ecad_rules::check(&p).iter().any(|c| c.rule == "potential-clash"), "undrawn short must not disappear");
 }
 
 #[test]

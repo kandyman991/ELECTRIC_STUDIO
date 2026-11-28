@@ -593,7 +593,7 @@ pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>
                 .map_err(|source| ProjectError::Json { path: path.clone(), source })?;
             project.apply(Command::AddPart(part)).map_err(model(&path))?;
         }
-    } else if path.exists() {
+    } else if !legacy {
         for part in read_json::<Vec<Part>>(&path)? {
             project.apply(Command::AddPart(part)).map_err(model(&path))?;
         }
@@ -608,7 +608,17 @@ pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>
     }
 
     let path = dir.join("devices.json");
-    let devices: Vec<Device> = read_json::<Vec<DeviceFile>>(&path)?.into_iter().map(DeviceFile::into_device).collect();
+    let records = read_json::<Vec<DeviceFile>>(&path)?;
+    let mut device_ids = std::collections::BTreeSet::new();
+    for d in &records {
+        if !device_ids.insert(d.id) {
+            return Err(model(&path)(ModelError::DuplicateId(d.id.0)));
+        }
+        if !legacy && d.parts.iter().any(|r| r.product.is_none()) {
+            return Err(ProjectError::Canonical { path: path.clone(), reason: "product reference has no canonical id".into() });
+        }
+    }
+    let devices: Vec<Device> = records.into_iter().map(DeviceFile::into_device).collect();
     let mut page_files: Vec<(ecad_model::PageId, PathBuf, PageFile)> = Vec::new();
     for id in project.pages.keys().copied().collect::<Vec<_>>() {
         let path = dir.join("pages").join(format!("{}.json", id.0));
@@ -1397,14 +1407,14 @@ mod tests {
     }
 
     #[test]
-    fn the_catalogue_is_saved_and_projects_without_one_still_load() {
+    fn the_catalogue_is_saved_and_required_in_format_2() {
         let dir = tempfile::tempdir().unwrap();
         let original = start_circuit().unwrap();
         assert_eq!(original.parts.len(), 3);
         save(&original, dir.path()).unwrap();
         assert!(dir.path().join("products.json").exists());
         assert_eq!(load(dir.path()).unwrap(), original);
-        // A project saved before M3a: no parts.json and no parts on devices.
+        // A format 2 project with no products still requires its canonical empty file.
         let mut old = original.clone();
         for d in old.devices.values_mut() {
             d.parts.clear();
@@ -1412,7 +1422,7 @@ mod tests {
         old.parts.clear();
         save(&old, dir.path()).unwrap();
         std::fs::remove_file(dir.path().join("products.json")).unwrap();
-        assert_eq!(load(dir.path()).unwrap(), old);
+        assert!(load(dir.path()).is_err(), "format 2 requires its product file, even when empty");
     }
 
     #[test]

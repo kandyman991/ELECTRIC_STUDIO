@@ -132,11 +132,19 @@ impl Out<'_> {
     }
 
     fn at_connection(&mut self, rule: &'static str, c: ConnectionId, message: String) {
-        let Ok(conn) = self.project.connection(c) else { return };
-        let Ok(from) = self.project.function(conn.from.function) else { return };
-        // Located at the wire's start, as the wire list shows it.
-        let location = self.project.location(from.page, from.position).unwrap_or_default();
-        let page = from.page;
+        let project = self.project;
+        let (page, location) = if let Ok(conn) = project.connection(c) {
+            let Ok(from) = project.function(conn.from.function) else { return };
+            (from.page, project.location(from.page, from.position).unwrap_or_default())
+        } else if let Some(w) = project.undrawn.get(&c) {
+            let connectivity = project.connectivity();
+            let page = [w.from, w.to].iter().find_map(|e| {
+                connectivity.drawings(*e).first().and_then(|r| project.function(r.function).ok()).map(|f| f.page)
+            }).or_else(|| project.pages_in_order().first().map(|p| p.id)).unwrap_or_else(|| PageId::from_u128(0));
+            (page, String::new())
+        } else {
+            return;
+        };
         self.checks.push(Check {
             rule,
             severity: severity(rule),
@@ -266,17 +274,19 @@ pub fn check(project: &Project) -> Vec<Check> {
     contacts_on_parts(&mut out);
     panels(&mut out);
     for cable in project.cables.values() {
-        let wires: Vec<&ecad_model::Connection> = project
-            .connections
-            .values()
+        let wires: Vec<ConnectionId> = project.connections.values()
             .filter(|c| c.spec.cable.as_ref().is_some_and(|k| k.cable == cable.id))
+            .map(|c| c.id)
+            .chain(project.undrawn.values()
+                .filter(|w| w.spec.cable.as_ref().is_some_and(|k| k.cable == cable.id))
+                .map(|w| w.id))
             .collect();
         if cable.cores > 0
             && wires.len() > cable.cores as usize
             && let Some(w) = wires.first()
         {
             let message = format!("Cable {} has {} cores but carries {} wires", cable.tag, cable.cores, wires.len());
-            out.at_connection("cable-cores", w.id, message);
+            out.at_connection("cable-cores", *w, message);
         }
     }
 
@@ -312,8 +322,7 @@ fn wire_numbers(out: &mut Out) {
         let mut numbers: Vec<(&str, ConnectionId)> = p
             .connections
             .iter()
-            .filter_map(|c| project.connection(*c).ok())
-            .filter_map(|c| c.wire_number.as_deref().map(|n| (n, c.id)))
+            .filter_map(|c| project.wire_number(*c).map(|n| (n, *c)))
             .collect();
         numbers.sort();
         let distinct: BTreeSet<&str> = numbers.iter().map(|(n, _)| *n).collect();
@@ -381,27 +390,16 @@ fn unconnected(out: &mut Out) {
 /// Wires not drawn yet (D1): listed, at the first page one of their ends is drawn on.
 fn undrawn_wires(out: &mut Out) {
     let project = out.project;
-    let c = project.connectivity();
-    let first = project.pages_in_order().first().map(|p| p.id);
     for w in project.undrawn.values() {
-        let page = [w.from, w.to]
-            .iter()
-            .find_map(|e| c.drawings(*e).first().and_then(|r| project.function(r.function).ok()).map(|f| f.page))
-            .or(first);
-        let Some(page) = page else { continue };
         let end = |e| {
             let (tag, d) = project.describe_end(e);
             if d.is_empty() { tag } else { format!("{tag}:{d}") }
         };
         let name = w.wire_number.clone().unwrap_or_else(|| "A wire".into());
-        out.checks.push(Check {
-            rule: "wire-not-drawn",
-            severity: severity("wire-not-drawn"),
-            message: format!("{name} from {} to {} is not drawn yet", end(&w.from), end(&w.to)),
-            target: Target::Connection(w.id),
-            page,
-            location: String::new(),
-        });
+        out.at_connection("wire-not-drawn", w.id, format!("{name} from {} to {} is not drawn yet", end(&w.from), end(&w.to)));
+        if w.wire_number.is_none() {
+            out.at_connection("wire-unnumbered", w.id, format!("Wire {} – {} has no number", end(&w.from), end(&w.to)));
+        }
     }
 }
 

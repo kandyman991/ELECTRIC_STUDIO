@@ -41,6 +41,17 @@ fn terminal_point(project: &Project, endpoint: &ecad_model::ConnectionRef) -> St
         .map_or_else(String::new, |_| endpoint.point.clone())
 }
 
+/// Preserve the physical point of an undrawn multi-point terminal group.
+fn canonical_terminal_point(project: &Project, endpoint: &ecad_model::Endpoint) -> String {
+    let ecad_model::Endpoint::Terminal(id) = endpoint else { return String::new() };
+    let Some(t) = project.terminals.get(id) else { return String::new() };
+    if project.terminals.values().filter(|p| p.device == t.device && p.group == t.group).count() > 2 {
+        t.point.clone()
+    } else {
+        String::new()
+    }
+}
+
 /// One row per connection, sorted by wire number.
 pub fn wire_list(project: &Project) -> Result<Vec<WireListRow>, ModelError> {
     let potentials = project.potentials();
@@ -111,8 +122,8 @@ pub fn wire_list(project: &Project) -> Result<Vec<WireListRow>, ModelError> {
                     from_point,
                     to_tag,
                     to_point,
-                    from_terminal_point: String::new(),
-                    to_terminal_point: String::new(),
+                    from_terminal_point: canonical_terminal_point(project, &w.from),
+                    to_terminal_point: canonical_terminal_point(project, &w.to),
                     cross_section: w.spec.cross_section.clone(),
                     colour: w.spec.colour.clone(),
                     cable,
@@ -470,10 +481,17 @@ pub fn cable_list(project: &Project) -> Vec<CableRow> {
     let end = |r| project.describe(r).map(|(t, p)| format!("{t}:{p}")).unwrap_or_default();
     let mut rows = Vec::new();
     for cable in cables {
-        let mut cores: Vec<(&str, &ecad_model::Connection)> = project
+        let undrawn_end = |e: &ecad_model::Endpoint| {
+            let (tag, point) = project.describe_end(e);
+            if point.is_empty() { tag } else { format!("{tag}:{point}") }
+        };
+        let mut cores: Vec<(&str, String, String, String)> = project
             .connections
             .values()
-            .filter_map(|c| c.spec.cable.as_ref().filter(|k| k.cable == cable.id).map(|k| (k.core.as_str(), c)))
+            .filter_map(|c| c.spec.cable.as_ref().filter(|k| k.cable == cable.id)
+                .map(|k| (k.core.as_str(), c.wire_number.clone().unwrap_or_default(), end(&c.from), end(&c.to))))
+            .chain(project.undrawn.values().filter_map(|w| w.spec.cable.as_ref().filter(|k| k.cable == cable.id)
+                .map(|k| (k.core.as_str(), w.wire_number.clone().unwrap_or_default(), undrawn_end(&w.from), undrawn_end(&w.to)))))
             .collect();
         cores.sort_by(|a, b| natural(a.0, b.0));
         let row = |core: &str, wire: String, from: String, to: String| CableRow {
@@ -489,8 +507,8 @@ pub fn cable_list(project: &Project) -> Vec<CableRow> {
         if cores.is_empty() {
             rows.push(row("", String::new(), String::new(), String::new()));
         }
-        for (core, c) in cores {
-            rows.push(row(core, c.wire_number.clone().unwrap_or_default(), end(&c.from), end(&c.to)));
+        for (core, wire, from, to) in cores {
+            rows.push(row(core, wire, from, to));
         }
     }
     rows
