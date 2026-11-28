@@ -212,6 +212,9 @@ fn op_args(op: &str, kv: &[&str]) -> Result<serde_json::Value, String> {
             ecad_editor::registry::Kind::Number => {
                 serde_json::json!(v.parse::<f64>().map_err(|_| format!("`{k}` must be a number"))?)
             }
+            ecad_editor::registry::Kind::Structured(_) => {
+                serde_json::from_str(v).map_err(|e| format!("`{k}` must be a JSON record: {e}"))?
+            }
             _ => serde_json::json!(v),
         };
         map.insert(k.to_owned(), value);
