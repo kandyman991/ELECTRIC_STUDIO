@@ -87,8 +87,7 @@ impl Builder {
         if self.p.parts.contains_key(&ProductId::for_number(number)) {
             return Ok(());
         }
-        self.p
-            .apply(Command::AddPart(Part {
+        self.apply(Command::AddPart(Part {
                 id: ProductId::for_number(number),
                 number: number.into(),
                 manufacturer: MAKER.into(),
@@ -120,7 +119,7 @@ impl Builder {
         }
         let id = self.device(tag)?;
         let refs = parts.iter().map(|(n, q, _)| PartRef::new(n, *q)).collect();
-        self.p.apply(Command::SetDeviceParts { id, parts: refs }).map(drop)
+        self.apply(Command::SetDeviceParts { id, parts: refs }).map(drop)
     }
 
     /// Products for a terminal strip, each counted once per terminal drawn with its symbol:
@@ -131,7 +130,7 @@ impl Builder {
         }
         let id = self.device(tag)?;
         let refs = parts.iter().map(|(n, symbol, _)| PartRef::per_terminal_of(n, 1, symbol)).collect();
-        self.p.apply(Command::SetDeviceParts { id, parts: refs }).map(drop)
+        self.apply(Command::SetDeviceParts { id, parts: refs }).map(drop)
     }
 
     /// A two-level strip terminal: both levels print `number`.
@@ -145,7 +144,7 @@ impl Builder {
     fn channel_r(&mut self, address: &str, x: f64, y: f64, name: &str) -> Result<F> {
         let f = self.put_r("-A1", "iec.plc_di", x, y, Rotation::R180)?;
         let properties = [(ADDRESS.to_owned(), address.to_owned()), (SYMBOL.to_owned(), name.to_owned())].into();
-        self.p.apply(Command::SetProperties { id: f, properties })?;
+        self.apply(Command::SetProperties { id: f, properties })?;
         Ok(f)
     }
 
@@ -158,13 +157,30 @@ impl Builder {
 
 /// The conveyor, drawn schematic-first.
 pub fn conveyor() -> Result<Project> {
+    build(false).map(|(project, _)| project)
+}
+
+/// The same schematic-first builder's forward steps, for registry conformance testing.
+/// This is fixture data, not a way to execute a command through the engineering interface.
+pub fn conveyor_steps() -> Result<(Project, Vec<Command>)> {
+    build(true)
+}
+
+fn build(record: bool) -> Result<(Project, Vec<Command>)> {
     let mut p = Project::new("Belt conveyor");
     for s in crate::library::iec() {
         p.add_symbol(s);
     }
-    p.add_symbol(two_level_terminal());
-    p.sheet = Sheet { origin: Point::new(-20.0, -10.0), columns: 8, first_column: 0, rows: 6, ..Sheet::default() };
-    p.info = ProjectInfo {
+    let mut b = Builder { p, page: PageId::from_u128(0), next: 0xC0_0000, trace: record.then(Vec::new) };
+    b.apply(Command::AddSymbol(two_level_terminal()))?;
+    b.apply(Command::SetSheet(Sheet {
+        origin: Point::new(-20.0, -10.0),
+        columns: 8,
+        first_column: 0,
+        rows: 6,
+        ..Sheet::default()
+    }))?;
+    let info = ProjectInfo {
         customer: "Example Logistics".into(),
         plant: "Belt conveyor 3 m".into(),
         code: "EX-CONV-1".into(),
@@ -177,7 +193,7 @@ pub fn conveyor() -> Result<Project> {
             by: "A.B.".into(),
         }],
     };
-    let mut b = Builder { p, page: PageId::from_u128(0), next: 0xC0_0000 };
+    b.apply(Command::SetProjectInfo { name: "Belt conveyor".into(), info })?;
     power(&mut b)?;
     supply_24v(&mut b)?;
     safety(&mut b)?;
@@ -187,19 +203,19 @@ pub fn conveyor() -> Result<Project> {
     // The emergency stop and the safety relay are safety-related (section 11.5, AI0).
     for tag in ["-S0", "-K3"] {
         if let Some(d) = b.p.device_by_tag(tag).map(|d| d.id) {
-            b.p.apply(Command::SetSafetyRelated { device: d, related: true })?;
+            b.apply(Command::SetSafetyRelated { device: d, related: true })?;
         }
     }
     let pages: Vec<PageId> = b.p.pages.keys().copied().collect();
     for page in pages {
         for cmd in b.p.tidy_wires(page) {
-            b.p.apply(cmd)?;
+            b.apply(cmd)?;
         }
     }
     for cmd in b.p.renumber_all_wires() {
-        b.p.apply(cmd)?;
+        b.apply(cmd)?;
     }
-    Ok(b.p)
+    Ok((b.p, b.trace.unwrap_or_default()))
 }
 
 /// Page 1: supply 3/N/PE 400/230 V, main switch -Q0, motor protector -Q1, forward -K1 and
@@ -554,10 +570,10 @@ fn cabinet_layout(b: &mut Builder) -> Result<()> {
     const H: f64 = 400.0;
     b.page("L1", "Cabinet layout", "Layout quadro")?;
     let page = b.page;
-    b.p.apply(Command::SetPanel { page, panel: Some(Panel { width: W, height: H }) })?;
+    b.apply(Command::SetPanel { page, panel: Some(Panel { width: W, height: H }) })?;
     let item = |b: &mut Builder, kind: PanelItemKind, x: f64, y: f64, length: f64, vertical: bool| {
         let id = PanelItemId::from_u128(b.id());
-        b.p.apply(Command::AddPanelItem(PanelItem {
+        b.apply(Command::AddPanelItem(PanelItem {
             id,
             page,
             kind,
