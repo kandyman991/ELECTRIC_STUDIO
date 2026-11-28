@@ -458,14 +458,13 @@ pub fn compare(before: &Project, after: &Project, progress: &dyn Progress) -> Re
                 safety_wires.extend(net.wires.iter().copied());
                 safety_endpoints.extend(net.endpoints.iter().copied());
                 safety_nets[index].insert((net.endpoints.clone(), net.names.clone(), net.wires.clone()));
-                // Supply nets are excluded only for unrelated device edits, not
-                // changes to the conductors themselves.
                 for wire in net.wires.iter().filter(|w| changed_wires.contains(w)) {
                     i.safety_indirect.push(format!("wire {} (on a safety-related potential)", wire.0));
                 }
-                if net.names.is_empty() {
-                    reached.extend(on);
-                }
+                // Named supply and interruption nets also carry safety dependencies.
+                // Conservatively require review rather than assuming a shared supply
+                // is unrelated (D19; the conveyor's -F3 is a mandatory example).
+                reached.extend(on);
             }
         }
     }
