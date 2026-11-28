@@ -11,15 +11,14 @@ merged PR.
 - **Review policy:** milestone-based. Implementation slices are merged once CI is green. Independent
   review happens when a milestone is ready for formal acceptance, or when a significant
   architectural issue needs a decision.
-- **Current milestone:** M10, format 2 canonical connectivity: implemented (M10a #37, M10b
-  #38, M10c #40, M10b′ and M10d #41); review findings R1–R8 corrected in **PR #42**
-  (`m10-acceptance-corrections`, not merged), **awaiting the final corrective review**. Not
-  accepted; S0 does not start until that review authorizes closure.
+- **Current milestone:** S0, stable numbering (authorized; implementation next).
+  - M10 format 2 canonical connectivity (M10a #37, M10b #38, M10c #40, M10b′ and M10d #41)
+    formally accepted on 28 Nov 2026; corrective PR #42 merged at `6e223ec`.
+    R1–R8 and R7.1/R7.2/R8.1 closed; [final acceptance evidence](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/42#issuecomment-7236646425).
   - M7a (PR #33) and M7b (PR #34) merged; corrective PR #35 merged at `e258a59`.
   - M7 formally accepted on 27 Nov 2026 with R5 (controlled Legion wall-clock and peak RSS)
     explicitly deferred by the owner, not passed. All six exact-head CI jobs passed at `90d6dfb`.
-  - **Next:** independent review of M10 for formal acceptance (see "M10 plan and state"
-    below for the evidence and known limitations).
+  - **Next:** implement S0 per ROADMAP.md and platform architecture; review at milestone completion.
   - **Outstanding pre-release gate:** qualified D41 Legion benchmark ([#39](https://github.com/kandyman991/ELECTRIC_STUDIO/issues/39)) when access returns;
     retain recorded conditions and cold/warm timing and RSS evidence before first production release.
 - **On hold:** PR #32 (component library, draft), reused in M9 after reconciliation (D13).
@@ -78,16 +77,16 @@ M7 accepted with the owner-approved R5 exception. R1–R4 validated: multi-level
 
 ## M10 plan and state
 
-M10 (format 2: canonical connectivity) is implemented in four slices, each merged when CI is
-green; independent review comes at M10 acceptance (docs/ROADMAP.md).
+M10 (format 2: canonical connectivity) is implemented and accepted. All four slices and
+corrective PR #42 are merged.
 
 | Slice | Scope | State |
 | --- | --- | --- |
 | M10a (PR #37, merged) | Format 2 groundwork: `FORMAT = 2`, format 1 read and converted on load, first-save note (`ecad_project::upgrade_note`); products by canonical id (`ProductId`, `products.json`, `PartRef.product`, two makers' same number coexist; BOM one line per product); sparse page sort keys (`PAGE_STEP`, `sparse_keys`, `SetPageKeys` for undo); the M7 conveyor committed as a format 1 fixture (`tests/acceptance/conveyor/format1`, written by `ecad new-sample` at e258a59) and shown to convert to the same project and drawings | Merged |
 | M10b | Terminals as entities: `Project.terminals` (`TerminalEntry`: id, device, group, point, designation) saved in `terminals.json`; `Function.terminals` maps each point to the terminal it shows; `Place` creates missing terminals (id `terminal/<drawing>/<point>` as M7, designation from `Function.designations`, then cleared) or shows existing ones of the same device (repeated drawings, no new endpoint); `Unplace` removes the terminals only it showed and undo restores them exactly; `SetDesignations` renumbers terminals (ids and wires unchanged); `AddTerminal`/`RemoveTerminal` (undrawn terminals); `Reassign` gives the drawing the other device's terminals (rewiring, so named in the editor) with exact undo; `Project::designation(f, point)` replaces `Function::designation` | PR #38, merged |
-| M10b′ | Typed PLC channel data: `ChannelData` (kind, address as written, symbol, comment) on the terminal of the channel's first point, in `terminals.json`; `Place` moves the channel keys off the drawing (undo restores them); `SetProperties` routes them to the terminal; `Project::property(f, key)` / `properties_of(f)` read them everywhere | PR #41 |
+| M10b′ | Typed PLC channel data: `ChannelData` (kind, address as written, symbol, comment) on the terminal of the channel's first point, in `terminals.json`; `Place` moves the channel keys off the drawing (undo restores them); `SetProperties` routes them to the terminal; `Project::property(f, key)` / `properties_of(f)` read them everywhere | PR #41, merged |
 | M10c | Nodes (D1, D33): `Project.nodes` (`NodeEntry`: id, kind, name, scope, description) saved in `nodes.json`; junctions, potentials and interruptions are no longer devices; a node drawing is a `Function` with `node: Some(id)` and `device: DeviceId::NONE` (omitted on disk); `Place` checks the symbol's kind against the node's, and a junction is drawn once; `AddNode`/`RemoveNode`/`SetNode`/`Rebind` (the explicit join); `Project::node_by_name(kind, name, scope)` refuses ambiguity; `label_of(f)` gives a drawing's tag or node name. Format 1 conversion (`ecad_project::load_with_findings`) gives nodes the ids M7 derived (`NodeId::for_device`, `for_junction`), keeps tags as names (junctions' too, so drawings are identical), and keeps ambiguous mappings apart with a `ConversionFinding` each: potential and interruption sharing a name (`NodeId::interruption_of`), an interruption joining differently named potentials (each drawing `NodeId::split`), a junction drawn twice. The app then saves only on a second save, the CLI only with `--accept-conversion`, MCP not at all. Fixture: `tests/acceptance/ambiguous/` | PR #40, merged |
-| M10d | Wires (D1): `wires.json` holds every wire (id, ends as terminal or node, number, make); page files hold only wire graphics (wire id, the drawn points, bend). In memory a drawn wire is a `Connection` (its graphics plus number and make) whose ends are read through the drawings' persistent terminal and node maps; a wire not drawn yet is a `Wire` in `Project.undrawn` (`AddWire`, `RemoveWire`, `DrawWire` keeps id, number and make). Load checks that each drawn wire's graphics show the ends `wires.json` gives (`WireDrawnElsewhere` otherwise). Undrawn wires are in the netlist, the wire list ("not drawn") and the checks (`wire-not-drawn`); terminals and nodes they end on can't be removed. Script and MCP `add_wire`; MCP `list_wires` says `drawn`. Acceptance: `tests/acceptance/tests/wires.rs` | PR #41 |
+| M10d | Wires (D1): `wires.json` holds every wire (id, ends as terminal or node, number, make); page files hold only wire graphics (wire id, the drawn points, bend). In memory a drawn wire is a `Connection` (its graphics plus number and make) whose ends are read through the drawings' persistent terminal and node maps; a wire not drawn yet is a `Wire` in `Project.undrawn` (`AddWire`, `RemoveWire`, `DrawWire` keeps id, number and make). Load checks that each drawn wire's graphics show the ends `wires.json` gives (`WireDrawnElsewhere` otherwise). Undrawn wires are in the netlist, the wire list ("not drawn") and the checks (`wire-not-drawn`); terminals and nodes they end on can't be removed. Script and MCP `add_wire`; MCP `list_wires` says `drawn`. Acceptance: `tests/acceptance/tests/wires.rs` | PR #41, merged |
 
 Notes:
 - **Product ids** of format 1 projects and of the built-in samples are UUID v5 of the number
@@ -111,6 +110,21 @@ M10 acceptance corrections (PR #42, findings in
 | R6 physical group consistency | `check_terminal_point` (point unique per group), whole-group renumbering including undrawn points, `RemoveDevice` refuses remaining terminals | `renumber_includes_undrawn_points_of_the_same_physical_group` |
 | R7 canonical bridges | `Project.bridges` in `bridges.json`; drawings only depict; repeated representations cannot add; drawing removal keeps surviving bridges; `AddBridge`/`RemoveBridge` explicit; format 1 conversion yields deterministic bridges equal to the built project; the temporary `BridgeInUse` safeguard is removed | `bridges.rs`, `deleting_a_bridge_drawing_keeps_the_bridges_of_surviving_undrawn_terminals`, `the_format_1_conveyor_converts_to_the_same_project` |
 | R8 remaining coverage | Undrawn terminals typed from their record (PLC channel, strip point); PLC I/O list and terminal diagram list undrawn channels and strip terminals as "not drawn" with what their wires reach; graphical-only edits never change drawn wire ends, `Rebind`/`Reassign` do | `bridges.rs` `graphical_operations_never_change_drawn_wire_ends`, `reassigning_a_drawing_creates_the_new_devices_bridges_and_keeps_the_old_ones` |
+
+### Final corrective acceptance (28 Nov 2026)
+
+Exact head `05f838f4f846dc616e32b0dfba4f81cbddc62143`: all six jobs passed
+([CI](https://github.com/kandyman991/ELECTRIC_STUDIO/actions/runs/46125168129),
+[Windows build](https://github.com/kandyman991/ELECTRIC_STUDIO/actions/runs/46125168093)).
+Linux and Windows each passed 12 bridge, 19 conveyor, 5 migration and 10 wire acceptance
+tests, including depicted bridge removal refusal, intermediate endpoint retention, exact
+history, nonadjacent bridge components, repeated/partial representations and undrawn
+wire reporting. Original format 1 migration and golden drawings/reports passed.
+Benchmark counts matched and instruction/allocation measurements were retained in the
+[acceptance record](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/42#issuecomment-7236646425).
+The two instruction warnings were decreases (edit/check); the existing manual underlay
+measurement remains ignored. Qualified Legion validation is NOT RUN (#39).
+M10 accepted; S0 authorized. No release authorization implied.
 
 Known limitations and review points (M10):
 - **Bridges are canonical** and only change through `AddBridge`/`RemoveBridge`, through placing
