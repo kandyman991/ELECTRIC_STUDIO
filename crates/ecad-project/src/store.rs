@@ -115,7 +115,7 @@ pub(crate) fn each_chunk(path: &Path, mut f: impl FnMut(&[u8])) -> Result<()> {
 }
 
 /// Whether the file at `path` holds exactly `bytes`, compared in pieces.
-fn same_contents(path: &Path, bytes: &[u8]) -> bool {
+pub(crate) fn same_contents(path: &Path, bytes: &[u8]) -> bool {
     if std::fs::metadata(path).map(|m| m.len()).ok() != Some(bytes.len() as u64) {
         return false;
     }
