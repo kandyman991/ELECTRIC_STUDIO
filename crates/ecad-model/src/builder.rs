@@ -12,11 +12,20 @@ pub(crate) struct Builder {
     pub(crate) p: Project,
     pub(crate) page: PageId,
     pub(crate) next: u128,
+    pub(crate) trace: Option<Vec<Command>>,
 }
 
 pub(crate) type F = FunctionId;
 
 impl Builder {
+    /// Record forward engineering steps, never history inverses.
+    pub(crate) fn apply(&mut self, command: Command) -> Result<Command> {
+        if let Some(trace) = &mut self.trace {
+            trace.push(command.clone());
+        }
+        self.p.apply(command)
+    }
+
     pub(crate) fn id(&mut self) -> u128 {
         self.next += 1;
         self.next
@@ -25,7 +34,7 @@ impl Builder {
     pub(crate) fn page(&mut self, name: &str, description: &str, subtitle: &str) -> Result<()> {
         let order = self.p.pages.len() as u32;
         let id = PageId::from_u128(0x100 + u128::from(order));
-        self.p.apply(Command::AddPage(Page {
+        self.apply(Command::AddPage(Page {
             id,
             name: name.into(),
             description: description.into(),
@@ -43,7 +52,7 @@ impl Builder {
             return Ok(d.id);
         }
         let id = DeviceId::from_u128(self.id());
-        self.p.add_device(Device::new(id, tag, ""))?;
+        self.apply(Command::AddDevice(Device::new(id, tag, "")))?;
         Ok(id)
     }
 
@@ -51,10 +60,10 @@ impl Builder {
         // A potential is a node, described as one.
         if let Ok(n) = self.p.node_by_name(crate::NodeKind::Potential, tag, crate::PROJECT_SCOPE) {
             let node = crate::NodeEntry { description: description.into(), ..n.clone() };
-            return self.p.apply(Command::SetNode(node)).map(drop);
+            return self.apply(Command::SetNode(node)).map(drop);
         }
         let id = self.device(tag)?;
-        self.p.apply(Command::SetDescription { id, description: description.into() }).map(drop)
+        self.apply(Command::SetDescription { id, description: description.into() }).map(drop)
     }
 
     /// A drawing of `tag` with `symbol` at (x, y), numbered as the model numbers it.
@@ -91,7 +100,7 @@ impl Builder {
                 Ok(n) => Some(n.id),
                 Err(_) => {
                     let n = crate::NodeId::for_device(DeviceId::from_u128(self.id()));
-                    self.p.apply(Command::AddNode(crate::NodeEntry::new(n, kind, name)))?;
+                    self.apply(Command::AddNode(crate::NodeEntry::new(n, kind, name)))?;
                     Some(n)
                 }
             },
@@ -101,11 +110,11 @@ impl Builder {
             Some(n) => n,
             None => {
                 let n = crate::NodeId::for_junction(id);
-                self.p.apply(Command::AddNode(crate::NodeEntry::new(n, kind, name)))?;
+                self.apply(Command::AddNode(crate::NodeEntry::new(n, kind, name)))?;
                 n
             }
         };
-        self.p.place(Function {
+        self.apply(Command::Place(Function {
             node: Some(node),
             terminals: Default::default(),
             id,
@@ -117,7 +126,7 @@ impl Builder {
             designations: BTreeMap::new(),
             properties: BTreeMap::new(),
             mirrored: false,
-        })?;
+        }))?;
         Ok(id)
     }
 
@@ -137,7 +146,7 @@ impl Builder {
         properties: BTreeMap<String, String>,
     ) -> Result<F> {
         let id = F::from_u128(self.id());
-        self.p.place(Function {
+        self.apply(Command::Place(Function {
             node: None,
             terminals: Default::default(),
             id,
@@ -149,7 +158,7 @@ impl Builder {
             designations,
             properties,
             mirrored: false,
-        })?;
+        }))?;
         Ok(id)
     }
 
@@ -167,7 +176,7 @@ impl Builder {
             .into_iter()
             .filter(|(_, v)| !v.is_empty())
             .collect();
-        self.p.apply(Command::SetProperties { id: f, properties })?;
+        self.apply(Command::SetProperties { id: f, properties })?;
         Ok(f)
     }
 
@@ -208,18 +217,18 @@ impl Builder {
     ) -> Result<ConnectionId> {
         let id = ConnectionId::from_u128(self.id());
         let (from, to) = (self.pin(a.0, a.1)?, self.pin(b.0, b.1)?);
-        self.p.connect(Connection { bend: None, id, from, to, wire_number: number.map(str::to_owned), spec })?;
+        self.apply(Command::Connect(Connection { bend: None, id, from, to, wire_number: number.map(str::to_owned), spec }))?;
         Ok(id)
     }
 
     /// Flips a drawing left to right.
     pub(crate) fn mirror(&mut self, f: F) -> Result<()> {
-        self.p.apply(Command::Mirror { id: f, to: true }).map(drop)
+        self.apply(Command::Mirror { id: f, to: true }).map(drop)
     }
 
     /// Puts a wire's middle run at `at` (its y when horizontal, its x when vertical).
     pub(crate) fn bend(&mut self, id: ConnectionId, at: f64) -> Result<()> {
-        self.p.apply(Command::SetWireBend { id, bend: Some(at) }).map(drop)
+        self.apply(Command::SetWireBend { id, bend: Some(at) }).map(drop)
     }
 
     pub(crate) fn w(&mut self, a: (F, &str), b: (F, &str)) -> Result<ConnectionId> {
@@ -244,7 +253,7 @@ impl Builder {
 
     pub(crate) fn cable(&mut self, tag: &str, kind: &str, cores: u32, shielded: bool) -> Result<CableId> {
         let id = CableId::from_u128(self.id());
-        self.p.apply(Command::AddCable(Cable { id, tag: tag.into(), kind: kind.into(), cores, shielded }))?;
+        self.apply(Command::AddCable(Cable { id, tag: tag.into(), kind: kind.into(), cores, shielded }))?;
         Ok(id)
     }
 
@@ -254,7 +263,7 @@ impl Builder {
             colour: String::new(),
             cable: Some(CableCore { cable, core: core.into() }),
         };
-        self.p.apply(Command::SetWireSpec { id: wire, spec }).map(drop)
+        self.apply(Command::SetWireSpec { id: wire, spec }).map(drop)
     }
 
     pub(crate) fn boxed(&mut self, label: &str, min: (f64, f64), max: (f64, f64)) -> Result<()> {
@@ -262,13 +271,13 @@ impl Builder {
         let page = self.page;
         let b =
             LocationBox { id, page, min: Point::new(min.0, min.1), max: Point::new(max.0, max.1), label: label.into() };
-        self.p.apply(Command::AddBox(b)).map(drop)
+        self.apply(Command::AddBox(b)).map(drop)
     }
 
     /// A black box device: its own symbol, then one drawing of it.
     pub(crate) fn black(&mut self, tag: &str, spec: BlackBox, x: f64, y: f64) -> Result<F> {
         let id = format!("box.{tag}");
-        self.p.apply(Command::AddSymbol(black_box(&id, &spec)))?;
+        self.apply(Command::AddSymbol(black_box(&id, &spec)))?;
         let f = self.put(tag, &id, x, y)?;
         self.describe(tag, &spec.description)?;
         Ok(f)
