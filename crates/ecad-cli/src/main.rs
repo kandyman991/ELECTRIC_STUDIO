@@ -491,7 +491,18 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                 }
             }
             .map_err(|e| e.to_string())?;
-            ecad_project::save(&project, Path::new(dir)).map_err(|e| e.to_string())?;
+            let path = Path::new(dir);
+            std::fs::create_dir_all(path).map_err(|e| e.to_string())?;
+            let _lock = ecad_project::store::Lock::take(path).map_err(|e| e.to_string())?;
+            // Creation is not an edit operation. Never use it to replace an existing
+            // project (including format 1), pending recovery, or any user's files.
+            for entry in std::fs::read_dir(path).map_err(|e| e.to_string())? {
+                let entry = entry.map_err(|e| e.to_string())?;
+                if entry.file_name() != ecad_project::store::LOCK {
+                    return Err("new-sample requires a new or empty project folder".into());
+                }
+            }
+            ecad_project::save_locked(&project, path, Default::default()).map_err(|e| e.to_string())?;
             println!("wrote project {dir}");
             Ok(ExitCode::SUCCESS)
         }
