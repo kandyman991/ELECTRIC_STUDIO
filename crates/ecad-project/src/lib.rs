@@ -71,6 +71,8 @@ pub enum ProjectError {
         "{dir}: changed outside Electric Studio ({summary}); reconcile first: restore the committed files or accept the changes"
     )]
     External { dir: PathBuf, summary: String },
+    #[error("{0}: transaction outcome uncertain; reopen and recover the project before another operation")]
+    CommitUncertain(PathBuf),
     #[error("cancelled")]
     Cancelled,
 }
@@ -478,7 +480,30 @@ pub fn save_locked(project: &Project, dir: &Path, extras: state::Extras) -> Resu
     for d in [dir.to_owned(), dir.join("pages"), dir.join("symbols"), dir.join("underlays")] {
         std::fs::create_dir_all(&d).map_err(io(&d))?;
     }
-    commit_rendered(dir, &files, &extras)
+    match commit_rendered(dir, &files, &extras) {
+        Ok(outcome) => Ok(outcome),
+        Err(error) => {
+            // Once the journal is published, an error is not proof of rollback.
+            // Finish it under the same lock, then verify the exact intended commit.
+            if !dir.join(store::JOURNAL).exists() {
+                return Err(error);
+            }
+            let uncertain = || ProjectError::CommitUncertain(dir.to_owned());
+            store::recover(dir).map_err(|_| uncertain())?;
+            let verification = state::verify(dir, &state::Quiet).map_err(|_| uncertain())?;
+            let expected = content_digest(project).map_err(|_| uncertain())?;
+            let revision = verification.committed.clone().ok_or_else(uncertain)?;
+            if !verification.clean()
+                || revision.content != expected
+                || extras.workflow.iter().any(|(path, bytes)| {
+                    state::read_workflow(dir, path).is_err_or(|actual| actual != *bytes)
+                })
+            {
+                return Err(uncertain());
+            }
+            Ok((fingerprint(dir).map_err(|_| uncertain())?, revision))
+        }
+    }
 }
 
 fn commit_rendered(dir: &Path, files: &[(String, Vec<u8>)], extras: &state::Extras) -> Result<(Fingerprint, Revision)> {
