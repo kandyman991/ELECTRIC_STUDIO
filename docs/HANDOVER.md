@@ -86,7 +86,7 @@ and contract were merged as one slice once all of its exact-head checks passed.
 | Slice | Scope | Tested head | CI (6 jobs) | Merge |
 | --- | --- | --- | --- | --- |
 | AI0a ([#48](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/48)) | Registry, change sets, authority, committed state, records, release validation, progress and cancellation, pilot, adversarial tests, docs | `3bb80dc` | fmt+clippy, test ubuntu, test windows, benchmarks, MCP official client (with the pilot step), build: all success | `fea0ae4` |
-| AI0b (this PR) | Evidence and limitations (docs only) | — | — | — |
+| AI0b ([#49](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/49)) | Evidence and limitations (docs only) | its head | docs-only checks | — |
 
 Acceptance criteria:
 
@@ -135,7 +135,7 @@ Known limitations and review points (AI0):
     the rendered files, byte-identical files keep their manifest hash, and objects are checked
     when read.
   - open: +9% (the M10/S0 figures, unchanged by AI0); other workloads within ±4%.
-  - allocation blocks: save 9 088, others unchanged.
+  - allocation blocks: save 5 226 → 9 088 (+74%: manifest, hashes, reading files to compare), others unchanged.
   - Smoke content hashes changed because the model now carries the `safety_related` and
     `automation` fields (and the conveyor marks -S0 and -K3).
   - Wall clock in the sandbox is noise; qualified timing remains #39.
