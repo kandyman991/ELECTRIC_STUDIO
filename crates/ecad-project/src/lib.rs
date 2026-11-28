@@ -60,6 +60,8 @@ pub enum ProjectError {
     Busy(PathBuf),
     #[error("{path}: over {limit} MB, too big to read")]
     TooBig { path: PathBuf, limit: usize },
+    #[error("{path}: invalid format-2 record: {reason}")]
+    Canonical { path: PathBuf, reason: String },
 }
 
 /// Largest underlay file read back: a little over what [`ecad_model::underlay::MAX_POINTS`]
@@ -121,8 +123,7 @@ struct WireGraphics {
     bend: Option<f64>,
 }
 
-/// A wire as saved in `wires.json`. A drawn wire's end its drawing no longer resolves (its
-/// symbol lost the point) is saved without one; the netlist reports it.
+/// A wire as saved in `wires.json`. Both canonical endpoints must resolve before save or load.
 #[derive(Serialize, Deserialize)]
 struct WireFile {
     id: ecad_model::ConnectionId,
@@ -373,6 +374,9 @@ fn render(project: &Project) -> Result<Vec<(String, Vec<u8>)>> {
             spec: w.spec.clone(),
         }))
         .collect();
+    if wires.iter().any(|w| w.from.is_none() || w.to.is_none()) {
+        return Err(model(Path::new("wires.json"))(ModelError::BadWireEnds));
+    }
     wires.sort_by_key(|w| w.id);
     files.push(("wires.json".to_owned(), render_json(Path::new("wires.json"), &wires)?));
 
@@ -619,7 +623,7 @@ pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>
         }
     }
     let path = dir.join("nodes.json");
-    if !legacy && path.exists() {
+    if !legacy {
         for n in read_json::<Vec<NodeEntry>>(&path)? {
             project.apply(Command::AddNode(n)).map_err(model(&path))?;
         }
@@ -628,7 +632,7 @@ pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>
     // Terminals before the drawings that show them (format 2); format 1 has none: placing a
     // drawing gives it terminals from its designations.
     let path = dir.join("terminals.json");
-    if !legacy && path.exists() {
+    if !legacy {
         for t in read_json::<Vec<TerminalEntry>>(&path)? {
             project.apply(Command::AddTerminal(t)).map_err(model(&path))?;
         }
@@ -638,6 +642,23 @@ pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>
     let mut pages = Vec::new();
     for (id, path, file) in page_files {
         for f in &file.functions {
+            if !legacy {
+                let sym = project.symbol(&f.symbol).map_err(model(&path))?;
+                let valid = f.designations.is_empty() && if project.node_kind_of(&f.symbol).is_some() {
+                    f.terminals.is_empty()
+                } else {
+                    f.terminals.len() == sym.connection_points.len()
+                        && sym.connection_points.iter().all(|cp| {
+                            f.terminals.get(&cp.name).is_some_and(|t| project.terminals.contains_key(t))
+                        })
+                };
+                if !valid {
+                    return Err(model(&path)(ModelError::InvalidTerminalBindings(f.id)));
+                }
+            }
+            if f.page != id {
+                return Err(ProjectError::Canonical { path: path.clone(), reason: "drawing belongs to another page".into() });
+            }
             project.apply(Command::Place(f.clone())).map_err(model(&path))?;
         }
         for b in &file.boxes {
@@ -664,21 +685,36 @@ pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>
             let u = file.into_underlay();
             project.apply(Command::SetUnderlay { page: id, underlay: Some(Box::new(u)) }).map_err(model(&underlay))?;
         }
-        pages.push((path, file.connections, file.wires));
+        if (!legacy && !file.connections.is_empty()) || (legacy && !file.wires.is_empty()) {
+            return Err(ProjectError::Canonical { path, reason: "mixed legacy connections and canonical wire graphics".into() });
+        }
+        pages.push((id, path, file.connections, file.wires));
     }
     // Format 2: the wires, then how each drawn one is drawn.
     let wires_path = dir.join("wires.json");
-    let mut wires: std::collections::BTreeMap<ecad_model::ConnectionId, WireFile> = if !legacy && wires_path.exists() {
-        read_json::<Vec<WireFile>>(&wires_path)?.into_iter().map(|w| (w.id, w)).collect()
-    } else {
-        Default::default()
-    };
+    let mut wires = std::collections::BTreeMap::new();
+    if !legacy {
+        for w in read_json::<Vec<WireFile>>(&wires_path)? {
+            let id = w.id;
+            if w.from.is_none() || w.to.is_none() {
+                return Err(model(&wires_path)(ModelError::BadWireEnds));
+            }
+            if wires.insert(id, w).is_some() {
+                return Err(model(&wires_path)(ModelError::DuplicateId(id.0)));
+            }
+        }
+    }
     let mut drawn = Vec::new();
-    for (path, connections, graphics) in pages {
+    for (page_id, path, connections, graphics) in pages {
         for c in connections {
             project.apply(Command::Connect(c)).map_err(model(&path))?;
         }
         for g in graphics {
+            if project.function(g.from.function).map_err(model(&path))?.page != page_id
+                || project.function(g.to.function).map_err(model(&path))?.page != page_id
+            {
+                return Err(ProjectError::Canonical { path: path.clone(), reason: "wire graphics belong to another page".into() });
+            }
             let w = wires.remove(&g.wire).ok_or_else(|| model(&path)(ModelError::NoConnection(g.wire)))?;
             let c = Connection {
                 id: g.wire,

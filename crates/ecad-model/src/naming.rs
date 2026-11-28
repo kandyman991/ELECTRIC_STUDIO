@@ -173,6 +173,7 @@ impl Project {
 
     fn wire_number_taken(&self, number: &str) -> bool {
         self.connections.values().any(|c| c.wire_number.as_deref() == Some(number))
+            || self.undrawn.values().any(|w| w.wire_number.as_deref() == Some(number))
     }
 
     /// The first free number from the wire format on `page`.

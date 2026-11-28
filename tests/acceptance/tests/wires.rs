@@ -133,3 +133,70 @@ fn page_graphics_that_dont_show_a_wires_ends_are_refused_on_load() {
     let e = ecad_project::load(tmp.path()).unwrap_err().to_string();
     assert!(e.contains("don't show wire"), "{e}");
 }
+
+
+#[test]
+fn format_2_refuses_missing_or_duplicate_canonical_records() {
+    let p = conveyor().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    for file in ["terminals.json", "nodes.json", "wires.json"] {
+        ecad_project::save(&p, root).unwrap();
+        std::fs::remove_file(root.join(file)).unwrap();
+        assert!(ecad_project::load(root).is_err(), "{file}");
+    }
+    ecad_project::save(&p, root).unwrap();
+    let path = root.join("wires.json");
+    let mut wires: Vec<serde_json::Value> =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    wires.push(wires[0].clone());
+    std::fs::write(&path, serde_json::to_vec(&wires).unwrap()).unwrap();
+    assert!(ecad_project::load(root).is_err(), "duplicate wire id");
+    ecad_project::save(&p, root).unwrap();
+    let path = root.join("terminals.json");
+    let mut terminals: Vec<serde_json::Value> =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    terminals.remove(0);
+    std::fs::write(&path, serde_json::to_vec(&terminals).unwrap()).unwrap();
+    assert!(ecad_project::load(root).is_err(), "missing terminal record");
+}
+
+#[test]
+fn undrawn_wire_reserves_cable_core_and_number() {
+    let mut p = conveyor().unwrap();
+    let from = p.connectivity().endpoint(&point(&p, "-H1", "X2")).unwrap();
+    let to = Endpoint::Node(p.node_by_name(NodeKind::Potential, "M", ecad_model::PROJECT_SCOPE).unwrap().id);
+    let used = p.connections.values().find_map(|c| c.spec.cable.clone()).unwrap();
+    let wire = Wire { id: ConnectionId::new(), from, to, wire_number: None,
+        spec: ecad_model::WireSpec { cable: Some(used.clone()), ..Default::default() } };
+    let before = p.clone();
+    assert!(p.apply(Command::AddWire(wire.clone())).is_err());
+    assert_eq!(p, before);
+    let core = ecad_model::CableCore { core: "test-unused".into(), ..used };
+    let page = p.pages_in_order()[0].id;
+    let number = p.next_wire_number(page);
+    let wire = Wire { wire_number: Some(number.clone()),
+        spec: ecad_model::WireSpec { cable: Some(core.clone()), ..Default::default() }, ..wire };
+    p.apply(Command::AddWire(wire.clone())).unwrap();
+    assert_ne!(p.next_wire_number(page), number);
+    assert!(p.apply(Command::RemoveCable(core.cable)).is_err());
+    let duplicate = Wire { id: ConnectionId::new(), wire_number: None, ..wire };
+    assert!(p.apply(Command::AddWire(duplicate)).is_err());
+    assert_eq!(p, save_and_load(&p));
+}
+
+#[test]
+fn terminal_records_survive_unplace_and_undo_without_reconstruction() {
+    let mut p = conveyor().unwrap();
+    let f = point(&p, "-H1", "X2").function;
+    let t = p.function(f).unwrap().terminals["X2"];
+    let entry = p.terminals.get_mut(&t).unwrap();
+    entry.point = "custom-physical-point".into();
+    let before = p.clone();
+    let undo = p.apply(Command::Unplace(f)).unwrap();
+    let removed = p.clone();
+    let redo = p.apply(undo).unwrap();
+    assert_eq!(p, before);
+    p.apply(redo).unwrap();
+    assert_eq!(p, removed);
+}
