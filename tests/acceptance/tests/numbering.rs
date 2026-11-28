@@ -338,3 +338,107 @@ fn numbering_commands_undo_and_redo_exactly() {
         Err(ModelError::IdentifierReserved(_))
     ));
 }
+
+#[test]
+fn renumbering_is_previewed_confirmed_and_keeps_every_identity() {
+    use ecad_model::renumber::Scope;
+    let mut p = conveyor().unwrap();
+    // Make gaps: remove -B1 (retired), so devices -B2… and wires have holes.
+    remove_device(&mut p, "-B1");
+    p.apply(Command::Reserve(vec![Record::new(tag("-B1"), "kept for the infeed sensor")]))
+        .map(|_| ())
+        .unwrap_or_else(|e| assert!(matches!(e, ModelError::IdentifierRetired(_)), "{e:?}"));
+    for scope in [Scope::Wires, Scope::Devices, Scope::Pages] {
+        let before = p.clone();
+        let r = p.preview_renumbering(scope).unwrap();
+        assert_eq!(p, before, "a preview changes nothing");
+        // Applied only to the project it was previewed on.
+        let mut moved = p.clone();
+        let k1 = moved.device_by_tag("-K1").unwrap().id;
+        moved.apply(Command::SetDescription { id: k1, description: "changed".into() }).unwrap();
+        assert!(matches!(moved.apply_renumbering(&r), Err(ModelError::StalePreview)));
+        let undo = p.apply_renumbering(&r).unwrap();
+        // Ids never change: only names.
+        assert_eq!(p.devices.keys().collect::<Vec<_>>(), before.devices.keys().collect::<Vec<_>>());
+        assert_eq!(p.terminals.keys().collect::<Vec<_>>(), before.terminals.keys().collect::<Vec<_>>());
+        assert_eq!(p.connections.keys().collect::<Vec<_>>(), before.connections.keys().collect::<Vec<_>>());
+        assert_eq!(p.netlist().nets.len(), before.netlist().nets.len());
+        // No reserved or retired name is handed out.
+        for d in p.devices.values() {
+            assert!(p.available(&tag(&d.tag)), "{}", d.tag);
+        }
+        for c in r.changes.iter() {
+            assert_ne!(c.from, c.to);
+        }
+        p.apply(undo).unwrap();
+        assert_eq!(p, before, "{scope:?} undoes exactly");
+    }
+    // Devices: -B2 is now the first -B in drawing order, but -B1 is retired: it stays -B2.
+    let r = p.preview_renumbering(Scope::Devices).unwrap();
+    assert!(!r.changes.iter().any(|c| c.to == "-B1"), "{:?}", r.changes);
+    // Terminals of a strip: undrawn groups keep their numbers.
+    let x3 = p.device_by_tag("-X3").unwrap().id;
+    let r = p.preview_renumbering(Scope::Terminals(x3)).unwrap();
+    let mut q = p.clone();
+    q.apply_renumbering(&r).unwrap();
+    assert_eq!(q.terminals.keys().collect::<Vec<_>>(), p.terminals.keys().collect::<Vec<_>>());
+}
+
+#[test]
+fn replacing_a_device_keeps_its_identity_and_reconciles_terminals_explicitly() {
+    let p = conveyor().unwrap();
+    let q1 = p.device_by_tag("-Q1").unwrap().clone();
+    let before = p.clone();
+    let terminals: Vec<&ecad_model::TerminalEntry> = p.terminals.values().filter(|t| t.device == q1.id).collect();
+    // The new product's auxiliary contact is 53-54 instead of 13-14: a person maps them.
+    let renames: std::collections::BTreeMap<_, _> = terminals
+        .iter()
+        .filter_map(|t| match t.designation.as_str() {
+            "13" => Some((t.id, "53".to_owned())),
+            "14" => Some((t.id, "54".to_owned())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(renames.len(), 2);
+    let part = p.parts.values().next().unwrap().clone();
+    let parts = vec![ecad_model::PartRef::to(part.id, 1)];
+    let mut e = Editor::new(p.clone(), page(&p, "1")).unwrap();
+    e.replace_device(q1.id, parts.clone(), renames.clone()).unwrap();
+    let after = e.project();
+    let d = &after.devices[&q1.id];
+    assert_eq!((d.tag.as_str(), &d.parts), (q1.tag.as_str(), &parts), "same id and tag, new product");
+    assert_eq!(after.terminals.keys().collect::<Vec<_>>(), before.terminals.keys().collect::<Vec<_>>());
+    assert_eq!(after.functions, before.functions, "drawings untouched");
+    assert_eq!(after.connections.keys().collect::<Vec<_>>(), before.connections.keys().collect::<Vec<_>>());
+    assert_eq!(after.panel_items, before.panel_items, "layout position kept");
+    assert!(after.numbering.retired.is_empty(), "replacement retires nothing");
+    for (t, d) in &renames {
+        assert_eq!(&after.terminals[t].designation, d);
+    }
+    // Unmapped terminals keep their designations; nothing is dropped.
+    for t in before.terminals.values().filter(|t| t.device == q1.id && !renames.contains_key(&t.id)) {
+        assert_eq!(after.terminals[&t.id].designation, t.designation);
+    }
+    let saved = save_and_load(after);
+    assert_eq!(&saved, after);
+    e.key(ecad_editor::Key::Undo);
+    assert_eq!(e.project(), &before);
+    // Onto a reserved designation, or an empty one, is refused, changing nothing.
+    let mut reserved = before.clone();
+    reserved
+        .apply(Command::Reserve(vec![Record::new(
+            Identifier::Terminal { device: q1.id, designation: "53".into() },
+            "",
+        )]))
+        .unwrap();
+    let held = reserved.clone();
+    let err = reserved.apply(Command::ReplaceDevice { id: q1.id, parts: vec![], designations: renames.clone() });
+    assert!(matches!(err, Err(ModelError::IdentifierReserved(_))), "{err:?}");
+    assert_eq!(reserved, held);
+    let first = *renames.keys().next().unwrap();
+    let mut q = before.clone();
+    let err =
+        q.apply(Command::ReplaceDevice { id: q1.id, parts: vec![], designations: [(first, " ".to_owned())].into() });
+    assert!(err.is_err());
+    assert_eq!(q, before);
+}

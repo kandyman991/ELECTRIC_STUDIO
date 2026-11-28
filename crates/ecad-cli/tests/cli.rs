@@ -188,3 +188,36 @@ fn usage_errors_exit_with_2() {
     assert!(help.status.success() && text(&help).contains("ecad export <project-dir> <out-dir>"));
     assert!(text(&ecad(&["--version"])).starts_with("ecad "));
 }
+
+#[test]
+fn numbering_is_listed_reserved_and_renumbering_is_previewed_before_it_applies() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = sample(tmp.path(), "conveyor");
+    let o = ecad(&["reserve", &dir, "tag:-K10..-K12", "address:I3.0..I3.3", "--note", "extension"]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains("reserved -K10, -K11, -K12, I3.0"), "{}", text(&o));
+    let o = ecad(&["numbering", &dir, "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["reserved"].as_array().unwrap().len(), 7, "{v}");
+    assert_eq!(v["reserved"][0]["note"], "extension");
+    // Reserving one in use is refused and saves nothing.
+    let o = ecad(&["reserve", &dir, "tag:-K1"]);
+    assert_eq!(o.status.code(), Some(2), "{}", text(&o));
+    let o = ecad(&["unreserve", &dir, "tag:-K12"]);
+    assert!(o.status.success(), "{}", text(&o));
+    let o = ecad(&["retire", &dir, "wire:W999"]);
+    assert!(o.status.success(), "{}", text(&o));
+    let o = ecad(&["reclaim", &dir, "wire:W999"]);
+    assert!(text(&o).contains("reclaimed wire W999"), "{}", text(&o));
+    // A renumbering preview changes nothing; --apply does it.
+    let before = std::fs::read(Path::new(&dir).join("project.json")).unwrap();
+    let o = ecad(&["renumber", &dir, "pages", "--json"]);
+    assert!(o.status.success(), "{}", text(&o));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["applied"], false);
+    assert_eq!(std::fs::read(Path::new(&dir).join("project.json")).unwrap(), before);
+    let o = ecad(&["renumber", &dir, "terminals:-NOPE"]);
+    assert_eq!(o.status.code(), Some(2));
+    let o = ecad(&["renumber", &dir, "sideways"]);
+    assert_eq!(o.status.code(), Some(2));
+}

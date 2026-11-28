@@ -15,8 +15,8 @@ use ecad_model::{
 pub use ecad_model::{Naming, Part, PartRef, ProductId, ProjectInfo, Revision, WireLengthSettings, WireNumbering};
 pub use ecad_view::{Primitive, Shape};
 pub use session::{
-    Button, CableInfo, Choice, DevicePart, Frame, KeyName, LayoutInfo, PageInfo, PaletteItem, SelectionInfo, Session,
-    SheetGrid, UiEvent, UnplacedDevice,
+    Button, CableInfo, Choice, DevicePart, Frame, KeyName, LayoutInfo, PageInfo, PaletteItem, RenumberScope,
+    RenumberingInfo, SelectionInfo, Session, SheetGrid, UiEvent, UnplacedDevice,
 };
 pub use view::Viewport;
 
@@ -706,10 +706,34 @@ impl Editor {
         self.execute("Wire lengths", Command::SetWireLengthSettings(settings))
     }
 
-    /// Number every wire again from the project's wire format, page by page.
+    /// Preview an explicit global renumbering (S0): what would change, and nothing yet.
+    pub fn preview_renumbering(
+        &self,
+        scope: ecad_model::renumber::Scope,
+    ) -> Result<ecad_model::renumber::Renumbering, ModelError> {
+        self.project.preview_renumbering(scope)
+    }
+
+    /// Apply a renumbering previewed on the current project, as one undo step; refused if
+    /// the project changed since.
+    pub fn apply_renumbering(&mut self, r: &ecad_model::renumber::Renumbering) -> Result<(), ModelError> {
+        if self.project.content_hash()? != r.base {
+            return Err(ModelError::StalePreview);
+        }
+        let label = match r.scope {
+            ecad_model::renumber::Scope::Wires => "Renumber all wires".to_owned(),
+            ecad_model::renumber::Scope::Devices => "Renumber all devices".to_owned(),
+            ecad_model::renumber::Scope::Pages => "Renumber all pages".to_owned(),
+            ecad_model::renumber::Scope::Terminals(d) => format!("Renumber {}", self.project.device(d)?.tag),
+        };
+        self.execute(&label, Command::Batch(r.commands.clone()))
+    }
+
+    /// Number every wire again from the project's wire format, page by page: preview and
+    /// apply in one go (scripts; people confirm a preview first).
     pub fn renumber_all_wires(&mut self) -> Result<(), ModelError> {
-        let cmds = self.project.renumber_all_wires();
-        self.execute("Renumber all wires", Command::Batch(cmds))
+        let r = self.preview_renumbering(ecad_model::renumber::Scope::Wires)?;
+        self.apply_renumbering(&r)
     }
 
     /// Moves every wire on the page that runs on another wire or through a symbol to a clear
@@ -1447,13 +1471,11 @@ impl Editor {
     pub(crate) fn draw_wire(&mut self, start: ConnectionRef, point: ConnectionRef) -> Result<ConnectionId, ModelError> {
         {
             {
-                // Per potential, the wire takes its potential's number, and a wire that joins
-                // two potentials brings the other one's wires to the same number.
-                let (number, renumber) = self.project.number_for_new_wire(&start, &point);
-                let mut cmds: Vec<Command> = renumber
-                    .into_iter()
-                    .map(|id| Command::SetWireNumber { id, number: Some(number.clone()) })
-                    .collect();
+                // Per potential, the wire takes its potential's number. A wire that joins two
+                // numbered potentials renumbers neither (S0): `wire-numbers-differ` reports
+                // it until someone reconciles them.
+                let number = self.project.number_for_new_wire(&start, &point);
+                let mut cmds: Vec<Command> = Vec::new();
                 let id = ConnectionId::new();
                 cmds.push(Command::Connect(Connection {
                     bend: None,
@@ -1474,6 +1496,19 @@ impl Editor {
                 Ok(id)
             }
         }
+    }
+
+    /// Replace a device's products, keeping its id, tag, terminals, drawings, wires and layout
+    /// position (D23), with the terminal renames a person confirmed (by terminal id). Nothing
+    /// is retired, dropped or reconnected; one undo step.
+    pub fn replace_device(
+        &mut self,
+        device: DeviceId,
+        parts: Vec<ecad_model::PartRef>,
+        designations: std::collections::BTreeMap<ecad_model::TerminalId, String>,
+    ) -> Result<(), ModelError> {
+        let tag = self.project.device(device)?.tag.clone();
+        self.execute(&format!("Replace {tag}"), Command::ReplaceDevice { id: device, parts, designations })
     }
 
     /// A removal as one undo step that retires the identifiers it frees and renumbers nothing

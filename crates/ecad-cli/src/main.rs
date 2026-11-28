@@ -3,7 +3,7 @@
 //! Exit codes: 0 done; 1 `check` found errors (or, with `--strict`, warnings); 2 the command
 //! couldn't run (bad arguments, a project that doesn't load, a file that can't be written).
 
-use ecad_model::Project;
+use ecad_model::{Command, Project};
 use ecad_view::Formats;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -36,6 +36,18 @@ usage:
       Take a page's underlay away.
   ecad new-sample <project-dir> [start|contacts|potentials|terminals|plc|power|library|reference|conveyor]
       Write a sample project (default: start).
+  ecad numbering <project-dir> [--json]
+      List the numbering policies, capacities, reserved and retired identifiers.
+  ecad reserve <project-dir> <identifier>... [--note <text>]
+  ecad unreserve <project-dir> <identifier>...
+  ecad retire <project-dir> <identifier>... [--note <text>]
+  ecad reclaim <project-dir> <identifier>...
+      Keep identifiers free for an extension, release them, retire them, or allow a retired
+      one to be used again. Identifiers: tag:-K10, tag:-K10..-K19, cable:-W9, wire:W5,
+      terminal:-X3:7..9, address:I1.0..I1.3, core:-W1:3, page:3a.
+  ecad renumber <project-dir> wires|devices|pages|terminals:<strip> [--apply] [--json]
+      Preview renumbering (nothing changes); --apply renumbers, as one step. Ids, wires and
+      drawings stay; reserved and retired identifiers are skipped.
   ecad demo <out-dir>
       export for the built-in sample, without a project folder.
   ecad --help | --version
@@ -67,6 +79,50 @@ fn before_save(dir: &str, accept: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// `ecad numbering`: the project's numbering state.
+fn numbering(p: &Project, json: bool) -> Result<ExitCode, String> {
+    use ecad_model::numbering::Kind;
+    let n = &p.numbering;
+    let list = |m: &std::collections::BTreeMap<ecad_model::Identifier, String>| -> Vec<(String, String)> {
+        m.iter().map(|(id, note)| (p.describe_identifier(id), note.clone())).collect()
+    };
+    let capacities: Vec<(String, u32)> =
+        n.capacities.iter().map(|(d, c)| (p.device(*d).map(|d| d.tag.clone()).unwrap_or_default(), *c)).collect();
+    if json {
+        let policies: serde_json::Map<String, serde_json::Value> = Kind::ALL
+            .iter()
+            .map(|k| (k.label().to_owned(), serde_json::to_value(n.policies.strategy(*k)).unwrap_or_default()))
+            .collect();
+        let entries = |v: Vec<(String, String)>| -> Vec<serde_json::Value> {
+            v.into_iter().map(|(id, note)| serde_json::json!({ "identifier": id, "note": note })).collect()
+        };
+        println!(
+            "{}",
+            serde_json::json!({
+                "policies": policies,
+                "pageSuffix": n.policies.page_suffix,
+                "capacities": capacities.iter().map(|(t, c)| serde_json::json!({ "device": t, "capacity": c })).collect::<Vec<_>>(),
+                "reserved": entries(list(&n.reserved)),
+                "retired": entries(list(&n.retired)),
+            })
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+    for k in Kind::ALL {
+        println!("{}: {:?}", k.label(), n.policies.strategy(k));
+    }
+    println!("inserted pages: {:?}", n.policies.page_suffix);
+    for (t, c) in capacities {
+        println!("capacity {t}: {c}");
+    }
+    for (what, m) in [("reserved", &n.reserved), ("retired", &n.retired)] {
+        for (id, note) in list(m) {
+            if note.is_empty() { println!("{what} {id}") } else { println!("{what} {id} ({note})") }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 fn load(dir: &Path) -> Result<Project, String> {
     ecad_project::load(dir).map_err(|e| format!("{}: {e}", dir.display()))
 }
@@ -79,17 +135,29 @@ struct Args {
     only: Option<String>,
     units: Option<String>,
     accept_conversion: bool,
+    apply: bool,
+    note: Option<String>,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
-    let mut out =
-        Args { positional: Vec::new(), json: false, strict: false, only: None, units: None, accept_conversion: false };
+    let mut out = Args {
+        positional: Vec::new(),
+        json: false,
+        strict: false,
+        only: None,
+        units: None,
+        accept_conversion: false,
+        apply: false,
+        note: None,
+    };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--json" => out.json = true,
             "--strict" => out.strict = true,
             "--accept-conversion" => out.accept_conversion = true,
+            "--apply" => out.apply = true,
+            "--note" => out.note = Some(it.next().ok_or("--note needs a text")?.clone()),
             "--only" => out.only = Some(it.next().ok_or("--only needs a list, e.g. --only pdf,reports")?.clone()),
             "--units" => out.units = Some(it.next().ok_or("--units needs a unit: mm, cm, m, inch or feet")?.clone()),
             flag if flag.starts_with("--") => return Err(format!("unknown option `{flag}`")),
@@ -192,9 +260,14 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
     }
     let a = parse(args)?;
     let flags = |allowed: &[&str]| -> Result<(), String> {
-        for (set, name) in
-            [(a.json, "--json"), (a.strict, "--strict"), (a.only.is_some(), "--only"), (a.units.is_some(), "--units")]
-        {
+        for (set, name) in [
+            (a.json, "--json"),
+            (a.strict, "--strict"),
+            (a.only.is_some(), "--only"),
+            (a.units.is_some(), "--units"),
+            (a.apply, "--apply"),
+            (a.note.is_some(), "--note"),
+        ] {
             if set && !allowed.contains(&name) {
                 return Err(format!("{name} doesn't apply to `{}`", a.positional.first().map_or("", String::as_str)));
             }
@@ -303,6 +376,70 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             println!("wrote project {dir}");
             Ok(ExitCode::SUCCESS)
         }
+        ["numbering", dir] => {
+            flags(&["--json"])?;
+            let project = load(Path::new(dir))?;
+            numbering(&project, a.json)
+        }
+        [cmd @ ("reserve" | "unreserve" | "retire" | "reclaim"), dir, specs @ ..] if !specs.is_empty() => {
+            flags(if matches!(*cmd, "reserve" | "retire") { &["--note"] } else { &[] })?;
+            let (mut project, seen) = ecad_project::load_checked(Path::new(dir)).map_err(|e| e.to_string())?;
+            let mut ids = Vec::new();
+            for spec in specs {
+                ids.extend(project.parse_identifiers(spec)?);
+            }
+            let note = a.note.clone().unwrap_or_default();
+            let records = || ids.iter().map(|id| ecad_model::Record::new(id.clone(), &note)).collect();
+            let command = match *cmd {
+                "reserve" => Command::Reserve(records()),
+                "retire" => Command::Retire(records()),
+                "unreserve" => Command::Unreserve(ids.clone()),
+                _ => Command::Reclaim(ids.clone()),
+            };
+            project.apply(command).map_err(|e| e.to_string())?;
+            before_save(dir, a.accept_conversion)?;
+            ecad_project::save_checked(&project, Path::new(dir), Some(seen)).map_err(|e| e.to_string())?;
+            let done = if *cmd == "reclaim" { "reclaimed".to_owned() } else { format!("{cmd}d") };
+            println!("{done} {}", ids.iter().map(|id| project.describe_identifier(id)).collect::<Vec<_>>().join(", "));
+            Ok(ExitCode::SUCCESS)
+        }
+        ["renumber", dir, what] => {
+            flags(&["--apply", "--json"])?;
+            let (mut project, seen) = ecad_project::load_checked(Path::new(dir)).map_err(|e| e.to_string())?;
+            let scope = match *what {
+                "wires" => ecad_model::renumber::Scope::Wires,
+                "devices" => ecad_model::renumber::Scope::Devices,
+                "pages" => ecad_model::renumber::Scope::Pages,
+                other => match other.strip_prefix("terminals:") {
+                    Some(tag) => {
+                        ecad_model::renumber::Scope::Terminals(ecad_editor::script::find_device(&project, tag)?)
+                    }
+                    None => return Err(format!("renumber wires, devices, pages or terminals:<strip>, not `{other}`")),
+                },
+            };
+            let r = project.preview_renumbering(scope).map_err(|e| e.to_string())?;
+            if a.json {
+                let changes: Vec<serde_json::Value> = r
+                    .changes
+                    .iter()
+                    .map(|c| serde_json::json!({ "what": c.what, "from": c.from, "to": c.to }))
+                    .collect();
+                println!("{}", serde_json::json!({ "changes": changes, "applied": a.apply }));
+            } else {
+                for c in &r.changes {
+                    println!("{}: {} -> {}", c.what, c.from, c.to);
+                }
+            }
+            if a.apply && !r.changes.is_empty() {
+                project.apply_renumbering(&r).map_err(|e| e.to_string())?;
+                before_save(dir, a.accept_conversion)?;
+                ecad_project::save_checked(&project, Path::new(dir), Some(seen)).map_err(|e| e.to_string())?;
+                eprintln!("renumbered: {} changes", r.changes.len());
+            } else if !a.json {
+                eprintln!("{} changes previewed; nothing changed (add --apply to renumber)", r.changes.len());
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         ["demo", out] => {
             flags(&[])?;
             let project = ecad_model::sample::start_circuit().map_err(|e| e.to_string())?;
@@ -311,8 +448,23 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         }
         [] => Err(format!("no command\n\n{USAGE}")),
         [cmd, ..]
-            if ["check", "export", "report", "import-tia", "import-dxf", "remove-underlay", "new-sample", "demo"]
-                .contains(cmd) =>
+            if [
+                "check",
+                "export",
+                "report",
+                "import-tia",
+                "import-dxf",
+                "remove-underlay",
+                "new-sample",
+                "demo",
+                "numbering",
+                "reserve",
+                "unreserve",
+                "retire",
+                "reclaim",
+                "renumber",
+            ]
+            .contains(cmd) =>
         {
             Err(format!("wrong arguments for `{cmd}`\n\n{USAGE}"))
         }

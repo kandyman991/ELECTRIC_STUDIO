@@ -111,6 +111,17 @@ fn the_read_tools_describe_the_project() {
     assert!(devices["devices"].is_array());
     let (c, _) = call(&mut s, "run_checks", json!({}));
     assert_eq!(c["errors"], 0);
+    // Numbering (S0): policies and lists, and a renumbering preview that changes nothing.
+    let (n, _) = call(&mut s, "numbering", json!({}));
+    assert_eq!(n["policies"]["device tags"], "sequential", "{n}");
+    assert!(n["reserved"].as_array().unwrap().is_empty());
+    let (before, _) = call(&mut s, "project_overview", json!({}));
+    let (r, failed) = call(&mut s, "preview_renumbering", json!({ "scope": "pages" }));
+    assert!(!failed && r["applied"] == false && r["changes"].is_array(), "{r}");
+    let (after, _) = call(&mut s, "project_overview", json!({}));
+    assert_eq!(after, before, "a preview changes nothing");
+    let (e, failed) = call(&mut s, "preview_renumbering", json!({ "scope": "terminals" }));
+    assert!(failed, "{e}");
     // Mistakes come back as tool errors the model can read.
     let (e, failed) = call(&mut s, "device_details", json!({ "tag": "-NOPE" }));
     assert!(failed && e == "no device `-NOPE`", "{e}");
@@ -234,9 +245,17 @@ fn every_tool_declares_its_hints() {
         assert_eq!(t["inputSchema"]["type"], "object", "{t}");
         assert_eq!(t["inputSchema"]["additionalProperties"], false, "{t}");
     }
-    for read in
-        ["project_overview", "list_devices", "device_details", "list_wires", "run_checks", "report", "list_symbols"]
-    {
+    for read in [
+        "project_overview",
+        "list_devices",
+        "device_details",
+        "list_wires",
+        "run_checks",
+        "report",
+        "list_symbols",
+        "numbering",
+        "preview_renumbering",
+    ] {
         assert!(hint(read, "readOnlyHint") && !hint(read, "destructiveHint"), "{read}");
     }
     for adds in ["place_symbol", "connect"] {

@@ -147,6 +147,25 @@ pub fn list(writable: bool) -> Vec<Value> {
             &[],
             Effect::Reads,
         ),
+        tool(
+            "numbering",
+            "Numbering",
+            "The numbering policies (sequential or lowest free, per kind), the page suffix style, the capacities of PLC cards and strips, and the reserved and retired identifiers, each with its note. New identifiers skip reserved and retired ones; nothing is renumbered automatically.",
+            json!({}),
+            &[],
+            Effect::Reads,
+        ),
+        tool(
+            "preview_renumbering",
+            "Preview renumbering",
+            "Preview an explicit global renumbering: every name it would change (from, to). Changes nothing; renumbering is applied by a person in the app or with `ecad renumber --apply`.",
+            json!({
+                "scope": { "type": "string", "enum": ["wires", "devices", "pages", "terminals"], "description": "What to renumber" },
+                "strip": string("For terminals: the strip's tag, like -X1"),
+            }),
+            &["scope"],
+            Effect::Reads,
+        ),
     ];
     if writable {
         tools.extend([
@@ -268,6 +287,24 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Result<Value, Stri
             csv.map(Value::String).ok_or_else(|| format!("unknown report `{name}`"))
         }
         "list_symbols" => Ok(list_symbols(server.editor.project(), text(args, "search"))),
+        "numbering" => Ok(numbering(server.editor.project())),
+        "preview_renumbering" => {
+            let p = server.editor.project();
+            let scope = match required(args, "scope")? {
+                "wires" => ecad_model::renumber::Scope::Wires,
+                "devices" => ecad_model::renumber::Scope::Devices,
+                "pages" => ecad_model::renumber::Scope::Pages,
+                "terminals" => ecad_model::renumber::Scope::Terminals(ecad_editor::script::find_device(
+                    p,
+                    required(args, "strip")?,
+                )?),
+                other => return Err(format!("unknown scope `{other}`")),
+            };
+            let r = p.preview_renumbering(scope).map_err(|e| e.to_string())?;
+            let changes: Vec<Value> =
+                r.changes.iter().map(|c| json!({ "what": c.what, "from": c.from, "to": c.to })).collect();
+            Ok(json!({ "changes": changes, "applied": false }))
+        }
         "place_symbol" => {
             let page = find_page(server.editor.project(), required(args, "page")?)?;
             let (x, y) = (required_number(args, "x")?, required_number(args, "y")?);
@@ -350,6 +387,30 @@ fn overview(server: &Server) -> Value {
         "undo": server.editor.undo_label(),
         "redo": server.editor.redo_label(),
         "can_edit": server.writable,
+    })
+}
+
+fn numbering(p: &Project) -> Value {
+    use ecad_model::numbering::Kind;
+    let n = &p.numbering;
+    let entries = |m: &std::collections::BTreeMap<ecad_model::Identifier, String>| -> Vec<Value> {
+        m.iter().map(|(id, note)| json!({ "identifier": p.describe_identifier(id), "note": note })).collect()
+    };
+    let policies: serde_json::Map<String, Value> = Kind::ALL
+        .iter()
+        .map(|k| (k.label().to_owned(), serde_json::to_value(n.policies.strategy(*k)).unwrap_or_default()))
+        .collect();
+    let capacities: Vec<Value> = n
+        .capacities
+        .iter()
+        .map(|(d, c)| json!({ "device": p.device(*d).map(|d| d.tag.clone()).unwrap_or_default(), "capacity": c }))
+        .collect();
+    json!({
+        "policies": policies,
+        "page_suffix": n.policies.page_suffix,
+        "capacities": capacities,
+        "reserved": entries(&n.reserved),
+        "retired": entries(&n.retired),
     })
 }
 

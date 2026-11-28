@@ -687,6 +687,14 @@ pub enum Command {
     /// Explicitly allow retired identifiers to be used again.
     Reclaim(Vec<crate::numbering::Identifier>),
     SetNumberingPolicies(crate::numbering::Policies),
+    /// Replace a device's products, keeping its identity, with explicit terminal
+    /// reconciliation (D23): the terminals whose designation changes, by id. Distinct from
+    /// removal: nothing is retired, dropped or reconnected.
+    ReplaceDevice {
+        id: DeviceId,
+        parts: Vec<PartRef>,
+        designations: BTreeMap<TerminalId, String>,
+    },
     /// The number of slots of a bounded device (a PLC card's channels, a strip's terminals).
     SetCapacity {
         device: DeviceId,
@@ -720,6 +728,10 @@ pub enum ModelError {
     BadCapacity(String),
     #[error("{0} has reserved resources or a capacity: remove them with it")]
     NumberingInUse(String),
+    #[error("the project changed since this was previewed: preview it again")]
+    StalePreview,
+    #[error("{0}: a terminal group is renamed whole or not at all")]
+    InvalidReconciliation(String),
     #[error("no page {0:?}")]
     NoPage(PageId),
     #[error("a tag or wire number format needs one {{n}} (or {{n:02}}) and only {{page}} and {{letters}} (tags only)")]
@@ -2369,6 +2381,7 @@ impl Project {
             | Command::Reclaim(_)
             | Command::SetNumberingPolicies(_)
             | Command::SetCapacity { .. }) => self.apply_numbering(cmd),
+            Command::ReplaceDevice { id, parts, designations } => self.apply_replace(id, parts, designations),
             Command::Batch(cmds) => {
                 let mut undo = Vec::with_capacity(cmds.len());
                 for cmd in cmds {
@@ -2494,7 +2507,7 @@ impl Project {
         }
     }
 
-    fn check_part_refs(&self, parts: &[PartRef]) -> Result<()> {
+    pub(crate) fn check_part_refs(&self, parts: &[PartRef]) -> Result<()> {
         for p in parts {
             if !self.parts.contains_key(&p.product) {
                 return Err(ModelError::UnknownPart(p.product.0.to_string()));

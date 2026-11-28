@@ -9,7 +9,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use ecad_editor::{
-    Button, Choice, Frame, KeyName, Marker, Overlay, Primitive, SelectionInfo, Session, Shape, UiEvent, Viewport,
+    Button, Choice, Frame, KeyName, Marker, Overlay, Primitive, RenumberScope, RenumberingInfo, SelectionInfo, Session,
+    Shape, UiEvent, Viewport,
 };
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use std::path::PathBuf;
@@ -529,6 +530,15 @@ impl App {
                             events.push(UiEvent::RenumberTerminal { number: self.fields.number.clone() });
                         }
                         ui.strong(format!("Strip {tag}"));
+                        if ui
+                            .small_button("Renumber strip…")
+                            .on_hover_text(
+                                "Preview numbering this strip's terminals 1, 2, 3… in drawing order; confirm to apply",
+                            )
+                            .clicked()
+                        {
+                            events.push(UiEvent::PreviewRenumbering { scope: RenumberScope::SelectedStrip });
+                        }
                         for r in references {
                             if ui.link(&r.label).on_hover_text("Show this page").clicked() {
                                 events.push(UiEvent::ShowPage { id: r.page });
@@ -1203,14 +1213,28 @@ impl App {
                     events.push(UiEvent::Naming { naming: f.naming.clone() });
                 }
                 if ui
-                    .add_enabled(!naming_changed, egui::Button::new("Renumber all wires"))
-                    .on_hover_text("Number every wire again from the format, page by page (undoable)")
+                    .add_enabled(!naming_changed, egui::Button::new("Renumber all wires…"))
+                    .on_hover_text("Preview numbering every wire again from the format, page by page; confirm to apply (undoable)")
                     .clicked()
                 {
-                    events.push(UiEvent::RenumberWires);
+                    events.push(UiEvent::PreviewRenumbering { scope: RenumberScope::Wires });
+                }
+                if ui
+                    .button("Renumber all devices…")
+                    .on_hover_text("Preview numbering every device tag again per prefix, in drawing order; confirm to apply")
+                    .clicked()
+                {
+                    events.push(UiEvent::PreviewRenumbering { scope: RenumberScope::Devices });
+                }
+                if ui
+                    .button("Renumber all pages…")
+                    .on_hover_text("Preview numbering the pages again in page order; confirm to apply")
+                    .clicked()
+                {
+                    events.push(UiEvent::PreviewRenumbering { scope: RenumberScope::Pages });
                 }
             });
-            ui.small("New devices and wires follow the naming; existing tags stay as they are.");
+            ui.small("New devices and wires follow the naming; existing tags, numbers and pages are never renumbered unless you confirm a renumbering.");
             ui.separator();
             ui.strong("Wire lengths");
             let lengths = &mut f.wire_lengths;
@@ -1435,6 +1459,37 @@ impl App {
         }
     }
 
+    /// The preview of a global renumbering: every change, then confirm or cancel (S0).
+    fn renumbering(&mut self, ctx: &egui::Context, r: &RenumberingInfo) {
+        let mut answer = None;
+        egui::Modal::new(egui::Id::unique("renumbering")).show(ctx, |ui| {
+            ui.set_max_width(480.0);
+            ui.heading(&r.title);
+            ui.label(format!("{} changes. Ids, wires and drawings stay as they are.", r.changes.len()));
+            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                egui::Grid::new("renumbering-changes").striped(true).show(ui, |ui| {
+                    for (what, from, to) in &r.changes {
+                        ui.label(what);
+                        ui.label(format!("{from} → {to}"));
+                        ui.end_row();
+                    }
+                });
+            });
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("Renumber").clicked() {
+                    answer = Some(UiEvent::ConfirmRenumbering);
+                }
+                if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    answer = Some(UiEvent::CancelRenumbering);
+                }
+            });
+        });
+        if let Some(event) = answer {
+            self.send(event);
+        }
+    }
+
     fn prompt(&mut self, ctx: &egui::Context, question: &str) {
         let mut answer = None;
         egui::Modal::new(egui::Id::unique("unsaved-changes")).show(ctx, |ui| {
@@ -1627,6 +1682,9 @@ impl eframe::App for App {
             }
             if let Some(question) = &frame.prompt {
                 self.prompt(&ctx, question);
+            }
+            if let Some(r) = &frame.renumbering {
+                self.renumbering(&ctx, r);
             }
             if frame.close && !self.close_sent {
                 self.close_sent = true;

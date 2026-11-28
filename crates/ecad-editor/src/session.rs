@@ -179,8 +179,13 @@ pub enum UiEvent {
     Naming {
         naming: ecad_model::Naming,
     },
-    /// Number every wire again from the wire format.
-    RenumberWires,
+    /// Preview an explicit global renumbering (S0): nothing changes until confirmed.
+    PreviewRenumbering {
+        scope: RenumberScope,
+    },
+    /// Apply the renumbering being previewed, as one undo step.
+    ConfirmRenumbering,
+    CancelRenumbering,
     /// Add a layout page with a mounting plate of this size (mm) after the current page.
     AddLayoutPage {
         width: f64,
@@ -521,8 +526,29 @@ pub struct Frame {
     pub page: PageId,
     /// An unsaved-changes question waiting for [`UiEvent::Confirm`].
     pub prompt: Option<String>,
+    /// A renumbering previewed and waiting to be confirmed or cancelled.
+    pub renumbering: Option<RenumberingInfo>,
     /// The window may close now.
     pub close: bool,
+}
+
+/// What a global renumbering covers, as the UI names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RenumberScope {
+    Wires,
+    Devices,
+    Pages,
+    /// The terminals of the selected strip.
+    SelectedStrip,
+}
+
+/// A renumbering waiting to be confirmed: every change it makes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RenumberingInfo {
+    pub title: String,
+    /// What, from, to.
+    pub changes: Vec<(String, String, String)>,
 }
 
 /// An action waiting for the unsaved-changes answer.
@@ -549,6 +575,8 @@ pub struct Session {
     /// Ambiguous mappings found converting a format 1 project (section 9, D33): until saved
     /// once knowingly, a save says what they are and asks to be repeated.
     conversion: Vec<String>,
+    /// A previewed renumbering waiting for confirmation (S0).
+    renumbering: Option<ecad_model::renumber::Renumbering>,
 }
 
 fn first_page_editor(project: Project) -> Result<Editor, String> {
@@ -607,6 +635,7 @@ impl Session {
             closing: false,
             seen: Some(seen),
             conversion: Vec::new(),
+            renumbering: None,
         };
         session.note_conversion();
         Ok(session)
@@ -840,13 +869,45 @@ impl Session {
                 let r = self.editor.straighten_selected_wire();
                 self.report(r);
             }
-            UiEvent::RenumberWires => {
-                let r = self.editor.renumber_all_wires();
-                self.report(r);
-                if self.message.is_none() {
-                    self.message = Some(format!("Renumbered {} wires", self.editor.project().connections.len()));
+            UiEvent::PreviewRenumbering { scope } => {
+                let scope = match scope {
+                    RenumberScope::Wires => Some(ecad_model::renumber::Scope::Wires),
+                    RenumberScope::Devices => Some(ecad_model::renumber::Scope::Devices),
+                    RenumberScope::Pages => Some(ecad_model::renumber::Scope::Pages),
+                    RenumberScope::SelectedStrip => match self.editor.selection() {
+                        Some(crate::Selected::Function(f)) => self
+                            .editor
+                            .project()
+                            .function(f)
+                            .ok()
+                            .map(|f| ecad_model::renumber::Scope::Terminals(f.device)),
+                        _ => None,
+                    },
+                };
+                match scope.map(|s| self.editor.preview_renumbering(s)) {
+                    Some(Ok(r)) if r.changes.is_empty() => {
+                        self.renumbering = None;
+                        self.message = Some("Nothing to renumber".into());
+                    }
+                    Some(Ok(r)) => {
+                        self.message = Some(format!("{} changes to confirm", r.changes.len()));
+                        self.renumbering = Some(r);
+                    }
+                    Some(Err(e)) => self.report(Err(e)),
+                    None => self.message = Some("Select a terminal of the strip first".into()),
                 }
             }
+            UiEvent::ConfirmRenumbering => {
+                if let Some(r) = self.renumbering.take() {
+                    let n = r.changes.len();
+                    let result = self.editor.apply_renumbering(&r);
+                    self.report(result);
+                    if self.message.is_none() {
+                        self.message = Some(format!("Renumbered {n}"));
+                    }
+                }
+            }
+            UiEvent::CancelRenumbering => self.renumbering = None,
             UiEvent::SheetGrid { columns, first_column, rows } => {
                 let r = self.editor.set_sheet_grid(columns, first_column, rows);
                 self.report(r);
@@ -1527,6 +1588,17 @@ impl Session {
                 })
                 .collect(),
             prompt,
+            renumbering: self.renumbering.as_ref().map(|r| RenumberingInfo {
+                title: match r.scope {
+                    ecad_model::renumber::Scope::Wires => "Renumber all wires".into(),
+                    ecad_model::renumber::Scope::Devices => "Renumber all devices".into(),
+                    ecad_model::renumber::Scope::Pages => "Renumber all pages".into(),
+                    ecad_model::renumber::Scope::Terminals(d) => {
+                        format!("Renumber {}", project.device(d).map(|d| d.tag.as_str()).unwrap_or(""))
+                    }
+                },
+                changes: r.changes.iter().map(|c| (c.what.clone(), c.from.clone(), c.to.clone())).collect(),
+            }),
             close: self.closing,
         }
     }
@@ -2159,8 +2231,20 @@ mod tests {
         let (_dir, mut s) = session();
         s.handle(UiEvent::Naming { naming: ecad_model::Naming::by_page() });
         assert_eq!(s.frame(None, [0, 0, 0]).naming, ecad_model::Naming::by_page());
-        s.handle(UiEvent::RenumberWires);
-        assert_eq!(s.frame(None, [0, 0, 0]).status, "Renumbered 3 wires");
+        s.handle(UiEvent::PreviewRenumbering { scope: RenumberScope::Wires });
+        let preview = s.frame(None, [0, 0, 0]).renumbering.unwrap();
+        assert_eq!(preview.changes.len(), 3, "{preview:?}");
+        assert!(
+            s.editor()
+                .project()
+                .connections
+                .values()
+                .all(|c| c.wire_number.as_deref().is_some_and(|n| n.starts_with('W'))),
+            "nothing changes before confirming"
+        );
+        s.handle(UiEvent::ConfirmRenumbering);
+        assert_eq!(s.frame(None, [0, 0, 0]).status, "Renumbered 3");
+        assert!(s.frame(None, [0, 0, 0]).renumbering.is_none());
         let mut numbers: Vec<String> =
             s.editor().project().connections.values().filter_map(|c| c.wire_number.clone()).collect();
         numbers.sort();
