@@ -185,7 +185,7 @@ pub fn prepare(
         commands.extend(lowered.commands);
         scope.classes.insert(def.class);
     }
-    if actor.is_assistant() && weakens_safety(project, &commands) {
+    if actor.is_assistant() && weakens_safety(&commands) {
         return Err("an assistant can't remove or weaken a safety classification (D19)".into());
     }
     let title = if title.trim().is_empty() {
@@ -206,10 +206,11 @@ pub fn prepare(
     })
 }
 
-fn weakens_safety(project: &Project, cmds: &[Command]) -> bool {
+fn weakens_safety(cmds: &[Command]) -> bool {
     cmds.iter().any(|c| match c {
-        Command::SetSafetyRelated { device, related: false } => project.safety_related.contains(device),
-        Command::Batch(inner) => weakens_safety(project, inner),
+        // Refuse even a transient or no-op unmark in an assistant transaction.
+        Command::SetSafetyRelated { related: false, .. } => true,
+        Command::Batch(inner) => weakens_safety(inner),
         _ => false,
     })
 }
@@ -444,7 +445,9 @@ pub fn compare(before: &Project, after: &Project, progress: &dyn Progress) -> Re
     // Devices sharing a net with a safety-related device's terminal, before or after.
     let mut reached: BTreeSet<ecad_model::DeviceId> = BTreeSet::new();
     let mut safety_wires = BTreeSet::new();
-    for p in [before, after] {
+    let mut safety_endpoints = BTreeSet::new();
+    let mut safety_nets = [BTreeSet::new(), BTreeSet::new()];
+    for (index, p) in [before, after].into_iter().enumerate() {
         let device_of = |e: &ecad_model::Endpoint| match e {
             ecad_model::Endpoint::Terminal(t) => p.terminals.get(t).map(|t| t.device),
             ecad_model::Endpoint::Node(_) => None,
@@ -453,6 +456,8 @@ pub fn compare(before: &Project, after: &Project, progress: &dyn Progress) -> Re
             let on: BTreeSet<_> = net.endpoints.iter().filter_map(device_of).collect();
             if on.iter().any(|d| marked.contains(d)) {
                 safety_wires.extend(net.wires.iter().copied());
+                safety_endpoints.extend(net.endpoints.iter().copied());
+                safety_nets[index].insert((net.endpoints.clone(), net.names.clone(), net.wires.clone()));
                 // Supply nets are excluded only for unrelated device edits, not
                 // changes to the conductors themselves.
                 for wire in net.wires.iter().filter(|w| changed_wires.contains(w)) {
@@ -462,6 +467,21 @@ pub fn compare(before: &Project, after: &Project, progress: &dyn Progress) -> Re
                     reached.extend(on);
                 }
             }
+        }
+    }
+    if safety_nets[0] != safety_nets[1] {
+        i.safety_indirect.push("topology of a safety-related potential changed".into());
+    }
+    for (id, node) in before.nodes.iter().chain(&after.nodes) {
+        if safety_endpoints.contains(&ecad_model::Endpoint::Node(*id))
+            && before.nodes.get(id) != after.nodes.get(id)
+        {
+            i.safety_indirect.push(format!("node {} (on a safety-related potential)", node.name));
+        }
+    }
+    for bridge in before.bridges.symmetric_difference(&after.bridges) {
+        if [bridge.a, bridge.b].iter().any(|t| safety_endpoints.contains(&ecad_model::Endpoint::Terminal(*t))) {
+            i.safety_indirect.push("bridge on a safety-related potential changed".into());
         }
     }
     let label = |d: &ecad_model::DeviceId| {
@@ -488,11 +508,12 @@ pub fn compare(before: &Project, after: &Project, progress: &dyn Progress) -> Re
             continue;
         }
         let carries = |p: &Project| {
-            p.connections.values().any(|w| {
-                safety_wires.contains(&w.id) && w.spec.cable.as_ref().is_some_and(|k| k.cable == c.id)
-            }) || p.undrawn.values().any(|w| {
-                safety_wires.contains(&w.id) && w.spec.cable.as_ref().is_some_and(|k| k.cable == c.id)
-            })
+            p.connections
+                .values()
+                .any(|w| safety_wires.contains(&w.id) && w.spec.cable.as_ref().is_some_and(|k| k.cable == c.id))
+                || p.undrawn
+                    .values()
+                    .any(|w| safety_wires.contains(&w.id) && w.spec.cable.as_ref().is_some_and(|k| k.cable == c.id))
         };
         if carries(before) || carries(after) {
             i.safety_indirect.push(format!("cable {} (carries a safety-related device's signals)", c.tag));
@@ -510,6 +531,9 @@ pub fn compare(before: &Project, after: &Project, progress: &dyn Progress) -> Re
 
 /// Preview a change set on `project` (which isn't changed).
 pub fn preview(project: &Project, cs: &ChangeSet, progress: &dyn Progress) -> Result<Impact, String> {
+    if cs.actor.is_assistant() && weakens_safety(&cs.commands) {
+        return Err("an assistant can't remove or weaken a safety classification (D19)".into());
+    }
     let mut after = project.clone();
     after.underlays = project.underlays.clone();
     after.apply(Command::Batch(cs.commands.clone())).map_err(|e| format!("it no longer applies: {e}"))?;
