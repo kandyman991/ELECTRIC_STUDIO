@@ -523,7 +523,7 @@ fn plc_channel_data_is_typed_on_the_channel_terminal_and_persists() {
         let drawing = p.functions.values().find(|f| f.terminals.values().any(|x| *x == t.id)).unwrap();
         let role = p.role(drawing.id).unwrap();
         assert!(matches!(role, ecad_model::Role::PlcChannel { kind } if kind == c.kind), "typed kind");
-        assert!(!c.address.is_empty() && drawing.properties.get(ecad_model::ADDRESS).is_none(), "on the terminal only");
+        assert!(!c.address.is_empty() && !drawing.properties.contains_key(ecad_model::ADDRESS), "on the terminal only");
     }
     let loaded = save_and_load(&p);
     assert_eq!(loaded.terminals, p.terminals, "terminals.json keeps the channel data");
