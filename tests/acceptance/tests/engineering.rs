@@ -571,3 +571,51 @@ fn an_interrupted_apply_leaves_the_folder_consistent() {
     assert_eq!(record.approval.as_deref(), Some(a.id.as_str()));
     assert!(state::verify(dir, &Quiet).unwrap().clean());
 }
+
+#[test]
+fn rejecting_an_approved_proposal_revokes_authority_atomically() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    conveyor(dir);
+    let before = ecad_project::load(dir).unwrap();
+    let cs = propose(dir, cli(), vec![op("edit_device", json!({ "tag": "-M1", "description": "changed" }))]);
+    let approval =
+        change::issue_cli_approval(dir, &cs.id, &cs.hash(), Confirmations::default(), Actor::person()).unwrap();
+    assert!(change::reject(dir, &cs.id, cli()).is_err());
+    change::reject(dir, &cs.id, Actor::person()).unwrap();
+    let approvals = change::approvals(dir).unwrap();
+    let revoked = approvals.iter().find(|a| a.id == approval.id).unwrap();
+    assert!(matches!(revoked.state, ApprovalState::Revoked { .. }));
+    assert_eq!(change::status(&approvals, &change::records(dir).unwrap(), &cs.id), Status::Rejected);
+    assert!(change::apply_approved(dir, &cs.id, &cs.base, cli()).unwrap_err().contains("rejected"));
+    assert_eq!(ecad_project::load(dir).unwrap(), before);
+    assert_eq!(state::committed(dir).unwrap(), cs.base);
+    assert_eq!(records(dir, RecordKind::ChangeSet), 0);
+    assert_eq!(records(dir, RecordKind::Rejection), 1);
+    assert!(change::reject(dir, &cs.id, Actor::person()).is_err());
+}
+
+#[test]
+fn wire_only_changes_on_safety_nets_require_confirmation() {
+    let p = ecad_model::conveyor::conveyor().unwrap();
+    let wire = p
+        .netlist()
+        .nets
+        .iter()
+        .filter(|net| {
+            net.endpoints.iter().any(|e| match e {
+                ecad_model::Endpoint::Terminal(t) => {
+                    p.terminals.get(t).is_some_and(|t| p.safety_related.contains(&t.device))
+                }
+                ecad_model::Endpoint::Node(_) => false,
+            })
+        })
+        .flat_map(|net| &net.wires)
+        .find(|id| p.connections.contains_key(id))
+        .copied()
+        .unwrap();
+    let mut after = p.clone();
+    after.apply(ecad_model::Command::Disconnect(wire)).unwrap();
+    let impact = change::compare(&p, &after, &Quiet).unwrap();
+    assert!(impact.safety(), "{impact:?}");
+}
