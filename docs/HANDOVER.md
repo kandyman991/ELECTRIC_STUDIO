@@ -110,6 +110,37 @@ Acceptance criteria:
 | Validation through desktop session, CLI and official MCP client; interrupted saves | All of the above. Interrupted saves: `ecad-project` failure injection at every store and object step, plus `an_interrupted_apply_leaves_the_folder_consistent` (locked folder, staged leftovers) |
 | S0 retrofit regressions retained | `tests/acceptance/tests/retrofit.rs` and `numbering.rs` unchanged in substance (`.ecad/` excluded when counting changed files) and passing |
 
+### Independent AI0 review — corrective PR #50
+
+The cumulative source review found authority, safety and persistence defects; AI0 remains
+**not accepted** until corrective-head validation and formal closure.
+
+- Rejecting a CLI-approved proposal revokes all issued approvals atomically; rejected proposals
+  cannot be applied, including legacy records with an issued approval.
+- Sample creation refuses a nonempty project folder, and the app can reject an issued approval.
+- Safety impact includes changes to wiring, nodes, bridges and safety-net topology (including
+  named supply conductors). Assistant unmarking is refused even inside a composite proposal.
+- Transactions hold a persistent OS file lock instead of taking over a lock based on its age.
+  Close old AI0 executables before opening a project with the corrected version. Mixed-version
+  concurrent access is not supported.
+- Journal targets and manifest object identifiers are checked before filesystem operations.
+  Retained workflow files are content-addressed, and clean legacy workflow files are backfilled.
+  Already-damaged legacy workflow files without a retained copy require a verified backup;
+  the app refuses to adopt them or fabricate approval records.
+- Reconciliation uses the actual reviewed disk snapshot, rechecks it under the transaction
+  lock, revokes approvals under that lock, and advances the generation even when canonical
+  content is unchanged. Journaled apply and reconciliation verify the recovered outcome.
+- Same-length object damage is detected and repaired from verified bytes only. Reconstruction
+  uses private temporary directories.
+- Workflow-only commits stage workflow files and the manifest, not all engineering files,
+  after verifying the folder and retained objects. The normal save path uses streaming
+  byte comparisons and avoids heap allocation for the per-file read buffer. This is a
+  source-level optimization, not measured performance acceptance.
+
+Regression coverage was added to the engineering, CLI and project-store suites. Final
+exact-head CI, benchmark results and the remaining acceptance decision must be recorded
+before merge. The Legion pre-release gate (#39) remains open and has not been passed.
+
 Known limitations and review points (AI0):
 
 - **Trust boundary (D31).** Enforcement is at application level. A program with folder access
@@ -128,7 +159,8 @@ Known limitations and review points (AI0):
   is saving" and can retry.
 - **Approvals for the CLI** are recorded when issued; the app's own approvals when used (one
   transaction with the change).
-- **Retained objects** hold the last commit only. History is S1's baselines.
+- **Retained objects** hold the last committed engineering contents and committed workflow
+  files. Engineering revision history is S1's baselines.
 - **Performance.** cachegrind, conveyor, against the S0 baseline:
   - save: 13.0M → 29.5M instructions (+127%). One SHA-256 verification pass over the folder
     per save, plus writing the manifest and objects. Mitigated: the content digest comes from
