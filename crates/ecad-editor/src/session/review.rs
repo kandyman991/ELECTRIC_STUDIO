@@ -428,7 +428,13 @@ impl Session {
         );
         record.steps = vec![rc.info.summary.clone(), format!("accepted by {}", Actor::person().label())];
         record.base = Some(self.committed.clone());
-        let revoked = change::revoke_all(&self.dir, "outside changes accepted").unwrap_or_default();
+        let revoked = match change::revoke_all(&self.dir, "outside changes accepted") {
+            Ok(revoked) => revoked,
+            Err(e) => {
+                self.message = Some(format!("Not accepted: could not revoke approvals: {e}"));
+                return;
+            }
+        };
         record.steps.extend(revoked.iter().map(|(p, _)| format!("revoked {p}")));
         match state::accept(&self.dir, record.file(), revoked) {
             Ok((project, revision)) => {
