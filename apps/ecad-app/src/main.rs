@@ -1621,7 +1621,13 @@ impl App {
                 if r.cli && ui.add_enabled(can, egui::Button::new("Approve for the CLI")).on_hover_text("Issue an approval that `ecad apply --expect` consumes once").clicked() {
                     events.push(UiEvent::ApproveForCli { confirm_safety: self.confirm_safety, confirm_global: self.confirm_global });
                 }
-                if ui.add_enabled(r.status == ecad_editor::change::Status::Pending, egui::Button::new("Reject")).clicked() {
+                if ui
+                    .add_enabled(
+                        matches!(r.status, ecad_editor::change::Status::Pending | ecad_editor::change::Status::Approved),
+                        egui::Button::new("Reject"),
+                    )
+                    .clicked()
+                {
                     events.push(UiEvent::RejectProposal);
                 }
                 if ui.button("Close").clicked() {

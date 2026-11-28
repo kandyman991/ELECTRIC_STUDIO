@@ -18,6 +18,24 @@ lets an assistant apply changes.
 The server talks JSON-RPC over stdin and stdout (MCP's stdio transport). The client starts
 it. Log lines go to stderr.
 
+### Explicit construction records (AI0)
+
+The registry also exposes named `prepare_*_exact` and other construction operations for
+building projects with stable UUID references in a multi-operation proposal. Use
+`tools/list` for their schemas, and `prepare_change` to submit the ordered operations;
+each structured operation has a typed `record` argument. These operations cover
+pages, devices, electrical nodes, drawings with explicit bindings, wire specifications,
+custom symbols, catalogue parts, cables, location boxes, mounting plates, panel items
+and sheet/title definitions. They do not accept raw model commands or an automation-policy
+override. Unknown fields (including nested fields) are refused; the project model checks
+the engineering references and identifier rules. An empty page removal retires its name.
+The CLI accepts the same structured record as JSON in `record=<json>`.
+
+The construction proposal is reviewed and approved in the app, not by MCP. Global
+changes and any detected safety impact require their separate confirmations. The
+full-conveyor conformance test builds and undoes an entire reference project through
+this path; it does not confer electrical or functional safety certification.
+
 ## Connecting a client
 
 Claude Code:

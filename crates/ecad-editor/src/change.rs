@@ -185,7 +185,7 @@ pub fn prepare(
         commands.extend(lowered.commands);
         scope.classes.insert(def.class);
     }
-    if actor.is_assistant() && weakens_safety(project, &commands) {
+    if actor.is_assistant() && weakens_safety(&commands) {
         return Err("an assistant can't remove or weaken a safety classification (D19)".into());
     }
     let title = if title.trim().is_empty() {
@@ -206,10 +206,11 @@ pub fn prepare(
     })
 }
 
-fn weakens_safety(project: &Project, cmds: &[Command]) -> bool {
+fn weakens_safety(cmds: &[Command]) -> bool {
     cmds.iter().any(|c| match c {
-        Command::SetSafetyRelated { device, related: false } => project.safety_related.contains(device),
-        Command::Batch(inner) => weakens_safety(project, inner),
+        // Refuse even a transient or no-op unmark in an assistant transaction.
+        Command::SetSafetyRelated { related: false, .. } => true,
+        Command::Batch(inner) => weakens_safety(inner),
         _ => false,
     })
 }
@@ -340,12 +341,14 @@ pub fn compare(before: &Project, after: &Project, progress: &dyn Progress) -> Re
         .copied()
         .collect();
     let mut pages: BTreeSet<ecad_model::PageId> = BTreeSet::new();
+    let mut changed_wires = BTreeSet::new();
     for id in wids {
         let (a, b) = (before.connections.get(&id), after.connections.get(&id));
         let (ua, ub) = (before.undrawn.get(&id), after.undrawn.get(&id));
         if a == b && ua == ub {
             continue;
         }
+        changed_wires.insert(id);
         for (p, c) in [(before, a), (after, b)] {
             if let Some(c) = c
                 && let Ok(f) = p.function(c.from.function)
@@ -392,9 +395,26 @@ pub fn compare(before: &Project, after: &Project, progress: &dyn Progress) -> Re
         }
     }
     let pids: BTreeSet<_> = before.pages.keys().chain(after.pages.keys()).copied().collect();
+    let global_drawing_change = before.sheet != after.sheet || before.name != after.name || before.info != after.info;
     for id in pids {
-        if before.pages.get(&id) != after.pages.get(&id) {
+        if global_drawing_change
+            || before.pages.get(&id) != after.pages.get(&id)
+            || before.panels.get(&id) != after.panels.get(&id)
+        {
             pages.insert(id);
+        }
+    }
+    for (id, item) in before.panel_items.iter().chain(&after.panel_items) {
+        if before.panel_items.get(id) != after.panel_items.get(id) {
+            pages.insert(item.page);
+            if let ecad_model::PanelItemKind::Device { device } = item.kind {
+                changed_devices.insert(device);
+            }
+        }
+    }
+    for (id, location) in before.boxes.iter().chain(&after.boxes) {
+        if before.boxes.get(id) != after.boxes.get(id) {
+            pages.insert(location.page);
         }
     }
     let mut names: Vec<String> = pages
@@ -410,10 +430,14 @@ pub fn compare(before: &Project, after: &Project, progress: &dyn Progress) -> Re
         ("bridges", before.bridges != after.bridges),
         ("numbering (reserved, retired, policies)", before.numbering != after.numbering),
         ("products", before.parts != after.parts),
+        ("symbol definitions", before.symbols != after.symbols),
+        ("sheet definition", before.sheet != after.sheet),
+        ("project title and metadata", before.name != after.name || before.info != after.info),
+        ("location boxes", before.boxes != after.boxes),
         ("safety classification", before.safety_related != after.safety_related),
         ("automation scope", before.automation != after.automation),
         ("naming", before.naming != after.naming),
-        ("panel layout", before.panel_items != after.panel_items),
+        ("panel layout", before.panels != after.panels || before.panel_items != after.panel_items),
         ("underlays", before.underlays != after.underlays),
     ] {
         if differs {
@@ -441,18 +465,41 @@ pub fn compare(before: &Project, after: &Project, progress: &dyn Progress) -> Re
         before.safety_related.iter().chain(&after.safety_related).copied().collect();
     // Devices sharing a net with a safety-related device's terminal, before or after.
     let mut reached: BTreeSet<ecad_model::DeviceId> = BTreeSet::new();
-    for p in [before, after] {
+    let mut safety_wires = BTreeSet::new();
+    let mut safety_endpoints = BTreeSet::new();
+    let mut safety_nets = [BTreeSet::new(), BTreeSet::new()];
+    for (index, p) in [before, after].into_iter().enumerate() {
         let device_of = |e: &ecad_model::Endpoint| match e {
             ecad_model::Endpoint::Terminal(t) => p.terminals.get(t).map(|t| t.device),
             ecad_model::Endpoint::Node(_) => None,
         };
-        // Signal nets: a named supply potential (L+, M) reaches every device it feeds, which
-        // says nothing about the safety function; those are left out (a limitation, noted).
-        for net in p.netlist().nets.into_iter().filter(|n| n.names.is_empty()) {
+        for net in p.netlist().nets {
             let on: BTreeSet<_> = net.endpoints.iter().filter_map(device_of).collect();
             if on.iter().any(|d| marked.contains(d)) {
+                safety_wires.extend(net.wires.iter().copied());
+                safety_endpoints.extend(net.endpoints.iter().copied());
+                safety_nets[index].insert((net.endpoints.clone(), net.names.clone(), net.wires.clone()));
+                for wire in net.wires.iter().filter(|w| changed_wires.contains(w)) {
+                    i.safety_indirect.push(format!("wire {} (on a safety-related potential)", wire.0));
+                }
+                // Named supply and interruption nets also carry safety dependencies.
+                // Conservatively require review rather than assuming a shared supply
+                // is unrelated (D19; the conveyor's -F3 is a mandatory example).
                 reached.extend(on);
             }
+        }
+    }
+    if safety_nets[0] != safety_nets[1] {
+        i.safety_indirect.push("topology of a safety-related potential changed".into());
+    }
+    for (id, node) in before.nodes.iter().chain(&after.nodes) {
+        if safety_endpoints.contains(&ecad_model::Endpoint::Node(*id)) && before.nodes.get(id) != after.nodes.get(id) {
+            i.safety_indirect.push(format!("node {} (on a safety-related potential)", node.name));
+        }
+    }
+    for bridge in before.bridges.symmetric_difference(&after.bridges) {
+        if [bridge.a, bridge.b].iter().any(|t| safety_endpoints.contains(&ecad_model::Endpoint::Terminal(*t))) {
+            i.safety_indirect.push("bridge on a safety-related potential changed".into());
         }
     }
     let label = |d: &ecad_model::DeviceId| {
@@ -479,10 +526,12 @@ pub fn compare(before: &Project, after: &Project, progress: &dyn Progress) -> Re
             continue;
         }
         let carries = |p: &Project| {
-            p.connections.values().any(|w| {
-                w.spec.cable.as_ref().is_some_and(|k| k.cable == c.id)
-                    && [&w.from, &w.to].iter().any(|r| p.function(r.function).is_ok_and(|f| marked.contains(&f.device)))
-            })
+            p.connections
+                .values()
+                .any(|w| safety_wires.contains(&w.id) && w.spec.cable.as_ref().is_some_and(|k| k.cable == c.id))
+                || p.undrawn
+                    .values()
+                    .any(|w| safety_wires.contains(&w.id) && w.spec.cable.as_ref().is_some_and(|k| k.cable == c.id))
         };
         if carries(before) || carries(after) {
             i.safety_indirect.push(format!("cable {} (carries a safety-related device's signals)", c.tag));
@@ -500,6 +549,9 @@ pub fn compare(before: &Project, after: &Project, progress: &dyn Progress) -> Re
 
 /// Preview a change set on `project` (which isn't changed).
 pub fn preview(project: &Project, cs: &ChangeSet, progress: &dyn Progress) -> Result<Impact, String> {
+    if cs.actor.is_assistant() && weakens_safety(&cs.commands) {
+        return Err("an assistant can't remove or weaken a safety classification (D19)".into());
+    }
     let mut after = project.clone();
     after.underlays = project.underlays.clone();
     after.apply(Command::Batch(cs.commands.clone())).map_err(|e| format!("it no longer applies: {e}"))?;
@@ -835,11 +887,23 @@ pub fn issue_cli_approval(
 
 /// Reject a proposal (the app's review panel).
 pub fn reject(dir: &Path, id: &str, by: Actor) -> Result<(), String> {
+    if !matches!(by, Actor::Person { .. }) {
+        return Err("only a person rejects, in the app".into());
+    }
     let _lock = ecad_project::store::Lock::take(dir).map_err(project_err)?;
     ecad_project::store::recover(dir).map_err(project_err)?;
     let cs = read_proposal(dir, id)?;
+    let (all, records) = (approvals(dir)?, records(dir)?);
+    if !matches!(status(&all, &records, id), Status::Pending | Status::Approved) {
+        return Err("this proposal is already applied or rejected".into());
+    }
     let record = ChangeRecord::new(by, RecordKind::Rejection, &cs.title, "rejected").for_proposal(&cs);
-    state::commit_workflow_locked(dir, vec![record.file()]).map_err(project_err)?;
+    let mut workflow = vec![record.file()];
+    for mut approval in all.into_iter().filter(|a| a.proposal == id && a.state == ApprovalState::Issued) {
+        approval.state = ApprovalState::Revoked { reason: "proposal rejected".into(), at: now() };
+        workflow.push(approval_file(&approval));
+    }
+    state::commit_workflow_locked(dir, workflow).map_err(project_err)?;
     Ok(())
 }
 
@@ -875,6 +939,9 @@ pub fn apply_approved(dir: &Path, id: &str, expect: &Revision, actor: Actor) -> 
     }
     let hash = cs.hash();
     let all = approvals(dir)?;
+    if status(&all, &records(dir)?, id) == Status::Rejected {
+        return Err(refuse("the proposal was rejected"));
+    }
     let mine: Vec<&Approval> = all.iter().filter(|a| a.proposal == cs.id).collect();
     // An issued approval first: a revoked or used one beside it (an earlier approval of the
     // same proposal) doesn't stand in its way; with none issued, the used or revoked one

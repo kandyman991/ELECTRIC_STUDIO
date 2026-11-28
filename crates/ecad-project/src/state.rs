@@ -93,6 +93,9 @@ pub struct Manifest {
     /// Workflow files by path inside the folder.
     #[serde(default)]
     pub workflow: BTreeMap<String, Entry>,
+    /// Older AI0 manifests retained engineering files only.
+    #[serde(default)]
+    pub retains_workflow: bool,
 }
 
 impl Manifest {
@@ -179,6 +182,7 @@ fn case_collisions<'a>(paths: impl Iterator<Item = &'a String>) -> Vec<String> {
 /// Read the manifest: `None` for a folder saved before AI0. Unsafe paths are refused.
 pub fn read_manifest(dir: &Path) -> Result<Option<Manifest>> {
     let path = dir.join(MANIFEST);
+    check_on_disk(dir, MANIFEST).map_err(|reason| ProjectError::Canonical { path: path.clone(), reason })?;
     let bytes = match std::fs::read(&path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -191,6 +195,14 @@ pub fn read_manifest(dir: &Path) -> Result<Option<Manifest>> {
     problems.extend(case_collisions(m.files.keys().chain(m.workflow.keys())));
     if let Some(p) = m.files.keys().find(|p| is_workflow(p)) {
         problems.push(format!("`{p}` is a workflow file listed as engineering"));
+    }
+    for (name, entry) in m.files.iter().chain(&m.workflow) {
+        if entry.sha256.len() != 64 || !entry.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+            problems.push(format!("invalid object hash for {name}"));
+        }
+    }
+    for name in m.workflow.keys().filter(|p| !is_workflow(p)) {
+        problems.push(format!("`{name}` is not a workflow path"));
     }
     if !problems.is_empty() {
         return Err(ProjectError::Canonical { path, reason: problems.join("; ") });
@@ -216,6 +228,7 @@ pub fn workflow_files(dir: &Path) -> Result<Vec<String>> {
     let mut out = Vec::new();
     for w in WORKFLOW {
         let d = dir.join(w);
+        check_on_disk(dir, w).map_err(|reason| ProjectError::Canonical { path: d.clone(), reason })?;
         let entries = match std::fs::read_dir(&d) {
             Ok(e) => e,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
@@ -358,7 +371,8 @@ fn verify_with(dir: &Path, progress: &dyn Progress, objects: bool) -> Result<Ver
     }
     let Some(m) = manifest else { return Ok(v) };
     let listed: BTreeMap<&String, &Entry> = m.files.iter().chain(&m.workflow).collect();
-    let total = listed.len() + if objects { m.files.len() } else { 0 };
+    let retained = m.files.iter().chain(m.workflow.iter().filter(|_| m.retains_workflow));
+    let total = listed.len() + if objects { retained.clone().count() } else { 0 };
     let mut done = 0;
     for (path, entry) in &listed {
         if progress.cancelled() {
@@ -366,6 +380,10 @@ fn verify_with(dir: &Path, progress: &dyn Progress, objects: bool) -> Result<Ver
         }
         progress.step(done, total, path);
         done += 1;
+        if let Err(reason) = check_on_disk(dir, path) {
+            v.unsafe_paths.push(reason);
+            continue;
+        }
         let on_disk = dir.join(path);
         if !on_disk.exists() {
             v.missing.push((*path).clone());
@@ -377,14 +395,19 @@ fn verify_with(dir: &Path, progress: &dyn Progress, objects: bool) -> Result<Ver
         }
     }
     v.added = known.iter().filter(|p| !listed.contains_key(*p)).map(|p| (*p).clone()).collect();
-    for (path, entry) in m.files.iter().filter(|_| objects) {
+    for (path, entry) in retained.filter(|_| objects) {
         if progress.cancelled() {
             return Err(ProjectError::Cancelled);
         }
         progress.step(done, total, path);
         done += 1;
-        let object = dir.join(OBJECTS).join(&entry.sha256);
-        if !matches!(file_sha256(&object), Ok((h, _)) if h == entry.sha256) {
+        let object_name = format!("{OBJECTS}/{}", entry.sha256);
+        let object = dir.join(&object_name);
+        if let Err(reason) = check_on_disk(dir, &object_name) {
+            v.unsafe_paths.push(reason);
+            continue;
+        }
+        if !matches!(file_sha256(&object), Ok((h, size)) if h == entry.sha256 && size == entry.size) {
             v.damaged_objects.push(path.clone());
         }
     }
@@ -402,7 +425,9 @@ pub fn committed_files(dir: &Path) -> Result<Vec<(String, Vec<u8>)>> {
     let mut out = Vec::new();
     let mut damaged = Vec::new();
     for (path, entry) in &m.files {
-        let object = dir.join(OBJECTS).join(&entry.sha256);
+        let object_name = format!("{OBJECTS}/{}", entry.sha256);
+        let object = dir.join(&object_name);
+        check_on_disk(dir, &object_name).map_err(|reason| ProjectError::Canonical { path: object.clone(), reason })?;
         match std::fs::read(&object) {
             Ok(bytes) if sha256(&bytes) == entry.sha256 => out.push((path.clone(), bytes)),
             _ => damaged.push(path.clone()),
@@ -420,24 +445,15 @@ pub fn committed_files(dir: &Path) -> Result<Vec<(String, Vec<u8>)>> {
 /// The project as last committed, reconstructed from retained objects (read-only).
 pub fn load_committed(dir: &Path) -> Result<ecad_model::Project> {
     let files = committed_files(dir)?;
-    let tmp = std::env::temp_dir().join(format!(
-        "ecad-committed-{}-{}",
-        std::process::id(),
-        sha256(dir.to_string_lossy().as_bytes()).get(..12).unwrap_or("x")
-    ));
-    let _ = std::fs::remove_dir_all(&tmp);
-    let result = (|| {
-        for (path, bytes) in &files {
-            let target = tmp.join(path);
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent).map_err(io(parent))?;
-            }
-            std::fs::write(&target, bytes).map_err(io(&target))?;
+    let tmp = tempfile::tempdir().map_err(io(&std::env::temp_dir()))?;
+    for (path, bytes) in &files {
+        let target = tmp.path().join(path);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(io(parent))?;
         }
-        crate::load(&tmp)
-    })();
-    let _ = std::fs::remove_dir_all(&tmp);
-    result
+        std::fs::write(&target, bytes).map_err(io(&target))?;
+    }
+    crate::load(tmp.path())
 }
 
 /// A commit's extra contents besides the rendered project: workflow files to add or replace,
@@ -450,13 +466,18 @@ pub struct Extras {
 /// Write objects for `files` that aren't retained yet; synced before the manifest names them.
 fn write_objects(dir: &Path, files: &[(String, Entry, &[u8])]) -> Result<()> {
     let objects = dir.join(OBJECTS);
+    check_on_disk(dir, OBJECTS).map_err(|reason| ProjectError::Canonical { path: objects.clone(), reason })?;
     std::fs::create_dir_all(&objects).map_err(io(&objects))?;
+    let mut written = false;
     for (_, entry, bytes) in files {
         let path = objects.join(&entry.sha256);
-        // Content-addressed: an object of the right size is taken as written. Every read of
-        // an object checks its hash (verification, restore, comparison), so damage is still
-        // reported where it matters, without hashing every retained file on every save.
-        if std::fs::metadata(&path).is_ok_and(|m| m.len() == entry.size) {
+        let object_name = format!("{OBJECTS}/{}", entry.sha256);
+        for rel in [&object_name, &format!("{object_name}.tmp")] {
+            check_on_disk(dir, rel).map_err(|reason| ProjectError::Canonical { path: dir.join(rel), reason })?;
+        }
+        // Compare with the already verified bytes, not just the size: an equal-length
+        // damaged object must be repaired. The comparison avoids a second SHA-256 pass.
+        if store::same_contents(&path, bytes) {
             continue;
         }
         let tmp = objects.join(format!("{}.tmp", entry.sha256));
@@ -468,6 +489,11 @@ fn write_objects(dir: &Path, files: &[(String, Entry, &[u8])]) -> Result<()> {
             f.sync_all().map_err(io(&tmp))?;
         }
         std::fs::rename(&tmp, &path).map_err(io(&path))?;
+        written = true;
+    }
+    if written {
+        store::sync_dir(&objects);
+        store::sync_dir(&dir.join(".ecad"));
     }
     Ok(())
 }
@@ -475,7 +501,7 @@ fn write_objects(dir: &Path, files: &[(String, Entry, &[u8])]) -> Result<()> {
 /// Remove objects no committed manifest names (never during a pending reconciliation: the
 /// manifest still names the prior generation's contents then).
 fn prune(dir: &Path, m: &Manifest) {
-    let keep: BTreeSet<&str> = m.files.values().map(|e| e.sha256.as_str()).collect();
+    let keep: BTreeSet<&str> = m.files.values().chain(m.workflow.values()).map(|e| e.sha256.as_str()).collect();
     if let Ok(entries) = std::fs::read_dir(dir.join(OBJECTS)) {
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
@@ -512,6 +538,16 @@ pub(crate) fn digest<'a>(files: impl Iterator<Item = (&'a str, &'a str)>) -> Str
 /// the manifest; a rendered file equal byte for byte to its file on disk then keeps the
 /// manifest's hash instead of being hashed again.
 pub(crate) fn commit(dir: &Path, files: &[(String, Vec<u8>)], extras: &Extras, verified: bool) -> Result<Revision> {
+    commit_inner(dir, files, extras, verified, false)
+}
+
+fn commit_inner(
+    dir: &Path,
+    files: &[(String, Vec<u8>)],
+    extras: &Extras,
+    verified: bool,
+    reconcile: bool,
+) -> Result<Revision> {
     let old = read_manifest(dir)?;
     let mut entries = Vec::new();
     for (name, bytes) in files {
@@ -521,7 +557,7 @@ pub(crate) fn commit(dir: &Path, files: &[(String, Vec<u8>)], extras: &Extras, v
             .filter(|_| verified)
             .and_then(|m| m.files.get(name))
             .filter(|e| e.size == bytes.len() as u64)
-            .filter(|_| std::fs::read(dir.join(name)).is_ok_and(|disk| disk == *bytes));
+            .filter(|_| store::same_contents(&dir.join(name), bytes));
         let entry = match known {
             Some(e) => e.clone(),
             None => Entry { sha256: sha256(bytes), size: bytes.len() as u64 },
@@ -531,17 +567,18 @@ pub(crate) fn commit(dir: &Path, files: &[(String, Vec<u8>)], extras: &Extras, v
     let content = digest(entries.iter().map(|(n, e, _)| (n.as_str(), e.sha256.as_str())));
     write_objects(dir, &entries)?;
     let (project, generation) = match &old {
-        Some(m) if m.content == content => (m.project.clone(), m.generation),
+        Some(m) if m.content == content && !reconcile => (m.project.clone(), m.generation),
         Some(m) => (m.project.clone(), m.generation + 1),
         None => (new_identity(), 1),
     };
     let mut workflow = old.as_ref().map(|m| m.workflow.clone()).unwrap_or_default();
-    // Workflow files on disk that predate the manifest are adopted with it.
-    if old.is_none() {
-        for p in workflow_files(dir)? {
-            let (sha256, size) = file_sha256(&dir.join(&p))?;
-            workflow.insert(p, Entry { sha256, size });
-        }
+    // Pre-AI0 projects did not have approval records. An orphaned workflow
+    // without its manifest is not a trusted compatibility source.
+    if old.is_none() && !workflow_files(dir)?.is_empty() {
+        return Err(ProjectError::External {
+            dir: dir.to_owned(),
+            summary: "workflow files exist without a committed manifest".into(),
+        });
     }
     for (name, bytes) in &extras.workflow {
         check_path(name).map_err(|reason| ProjectError::Canonical { path: dir.join(name), reason })?;
@@ -550,6 +587,22 @@ pub(crate) fn commit(dir: &Path, files: &[(String, Vec<u8>)], extras: &Extras, v
         }
         workflow.insert(name.clone(), Entry { sha256: sha256(bytes), size: bytes.len() as u64 });
     }
+    // Keep approval/proposal/record bytes as well as engineering bytes. Old AI0
+    // manifests did not retain workflow objects: backfill only from verified live
+    // bytes, never adopt a changed or missing approval as authoritative.
+    for (name, entry) in &workflow {
+        let object = dir.join(OBJECTS).join(&entry.sha256);
+        if let Some((_, bytes)) = extras.workflow.iter().find(|(path, _)| path == name) {
+            write_objects(dir, &[(name.clone(), entry.clone(), bytes.as_slice())])?;
+        } else if !matches!(file_sha256(&object), Ok((h, size)) if h == entry.sha256 && size == entry.size) {
+            check_on_disk(dir, name).map_err(|reason| ProjectError::Canonical { path: dir.join(name), reason })?;
+            let bytes = std::fs::read(dir.join(name)).map_err(io(&dir.join(name)))?;
+            if sha256(&bytes) != entry.sha256 || bytes.len() as u64 != entry.size {
+                return Err(ProjectError::External { dir: dir.to_owned(), summary: format!("{name} changed") });
+            }
+            write_objects(dir, &[(name.clone(), entry.clone(), bytes.as_slice())])?;
+        }
+    }
     let manifest = Manifest {
         format: 1,
         project,
@@ -557,6 +610,7 @@ pub(crate) fn commit(dir: &Path, files: &[(String, Vec<u8>)], extras: &Extras, v
         content,
         files: entries.iter().map(|(n, e, _)| (n.clone(), e.clone())).collect(),
         workflow,
+        retains_workflow: true,
     };
     let text = serde_json::to_vec_pretty(&manifest)
         .map_err(|source| ProjectError::Json { path: dir.join(MANIFEST), source })?;
@@ -569,7 +623,18 @@ pub(crate) fn commit(dir: &Path, files: &[(String, Vec<u8>)], extras: &Extras, v
     }
     let ecad = dir.join(".ecad");
     std::fs::create_dir_all(&ecad).map_err(io(&ecad))?;
-    store::commit(dir, &all)?;
+    if let Err(error) = store::commit(dir, &all) {
+        if !reconcile || !dir.join(store::JOURNAL).exists() {
+            return Err(error);
+        }
+        let uncertain = || ProjectError::CommitUncertain(dir.to_owned());
+        store::recover(dir).map_err(|_| uncertain())?;
+        if read_manifest(dir).map_err(|_| uncertain())?.as_ref() != Some(&manifest)
+            || !verify(dir, &Quiet).map_err(|_| uncertain())?.clean()
+        {
+            return Err(uncertain());
+        }
+    }
     prune(dir, &manifest);
     Ok(manifest.revision())
 }
@@ -586,10 +651,42 @@ pub fn commit_workflow(dir: &Path, workflow: Vec<(String, Vec<u8>)>) -> Result<R
 /// [`commit_workflow`] for a caller that holds the lock.
 pub fn commit_workflow_locked(dir: &Path, workflow: Vec<(String, Vec<u8>)>) -> Result<Revision> {
     let v = verify(dir, &Quiet)?;
-    if v.committed.is_some() && !v.clean() {
+    if !v.unsafe_paths.is_empty() || (v.committed.is_some() && !v.clean()) {
         return Err(ProjectError::External { dir: dir.to_owned(), summary: v.summary() });
     }
-    let files = match read_manifest(dir)? {
+    let manifest = read_manifest(dir)?;
+    if let Some(mut manifest) = manifest.clone().filter(|m| m.retains_workflow) {
+        // Verification already checked every engineering and retained file. Only
+        // workflow bytes and the manifest need staging; preserve the revision.
+        let mut files = workflow;
+        for (name, bytes) in &files {
+            check_on_disk(dir, name).map_err(|reason| ProjectError::Canonical { path: dir.join(name), reason })?;
+            if !is_workflow(name) {
+                return Err(ProjectError::Canonical { path: dir.join(name), reason: "not a workflow file".into() });
+            }
+            let entry = Entry { sha256: sha256(bytes), size: bytes.len() as u64 };
+            write_objects(dir, &[(name.clone(), entry.clone(), bytes.as_slice())])?;
+            manifest.workflow.insert(name.clone(), entry);
+        }
+        let text = serde_json::to_vec_pretty(&manifest)
+            .map_err(|source| ProjectError::Json { path: dir.join(MANIFEST), source })?;
+        files.push((MANIFEST.into(), text));
+        if let Err(error) = store::commit_partial(dir, &files) {
+            if !dir.join(store::JOURNAL).exists() {
+                return Err(error);
+            }
+            let uncertain = || ProjectError::CommitUncertain(dir.to_owned());
+            store::recover(dir).map_err(|_| uncertain())?;
+            if read_manifest(dir).map_err(|_| uncertain())?.as_ref() != Some(&manifest)
+                || !verify(dir, &Quiet).map_err(|_| uncertain())?.clean()
+            {
+                return Err(uncertain());
+            }
+        }
+        prune(dir, &manifest);
+        return Ok(manifest.revision());
+    }
+    let files = match manifest {
         Some(_) => committed_files(dir)?,
         // Adoption: the files as they are on disk (a format 1 folder stays format 1 until a
         // person saves it knowingly), so nothing but the manifest and contents is written.
@@ -659,12 +756,57 @@ pub fn restore(dir: &Path) -> Result<Vec<String>> {
             reason: "nothing committed to restore".into(),
         });
     }
-    let committed = committed_files(dir)?;
+    if !v.unsafe_paths.is_empty() {
+        return Err(ProjectError::External { dir: dir.to_owned(), summary: v.summary() });
+    }
+    let manifest = read_manifest(dir)?.ok_or_else(|| ProjectError::Canonical {
+        path: dir.join(MANIFEST),
+        reason: "nothing committed to restore".into(),
+    })?;
+    // If only a retained object was damaged, its unchanged live file is a
+    // verified source for repair. Never repair from a changed live file.
+    for path in &v.damaged_objects {
+        let entry =
+            manifest.files.get(path).or_else(|| manifest.workflow.get(path)).ok_or_else(|| {
+                ProjectError::Canonical { path: dir.join(path), reason: "missing manifest entry".into() }
+            })?;
+        check_on_disk(dir, path).map_err(|reason| ProjectError::Canonical { path: dir.join(path), reason })?;
+        let bytes = std::fs::read(dir.join(path)).map_err(io(&dir.join(path)))?;
+        if sha256(&bytes) != entry.sha256 || bytes.len() as u64 != entry.size {
+            return Err(ProjectError::Canonical {
+                path: dir.join(path),
+                reason: "both committed object and live file are unavailable or damaged".into(),
+            });
+        }
+        write_objects(dir, &[(path.clone(), entry.clone(), bytes.as_slice())])?;
+    }
+    let mut committed = committed_files(dir)?;
+    // Prepare all workflow restoration bytes before quarantining anything. A legacy
+    // project with already-damaged workflow data may lack a retained copy; fail closed.
+    for path in v.modified.iter().chain(&v.missing).filter(|p| is_workflow(p)) {
+        let entry = manifest.workflow.get(path).ok_or_else(|| ProjectError::Canonical {
+            path: dir.join(path),
+            reason: "workflow entry missing from manifest".into(),
+        })?;
+        let object_name = format!("{OBJECTS}/{}", entry.sha256);
+        let object = dir.join(&object_name);
+        check_on_disk(dir, &object_name).map_err(|reason| ProjectError::Canonical { path: object.clone(), reason })?;
+        let bytes = std::fs::read(&object).map_err(io(&object))?;
+        if sha256(&bytes) != entry.sha256 || bytes.len() as u64 != entry.size {
+            return Err(ProjectError::Canonical {
+                path: object,
+                reason: format!("retained workflow contents damaged for {path}"),
+            });
+        }
+        committed.push((path.clone(), bytes));
+    }
     let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
     let quarantine = dir.join(QUARANTINE).join(n.to_string());
     let mut touched = Vec::new();
-    for path in v.modified.iter().chain(&v.added).filter(|p| !is_workflow(p)) {
+    for path in v.modified.iter().chain(&v.added).chain(&v.missing) {
         check_on_disk(dir, path).map_err(|reason| ProjectError::Canonical { path: dir.join(path), reason })?;
+    }
+    for path in v.modified.iter().chain(&v.added) {
         let target = quarantine.join(path);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(io(parent))?;
@@ -698,11 +840,23 @@ pub fn accept(
 ) -> Result<(ecad_model::Project, Revision)> {
     let _lock = store::Lock::take(dir)?;
     store::recover(dir)?;
+    accept_locked(dir, record, rewrite)
+}
+
+/// Reconcile while the caller holds the lock from the preview recheck through revocation.
+pub fn accept_locked(
+    dir: &Path,
+    record: (String, Vec<u8>),
+    rewrite: Vec<(String, Vec<u8>)>,
+) -> Result<(ecad_model::Project, Revision)> {
     let project = crate::load(dir)?;
     let files = crate::render(&project)?;
     // A changed workflow file is never adopted as it is: the manifest keeps what it committed.
     let v = verify(dir, &Quiet)?;
-    if let Some(p) = v.modified.iter().chain(&v.added).find(|p| is_workflow(p)) {
+    if !v.unsafe_paths.is_empty() {
+        return Err(ProjectError::External { dir: dir.to_owned(), summary: v.summary() });
+    }
+    if let Some(p) = v.modified.iter().chain(&v.added).chain(&v.missing).find(|p| is_workflow(p)) {
         return Err(ProjectError::External {
             dir: dir.to_owned(),
             summary: format!("{p} (a workflow file) was changed outside Electric Studio: restore it first"),
@@ -710,7 +864,7 @@ pub fn accept(
     }
     let mut workflow = rewrite;
     workflow.push(record);
-    let revision = commit(dir, &files, &Extras { workflow }, false)?;
+    let revision = commit_inner(dir, &files, &Extras { workflow }, false, true)?;
     Ok((project, revision))
 }
 

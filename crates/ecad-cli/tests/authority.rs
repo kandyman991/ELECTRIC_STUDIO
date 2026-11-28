@@ -166,3 +166,16 @@ fn read_only_commands_and_release_validation() {
     let o = ecad(&["export", &dir, out.to_str().unwrap(), "--only", "reports"]);
     assert!(text(&o).contains("draft export"), "{}", text(&o));
 }
+
+#[test]
+fn sample_creation_cannot_replace_an_existing_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = conveyor(tmp.path());
+    let base = revision(&dir);
+    let before = ecad_project::load(Path::new(&dir)).unwrap();
+    let o = ecad(&["new-sample", &dir, "start"]);
+    assert_eq!(o.status.code(), Some(2), "{}", text(&o));
+    assert!(text(&o).contains("empty project folder"), "{}", text(&o));
+    assert_eq!(revision(&dir), base);
+    assert_eq!(ecad_project::load(Path::new(&dir)).unwrap(), before);
+}

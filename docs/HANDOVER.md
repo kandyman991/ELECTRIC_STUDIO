@@ -110,16 +110,73 @@ Acceptance criteria:
 | Validation through desktop session, CLI and official MCP client; interrupted saves | All of the above. Interrupted saves: `ecad-project` failure injection at every store and object step, plus `an_interrupted_apply_leaves_the_folder_consistent` (locked folder, staged leftovers) |
 | S0 retrofit regressions retained | `tests/acceptance/tests/retrofit.rs` and `numbering.rs` unchanged in substance (`.ecad/` excluded when counting changed files) and passing |
 
+### Independent AI0 review — corrective PR #50
+
+The cumulative source review found authority, safety and persistence defects; AI0 remains
+**not accepted** until corrective-head validation and formal closure.
+
+- Rejecting a CLI-approved proposal revokes all issued approvals atomically; rejected proposals
+  cannot be applied, including legacy records with an issued approval.
+- Sample creation refuses a nonempty project folder, and the app can reject an issued approval.
+- Safety impact includes changes to wiring, nodes, bridges and safety-net topology (including
+  named supply conductors). Assistant unmarking is refused even inside a composite proposal.
+- Transactions hold a persistent OS file lock instead of taking over a lock based on its age.
+  Close old AI0 executables before opening a project with the corrected version. Mixed-version
+  concurrent access is not supported.
+- Journal targets and manifest object identifiers are checked before filesystem operations.
+  Retained workflow files are content-addressed, and clean legacy workflow files are backfilled.
+  Already-damaged legacy workflow files without a retained copy require a verified backup;
+  the app refuses to adopt them or fabricate approval records.
+- Reconciliation uses the actual reviewed disk snapshot, rechecks it under the transaction
+  lock, revokes approvals under that lock, and advances the generation even when canonical
+  content is unchanged. Journaled apply and reconciliation verify the recovered outcome.
+- Same-length object damage is detected and repaired from verified bytes only. Reconstruction
+  uses private temporary directories.
+- Workflow-only commits stage workflow files and the manifest, not all engineering files,
+  after verifying the folder and retained objects. The normal save path uses streaming
+  byte comparisons and avoids heap allocation for the per-file read buffer. This is a
+  source-level optimization, not measured performance acceptance.
+
+Regression coverage was added to the engineering, CLI and project-store suites. All six
+hosted jobs passed at `557d57a` (see PR #50). Smoke counts matched; normal conveyor save
+31,114,694 instructions (+5.4% versus the AI0 baseline), 11,580 heap allocations. Retained
+object and journal integrity work explains the extra cost; workflow-only speedup is not
+measured by the normal-save workload. See #51 for profiling; #39 remains mandatory before
+production release.
+
+Original roadmap audit: the pilot and four-operation proposal did not cover the complete
+conveyor, forty-operation and -F3 cases. PR #50 now adds 21 explicit identity-preserving
+construction operations to the same registry, with strict nested record schemas and domain
+validation. They cover pages, devices, nodes, drawings, wires, symbols, catalogue parts,
+cables, location boxes, mounting plates, panel items, sheet and title metadata. No arbitrary
+Command or privileged fixture-specific tool is exposed. Operations remain proposals for MCP;
+global operations and safety changes require their separate confirmations. Empty-page removal
+retires its name; initial product assignment and mounting-plate creation cannot silently
+replace existing engineering data.
+
+`tests/acceptance/tests/registry_conveyor.rs` captures the forward steps of the existing
+reference builder, translates every step to the public named operations (fails on an
+unmapped step), independently replays the registry, and submits the identical full sequence
+via MCP from an otherwise empty project with an IEC library and one starter page. The
+starter page is removed through S0 retirement and explicitly reclaimed within the proposal.
+The test requires no pre-approval writes, refuses CLI approval and missing confirmations,
+then checks one atomic app apply, byte-exact canonical and graphical files against the
+original conveyor, a consumed approval and audit record, one undo and byte-exact saved
+restoration with a later revision. Separate forty-operation and -F3 regressions remain.
+These are implemented acceptance tests; final exact-head CI is required to establish their
+outcomes. AI0 acceptance takes effect only upon verified closure and merge of PR #50.
+
 Known limitations and review points (AI0):
 
 - **Trust boundary (D31).** Enforcement is at application level. A program with folder access
   can write anything; that is detected at the next open, preview, apply or save. Actors are
   recorded as asserted: MCP's client name is a claim, and there is no enterprise
   authentication. Agents that control the desktop app itself are outside the boundary.
-- **Indirect safety impact** covers devices on *unnamed* potentials with a safety-related
-  terminal, and cables carrying one. Named supply potentials (L+, M) are excluded: otherwise
-  every device would be indirectly safety-related. Finer rules need M8's section safety
-  marking.
+- **Indirect safety impact** conservatively includes devices sharing named or unnamed
+  potentials with a safety-related terminal, including protection on a common supply
+  (D19's conveyor -F3 case). This can flag unrelated loads sharing the supply; a separate
+  human confirmation is preferable to missing a dependency. Finer rules need M8's section
+  safety marking.
 - **Records for some refusals.** A refusal because the folder changed outside Electric Studio
   can't be committed into that folder. It is reported, and the reconciliation that follows is
   recorded. Refusals for lock contention aren't recorded either, because nothing was read or
@@ -128,7 +185,8 @@ Known limitations and review points (AI0):
   is saving" and can retry.
 - **Approvals for the CLI** are recorded when issued; the app's own approvals when used (one
   transaction with the change).
-- **Retained objects** hold the last commit only. History is S1's baselines.
+- **Retained objects** hold the last committed engineering contents and committed workflow
+  files. Engineering revision history is S1's baselines.
 - **Performance.** cachegrind, conveyor, against the S0 baseline:
   - save: 13.0M → 29.5M instructions (+127%). One SHA-256 verification pass over the folder
     per save, plus writing the manifest and objects. Mitigated: the content digest comes from

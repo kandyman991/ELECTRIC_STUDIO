@@ -91,6 +91,8 @@ pub(super) struct Review {
 #[derive(Debug)]
 pub(super) struct Reconcile {
     pub(super) info: ReconcileInfo,
+    verification: Verification,
+    fingerprint: Option<ecad_project::Fingerprint>,
 }
 
 fn affected(i: &Impact) -> Vec<(String, String, String)> {
@@ -151,19 +153,34 @@ impl Session {
     }
 
     pub(super) fn note_outside_changes(&mut self, v: &Verification, unloadable: Option<String>) {
-        let incomplete = !v.damaged_objects.is_empty();
-        let (impact, affected_items) = match (incomplete, &unloadable, state::load_committed(&self.dir)) {
-            (false, None, Ok(committed)) => match change::compare(&committed, self.editor.project(), &Quiet) {
+        // Compare the actual on-disk project, not possibly dirty editor contents.
+        let loaded = ecad_project::load_checked(&self.dir);
+        let committed = state::load_committed(&self.dir);
+        let mut incomplete = !v.damaged_objects.is_empty() || committed.is_err();
+        let mut unloadable = unloadable.or_else(|| loaded.as_ref().err().map(ToString::to_string));
+        let (impact, affected_items) = match (&loaded, committed) {
+            (Ok((project, _)), Ok(committed)) => match change::compare(&committed, project, &Quiet) {
                 Ok(i) => (Some(i.summary()), affected(&i)),
-                Err(e) => (Some(format!("comparison failed: {e}")), Vec::new()),
+                Err(e) => {
+                    incomplete = true;
+                    (Some(format!("comparison failed: {e}")), Vec::new())
+                }
             },
-            (_, _, Err(e)) => {
+            (_, Err(e)) => {
                 (Some(format!("the last commit can't be reconstructed: {e}; no complete comparison")), Vec::new())
             }
             _ => (None, Vec::new()),
         };
+        let fingerprint = loaded.ok().map(|(_, fingerprint)| fingerprint);
+        if state::verify(&self.dir, &Quiet).as_ref().ok() != Some(v)
+            || ecad_project::fingerprint(&self.dir).ok() != fingerprint
+        {
+            unloadable = Some("the folder changed while reviewing; reopen to review the current contents".into());
+        }
         self.reconcile = Some(Reconcile {
             info: ReconcileInfo { summary: v.summary(), impact, affected: affected_items, incomplete, unloadable },
+            verification: v.clone(),
+            fingerprint,
         });
         self.message = Some(format!(
             "Changed outside Electric Studio: {}. Restore the committed files or accept the changes",
@@ -365,8 +382,24 @@ impl Session {
                 self.committed_at = self.editor.revision();
                 Ok(format!("Applied “{}” ({}) as one step; undo reverts it", cs.title, cs.actor.label()))
             }
+            Err(e @ ecad_project::ProjectError::CommitUncertain(_)) => {
+                // Do not undo or retry an operation whose durable outcome is unknown.
+                // Force the recovery path before another save or proposal apply.
+                self.reconcile = Some(Reconcile {
+                    info: ReconcileInfo {
+                        summary: e.to_string(),
+                        impact: None,
+                        affected: Vec::new(),
+                        incomplete: true,
+                        unloadable: Some("reopen and recover the project".into()),
+                    },
+                    verification: Verification::default(),
+                    fingerprint: None,
+                });
+                Err(e.to_string())
+            }
             Err(e) => {
-                // Not committed: the editor goes back to where it was.
+                // No committed journal: restore the editor's previous state.
                 let _ = self.editor.undo();
                 Err(format!("not saved, so not applied: {e}"))
             }
@@ -420,6 +453,23 @@ impl Session {
             );
             return;
         }
+        let _lock = match ecad_project::store::Lock::take(&self.dir) {
+            Ok(lock) => lock,
+            Err(e) => {
+                self.message = Some(format!("Not accepted: {e}"));
+                return;
+            }
+        };
+        if let Err(e) = ecad_project::store::recover(&self.dir) {
+            self.message = Some(format!("Not accepted: {e}"));
+            return;
+        }
+        if state::verify(&self.dir, &Quiet).as_ref().ok() != Some(&rc.verification)
+            || ecad_project::fingerprint(&self.dir).ok() != rc.fingerprint
+        {
+            self.message = Some("Not accepted: the folder changed since review; reopen and review again".into());
+            return;
+        }
         let mut record = change::ChangeRecord::new(
             Actor::External,
             change::RecordKind::Reconciliation,
@@ -427,10 +477,16 @@ impl Session {
             "accepted",
         );
         record.steps = vec![rc.info.summary.clone(), format!("accepted by {}", Actor::person().label())];
-        record.base = Some(self.committed.clone());
-        let revoked = change::revoke_all(&self.dir, "outside changes accepted").unwrap_or_default();
+        record.base = rc.verification.committed.clone();
+        let revoked = match change::revoke_all(&self.dir, "outside changes accepted") {
+            Ok(revoked) => revoked,
+            Err(e) => {
+                self.message = Some(format!("Not accepted: could not revoke approvals: {e}"));
+                return;
+            }
+        };
         record.steps.extend(revoked.iter().map(|(p, _)| format!("revoked {p}")));
-        match state::accept(&self.dir, record.file(), revoked) {
+        match state::accept_locked(&self.dir, record.file(), revoked) {
             Ok((project, revision)) => {
                 let page = self.editor.page();
                 match crate::Editor::new(project, page).or_else(|_| {

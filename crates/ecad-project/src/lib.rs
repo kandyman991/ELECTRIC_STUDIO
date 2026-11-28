@@ -71,6 +71,8 @@ pub enum ProjectError {
         "{dir}: changed outside Electric Studio ({summary}); reconcile first: restore the committed files or accept the changes"
     )]
     External { dir: PathBuf, summary: String },
+    #[error("{0}: transaction outcome uncertain; reopen and recover the project before another operation")]
+    CommitUncertain(PathBuf),
     #[error("cancelled")]
     Cancelled,
 }
@@ -478,12 +480,42 @@ pub fn save_locked(project: &Project, dir: &Path, extras: state::Extras) -> Resu
     for d in [dir.to_owned(), dir.join("pages"), dir.join("symbols"), dir.join("underlays")] {
         std::fs::create_dir_all(&d).map_err(io(&d))?;
     }
-    commit_rendered(dir, &files, &extras)
+    match commit_rendered(dir, &files, &extras) {
+        Ok(outcome) => Ok(outcome),
+        Err(error) => {
+            // Once the journal is published, an error is not proof of rollback.
+            // Finish it under the same lock, then verify the exact intended commit.
+            let journaled = dir.join(store::JOURNAL).exists();
+            let recorded = !extras.workflow.is_empty()
+                && extras
+                    .workflow
+                    .iter()
+                    .all(|(path, bytes)| state::read_workflow(dir, path).is_ok_and(|actual| actual == *bytes));
+            if !journaled && !recorded {
+                return Err(error);
+            }
+            let uncertain = || ProjectError::CommitUncertain(dir.to_owned());
+            store::recover(dir).map_err(|_| uncertain())?;
+            let verification = state::verify(dir, &state::Quiet).map_err(|_| uncertain())?;
+            let expected = content_digest(project).map_err(|_| uncertain())?;
+            let revision = verification.committed.clone().ok_or_else(uncertain)?;
+            if !verification.clean()
+                || revision.content != expected
+                || extras
+                    .workflow
+                    .iter()
+                    .any(|(path, bytes)| !state::read_workflow(dir, path).is_ok_and(|actual| actual == *bytes))
+            {
+                return Err(uncertain());
+            }
+            Ok((fingerprint(dir).map_err(|_| uncertain())?, revision))
+        }
+    }
 }
 
 fn commit_rendered(dir: &Path, files: &[(String, Vec<u8>)], extras: &state::Extras) -> Result<(Fingerprint, Revision)> {
     let v = state::verify_files(dir)?;
-    if v.committed.is_some() && !v.clean() {
+    if !v.unsafe_paths.is_empty() || (v.committed.is_some() && !v.clean()) {
         return Err(ProjectError::External { dir: dir.to_owned(), summary: v.summary() });
     }
     let revision = state::commit(dir, files, extras, v.committed.is_some())?;
@@ -1332,6 +1364,35 @@ mod tests {
     }
 
     #[test]
+    fn locked_apply_recovers_a_published_journal_and_reports_actual_outcome() {
+        let (a, b) = two_revisions();
+        let mut saw_recovered = false;
+        for n in 0..500 {
+            let dir = tempfile::tempdir().unwrap();
+            save(&a, dir.path()).unwrap();
+            let lock = store::Lock::take(dir.path()).unwrap();
+            let record = ("changes/test.json".into(), b"{}".to_vec());
+            store::FAIL_AT.with(|f| f.set(Some(n)));
+            let result = save_locked(&b, dir.path(), state::Extras { workflow: vec![record.clone()] });
+            let injected = store::FAIL_AT.with(|f| f.replace(None)).is_none();
+            drop(lock);
+            let back = load(dir.path()).unwrap();
+            if result.is_ok() {
+                assert_eq!(back, b);
+                assert_eq!(state::read_workflow(dir.path(), &record.0).unwrap(), record.1);
+                saw_recovered |= injected;
+                if !injected {
+                    break;
+                }
+            } else {
+                assert_eq!(back, a);
+                assert!(!dir.path().join(&record.0).exists());
+            }
+        }
+        assert!(saw_recovered);
+    }
+
+    #[test]
     fn a_failure_while_recovering_is_recovered_next_time() {
         let (a, b) = two_revisions();
         let dir = tempfile::tempdir().unwrap();
@@ -1386,14 +1447,17 @@ mod tests {
         let held = store::Lock::take(dir.path()).unwrap();
         assert!(matches!(save(&p, dir.path()), Err(ProjectError::Busy(_))));
         drop(held);
-        save(&p, dir.path()).unwrap();
-        // A lock file from long ago (a crash) doesn't block.
-        let lock = std::fs::File::create(dir.path().join(store::LOCK)).unwrap();
-        let old = std::time::SystemTime::now() - store::STALE_LOCK - std::time::Duration::from_secs(5);
+        // An old file without an OS lock does not block the next save.
+        let lock = std::fs::OpenOptions::new().write(true).open(dir.path().join(store::LOCK)).unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
         lock.set_modified(old).unwrap();
         drop(lock);
+        let held = store::Lock::take(dir.path()).unwrap();
+        // An old file with a live OS lock must never be stolen.
+        assert!(matches!(save(&p, dir.path()), Err(ProjectError::Busy(_))));
+        drop(held);
         save(&p, dir.path()).unwrap();
-        assert!(!dir.path().join(store::LOCK).exists());
+        assert!(dir.path().join(store::LOCK).exists());
     }
 
     use ecad_model::sample::start_circuit;

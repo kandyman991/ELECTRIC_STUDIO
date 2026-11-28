@@ -571,3 +571,246 @@ fn an_interrupted_apply_leaves_the_folder_consistent() {
     assert_eq!(record.approval.as_deref(), Some(a.id.as_str()));
     assert!(state::verify(dir, &Quiet).unwrap().clean());
 }
+
+#[test]
+fn rejecting_an_approved_proposal_revokes_authority_atomically() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    conveyor(dir);
+    let before = ecad_project::load(dir).unwrap();
+    let cs = propose(dir, cli(), vec![op("edit_device", json!({ "tag": "-M1", "description": "changed" }))]);
+    let approval =
+        change::issue_cli_approval(dir, &cs.id, &cs.hash(), Confirmations::default(), Actor::person()).unwrap();
+    assert!(change::reject(dir, &cs.id, cli()).is_err());
+    change::reject(dir, &cs.id, Actor::person()).unwrap();
+    let approvals = change::approvals(dir).unwrap();
+    let revoked = approvals.iter().find(|a| a.id == approval.id).unwrap();
+    assert!(matches!(revoked.state, ApprovalState::Revoked { .. }));
+    assert_eq!(change::status(&approvals, &change::records(dir).unwrap(), &cs.id), Status::Rejected);
+    assert!(change::apply_approved(dir, &cs.id, &cs.base, cli()).unwrap_err().contains("rejected"));
+    assert_eq!(ecad_project::load(dir).unwrap(), before);
+    assert_eq!(state::committed(dir).unwrap(), cs.base);
+    assert_eq!(records(dir, RecordKind::ChangeSet), 0);
+    assert_eq!(records(dir, RecordKind::Rejection), 1);
+    assert!(change::reject(dir, &cs.id, Actor::person()).is_err());
+}
+
+#[test]
+fn wire_only_changes_on_safety_nets_require_confirmation() {
+    let p = ecad_model::conveyor::conveyor().unwrap();
+    let wire = p
+        .netlist()
+        .nets
+        .iter()
+        .filter(|net| {
+            net.endpoints.iter().any(|e| match e {
+                ecad_model::Endpoint::Terminal(t) => {
+                    p.terminals.get(t).is_some_and(|t| p.safety_related.contains(&t.device))
+                }
+                ecad_model::Endpoint::Node(_) => false,
+            })
+        })
+        .flat_map(|net| &net.wires)
+        .find(|id| p.connections.contains_key(id))
+        .copied()
+        .unwrap();
+    let mut after = p.clone();
+    after.apply(ecad_model::Command::Disconnect(wire)).unwrap();
+    let impact = change::compare(&p, &after, &Quiet).unwrap();
+    assert!(impact.safety(), "{impact:?}");
+}
+
+#[test]
+fn damaged_or_missing_workflow_files_are_restored_not_adopted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    conveyor(dir);
+    let cs = propose(dir, cli(), vec![op("edit_device", json!({ "tag": "-M1", "description": "changed" }))]);
+    let approval =
+        change::issue_cli_approval(dir, &cs.id, &cs.hash(), Confirmations::default(), Actor::person()).unwrap();
+    let path = dir.join(change::approval_path(&approval.id));
+    let bytes = std::fs::read(&path).unwrap();
+    std::fs::write(&path, "tampered").unwrap();
+    assert!(change::apply_approved(dir, &cs.id, &cs.base, cli()).is_err());
+    state::restore(dir).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert!(state::verify(dir, &Quiet).unwrap().clean());
+    std::fs::remove_file(&path).unwrap();
+    let record = change::ChangeRecord::new(Actor::External, RecordKind::Reconciliation, "test", "accepted");
+    assert!(state::accept(dir, record.file(), Vec::new()).is_err());
+    state::restore(dir).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert!(state::verify(dir, &Quiet).unwrap().clean());
+    assert_eq!(state::committed(dir).unwrap(), cs.base);
+}
+
+#[test]
+fn assistant_cannot_unmark_even_a_new_classification_inside_a_proposal() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    conveyor(dir);
+    let p = ecad_project::load(dir).unwrap();
+    let base = state::committed(dir).unwrap();
+    let result = change::prepare(
+        &p,
+        base.clone(),
+        assistant(),
+        "mark then unmark",
+        "",
+        vec![
+            op("mark_safety_related", json!({ "tag": "-M1", "related": "yes" })),
+            op("mark_safety_related", json!({ "tag": "-M1", "related": "no" })),
+        ],
+    );
+    assert!(result.unwrap_err().contains("weaken"));
+    assert_eq!(state::committed(dir).unwrap(), base);
+}
+
+#[test]
+fn changing_a_node_on_a_safety_potential_requires_confirmation() {
+    let p = ecad_model::conveyor::conveyor().unwrap();
+    let netlist = p.netlist();
+    let node = netlist
+        .nets
+        .iter()
+        .filter(|net| {
+            net.endpoints.iter().any(|e| match e {
+                ecad_model::Endpoint::Terminal(t) => {
+                    p.terminals.get(t).is_some_and(|t| p.safety_related.contains(&t.device))
+                }
+                ecad_model::Endpoint::Node(_) => false,
+            })
+        })
+        .flat_map(|net| &net.endpoints)
+        .find_map(|e| match e {
+            ecad_model::Endpoint::Node(id) => Some(*id),
+            ecad_model::Endpoint::Terminal(_) => None,
+        })
+        .unwrap();
+    let mut after = p.clone();
+    after.nodes.get_mut(&node).unwrap().description = "changed".into();
+    let impact = change::compare(&p, &after, &Quiet).unwrap();
+    assert!(impact.safety(), "{impact:?}");
+}
+
+#[test]
+fn reconciliation_refuses_content_changed_again_after_review() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    conveyor(dir);
+    let base = state::committed(dir).unwrap();
+    let path = dir.join("devices.json");
+    let original = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, original.replace("\"-M1\"", "\"-M8\"")).unwrap();
+    let mut s = Session::open(dir).unwrap();
+    assert!(s.frame(None, [0, 0, 0]).reconcile.is_some());
+    std::fs::write(&path, original.replace("\"-M1\"", "\"-M9\"")).unwrap();
+    s.handle(UiEvent::AcceptOutsideChanges { acknowledge_incomplete: true });
+    assert!(status(&s).contains("changed since review"), "{}", status(&s));
+    assert_eq!(state::committed(dir).unwrap(), base);
+    let mut s = Session::open(dir).unwrap();
+    s.handle(UiEvent::AcceptOutsideChanges { acknowledge_incomplete: false });
+    assert!(status(&s).starts_with("Accepted"), "{}", status(&s));
+    assert!(ecad_project::load(dir).unwrap().device_by_tag("-M9").is_some());
+}
+
+#[test]
+fn legacy_workflow_objects_are_backfilled_and_equal_length_corruption_repaired() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    conveyor(dir);
+    let cs = propose(dir, cli(), vec![op("edit_device", json!({ "tag": "-M1", "description": "changed" }))]);
+    let mut manifest = state::read_manifest(dir).unwrap().unwrap();
+    // Simulate the original AI0 manifest, which retained no workflow object bytes.
+    manifest.retains_workflow = false;
+    for entry in manifest.workflow.values() {
+        std::fs::remove_file(dir.join(state::OBJECTS).join(&entry.sha256)).unwrap();
+    }
+    std::fs::write(dir.join(state::MANIFEST), serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+    assert!(state::verify(dir, &Quiet).unwrap().clean());
+    let p = ecad_project::load(dir).unwrap();
+    ecad_project::save(&p, dir).unwrap();
+    let manifest = state::read_manifest(dir).unwrap().unwrap();
+    assert!(manifest.retains_workflow);
+    assert_eq!(state::committed(dir).unwrap(), cs.base);
+    let entry = &manifest.workflow[&change::proposal_path(&cs.id)];
+    let object = dir.join(state::OBJECTS).join(&entry.sha256);
+    let bytes = std::fs::read(&object).unwrap();
+    let mut corrupt = bytes.clone();
+    corrupt[0] ^= 1;
+    std::fs::write(&object, corrupt).unwrap();
+    assert!(!state::verify(dir, &Quiet).unwrap().clean());
+    ecad_project::save(&p, dir).unwrap();
+    assert_eq!(std::fs::read(&object).unwrap(), bytes);
+    assert!(state::verify(dir, &Quiet).unwrap().clean());
+    assert_eq!(state::committed(dir).unwrap(), cs.base);
+}
+
+#[test]
+fn the_safety_relay_supply_protection_requires_separate_confirmation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    conveyor(dir);
+    let p = ecad_project::load(dir).unwrap();
+    let cs = propose(dir, assistant(), vec![op("edit_device", json!({ "tag": "-F3", "description": "changed" }))]);
+    let impact = change::preview(&p, &cs, &Quiet).unwrap();
+    assert!(impact.safety_indirect.iter().any(|entry| entry.starts_with("-F3 ")), "{impact:?}");
+    let mut s = Session::open(dir).unwrap();
+    s.handle(UiEvent::ReviewProposal { id: cs.id.clone() });
+    assert!(s.frame(None, [0, 0, 0]).review.unwrap().needs_safety_confirmation);
+    s.handle(UiEvent::ApproveProposal { confirm_safety: false, confirm_global: false });
+    assert!(status(&s).contains("safety impact"), "{}", status(&s));
+    assert_eq!(ecad_project::load(dir).unwrap(), p);
+    assert_eq!(state::committed(dir).unwrap(), cs.base);
+}
+
+#[test]
+fn forty_operations_apply_in_one_transaction_and_undo_restores_engineering_bytes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    conveyor(dir);
+    let files = |dir: &Path| -> std::collections::BTreeMap<String, Vec<u8>> {
+        ecad_project::store::project_files(dir)
+            .unwrap()
+            .into_iter()
+            .map(|name| {
+                let bytes = std::fs::read(dir.join(&name)).unwrap();
+                (name, bytes)
+            })
+            .collect()
+    };
+    let original = ecad_project::load(dir).unwrap();
+    let original_files = files(dir);
+    let ops = (100..140)
+        .map(|n| op("reserve", json!({ "identifiers": format!("tag:-K{n}"), "note": "planned extension" })))
+        .collect();
+    let cs = propose(dir, assistant(), ops);
+    assert_eq!(cs.operations.len(), 40);
+    assert_eq!(files(dir), original_files);
+    let mut s = Session::open(dir).unwrap();
+    s.handle(UiEvent::ReviewProposal { id: cs.id.clone() });
+    s.handle(UiEvent::ApproveProposal { confirm_safety: false, confirm_global: false });
+    assert!(status(&s).starts_with("Applied"), "{}", status(&s));
+    let p = ecad_project::load(dir).unwrap();
+    for n in 100..140 {
+        let id = ecad_model::Identifier::Tag { tag: format!("-K{n}") };
+        assert!(p.numbering.reserved.contains_key(&id));
+    }
+    assert_eq!(records(dir, RecordKind::ChangeSet), 1);
+    let applied = state::committed(dir).unwrap();
+    assert_eq!(applied.generation, cs.base.generation + 1);
+    s.handle(UiEvent::Key { key: ecad_editor::KeyName::Undo });
+    assert_eq!(s.editor().project(), &original);
+    assert_eq!(s.editor().undo_label(), None);
+    s.handle(UiEvent::Save);
+    assert_eq!(files(dir), original_files);
+    assert_eq!(state::committed(dir).unwrap().generation, applied.generation + 1);
+    assert_eq!(state::committed(dir).unwrap().content, cs.base.content);
+    assert!(
+        change::records(dir)
+            .unwrap()
+            .iter()
+            .any(|r| { r.kind == RecordKind::Edits && r.steps.iter().any(|step| step.starts_with("Undo:")) })
+    );
+    assert!(state::verify(dir, &Quiet).unwrap().clean());
+}

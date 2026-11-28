@@ -17,6 +17,8 @@ use ecad_model::policy::AutomationClass;
 use ecad_model::{Command, Project};
 use serde_json::{Value, json};
 
+mod records;
+
 /// What an entry does, for authority (who may apply it) and for clients' hints.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -53,6 +55,7 @@ pub enum Kind {
     Text,
     Number,
     OneOf(&'static [&'static str]),
+    Structured(&'static str),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -167,6 +170,28 @@ pub const DEFS: &[Def] = &[
         args: &[],
         mcp: true,
     },
+    // Identity-preserving construction operations.
+    records::ADD_PAGE_EXACT,
+    records::REMOVE_EMPTY_PAGE,
+    records::ADD_DEVICE_EXACT,
+    records::ADD_NODE_EXACT,
+    records::DESCRIBE_NODE_EXACT,
+    records::PLACE_DRAWING_EXACT,
+    records::CONNECT_DRAWING_EXACT,
+    records::SET_DRAWING_PROPERTIES,
+    records::MIRROR_DRAWING_EXACT,
+    records::SET_WIRE_BEND_EXACT,
+    records::SET_WIRE_NUMBER_EXACT,
+    records::SET_WIRE_SPEC_EXACT,
+    records::ADD_CABLE_EXACT,
+    records::ADD_LOCATION_BOX,
+    records::ADD_SYMBOL_DEFINITION,
+    records::ADD_CATALOGUE_PART,
+    records::ASSIGN_DEVICE_PARTS,
+    records::SET_MOUNTING_PLATE,
+    records::ADD_PANEL_ITEM,
+    records::SET_SHEET_DEFINITION,
+    records::SET_PROJECT_TITLE,
     // Operations.
     Def {
         name: "renumber_devices",
@@ -361,6 +386,11 @@ pub fn schema(def: &Def) -> Value {
             Kind::Text => json!({ "type": "string", "description": a.description }),
             Kind::Number => json!({ "type": "number", "description": a.description }),
             Kind::OneOf(options) => json!({ "type": "string", "enum": options, "description": a.description }),
+            Kind::Structured(kind) => {
+                let mut schema = records::schema(kind);
+                schema["description"] = json!(a.description);
+                schema
+            }
         };
         properties.insert(a.name.to_owned(), p);
     }
@@ -386,6 +416,7 @@ pub fn validate(def: &Def, args: &Value) -> Result<(), String> {
             Kind::OneOf(options) if !value.as_str().is_some_and(|v| options.contains(&v)) => {
                 return Err(format!("`{key}` must be one of: {}", options.join(", ")));
             }
+            Kind::Structured(kind) => records::validate(&records::schema(kind), value, key)?,
             _ => {}
         }
     }
@@ -447,6 +478,12 @@ pub fn lower(p: &Project, name: &str, args: &Value) -> Result<Lowered, String> {
         return Err(format!("`{name}` is a query"));
     }
     validate(def, args)?;
+    if def.args.iter().any(|arg| matches!(arg.kind, Kind::Structured(_))) {
+        let command = records::command(p, name, args)?;
+        let mut scratch = p.clone();
+        scratch.apply(command.clone()).map_err(|e| e.to_string())?;
+        return Ok(Lowered { label: def.title.to_owned(), commands: vec![command], result: json!({}) });
+    }
     let page = p.pages_in_order().first().map(|pg| pg.id).ok_or("the project has no pages")?;
     let mut e = Editor::new(p.clone(), page).map_err(|e| e.to_string())?;
     e.record_commands();
