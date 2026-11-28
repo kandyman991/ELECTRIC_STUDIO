@@ -11,14 +11,16 @@ merged PR.
 - **Review policy:** milestone-based. Implementation slices are merged once CI is green. Independent
   review happens when a milestone is ready for formal acceptance, or when a significant
   architectural issue needs a decision.
-- **Current milestone:** S0, stable numbering (authorized; implementation next).
+- **Current milestone:** S0, stable numbering: **implemented, awaiting independent milestone
+  review** (S0a #44, S0b #45, S0c #46; see "S0 plan and state" below). Not accepted; AI0 does
+  not start until the review is complete.
   - M10 format 2 canonical connectivity (M10a #37, M10b #38, M10c #40, M10b′ and M10d #41)
     formally accepted on 28 Nov 2026; corrective PR #42 merged at `6e223ec`.
     R1–R8 and R7.1/R7.2/R8.1 closed; [final acceptance evidence](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/42#issuecomment-7236646425).
   - M7a (PR #33) and M7b (PR #34) merged; corrective PR #35 merged at `e258a59`.
   - M7 formally accepted on 27 Nov 2026 with R5 (controlled Legion wall-clock and peak RSS)
     explicitly deferred by the owner, not passed. All six exact-head CI jobs passed at `90d6dfb`.
-  - **Next:** implement S0 per ROADMAP.md and platform architecture; review at milestone completion.
+  - **Next:** independent review of S0 for formal acceptance.
   - **Outstanding pre-release gate:** qualified D41 Legion benchmark ([#39](https://github.com/kandyman991/ELECTRIC_STUDIO/issues/39)) when access returns;
     retain recorded conditions and cold/warm timing and RSS evidence before first production release.
 - **On hold:** PR #32 (component library, draft), reused in M9 after reconciliation (D13).
@@ -74,6 +76,61 @@ cargo test --workspace
 ## M7 acceptance closure (PR #35)
 
 M7 accepted with the owner-approved R5 exception. R1–R4 validated: multi-level terminal report identity and completeness, strict benchmark comparison, prepared-fixture disk-cold open, allocation counting with DHAT, and controlled benchmark provenance. [Validation evidence and allocation reference](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/35#issuecomment-7226987361); [owner decision](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/35#issuecomment-7228169838). The qualified Legion run has not been performed and is mandatory before first production release. Track check/render scaling as a dedicated profiling follow-up, not a sandbox-timing acceptance gate.
+
+## S0 plan and state
+
+S0 (stable numbering, D22–D25) is implemented in three slices, each merged when CI is green;
+independent review comes at S0 acceptance.
+
+| Slice | Scope | State |
+| --- | --- | --- |
+| S0a (PR #44) | `ecad_model::numbering`: identifiers, policies (sequential default, lowest free), `Reserve`/`Unreserve`, `Retire`/`Reclaim`, `SetNumberingPolicies`, `SetCapacity`; explicit assignments of reserved or retired identifiers refused at every assignment point; `Project::removal` retires what a removal frees, in the same transaction, and the editor's deletions use it; resource-aware allocation of tags, wires, strip terminals, PLC channels and addresses, cable cores, page names; `insert_page` with a key between neighbours; `numbering.json` | Merged |
+| S0b (PR #45) | Joining keeps both numbers (`wire-numbers-differ`); `ecad_model::renumber` (preview, stale check, one undo step) for wires, devices, a strip's terminals, pages, in the app (preview dialog), the CLI (`ecad renumber … [--apply]`) and MCP (read-only `preview_renumbering`); CLI `numbering`, `reserve`, `unreserve`, `retire`, `reclaim` with identifier ranges; MCP `numbering`; `ReplaceDevice` | Merged |
+| S0c (PR #46) | Retrofit acceptance (`tests/acceptance/tests/retrofit.rs`), adversarial tests, benchmarks, documentation | This PR |
+
+Acceptance criteria (ROADMAP S0 row and the task's criteria):
+
+| Criterion | Evidence |
+| --- | --- |
+| Adding a device, a wire, a terminal and a page changes only those | `retrofit.rs` `assert_unaffected` by id, after the retrofit, save/load and undo/redo; `numbering.rs` `a_page_inserted_after_3_is_3a_and_no_other_page_changes` (only `project.json` and the new page file change on save) |
+| Joining two numbered potentials keeps both numbers and reports `wire-numbers-differ` | `retrofit.rs` per-potential run; `naming.rs` `tags_follow_the_format_and_potentials_share_one_number`; conflict detection kept: `joining_named_potentials_is_still_reported_as_a_clash` |
+| Removing `-B2` changes nothing else and retires it; the next sensor is `-B3` | `numbering.rs` `removing_b2_retires_it_and_the_next_sensor_is_b3` (also under lowest free; reuse only after `Reclaim`) |
+| A new DI for an unrelated device skips the reserved four | `retrofit.rs` (I1.1–I1.4 reserved, the new input is I1.5), `numbering.rs` `a_new_di_skips_the_reserved_four…` through the editor path |
+| Allocating past the last free channel reports exhaustion and adds nothing | `numbering.rs` `allocating_past_the_last_free_channel…` (editor path, project unchanged), cores `cable_cores_are_allocated_from_the_cables_size` |
+| A page inserted after 3 is `3a`, and no other page file changes | as above; `3b` after `3a`; dotted `3.1`; appended pages continue the numbers |
+| Explicit renumbering with preview and confirmation; ids preserved | `numbering.rs` `renumbering_is_previewed_confirmed_and_keeps_every_identity` (stale preview refused, exact undo), session test, CLI and MCP tests |
+| Persistence, exact undo/redo, rollback, conflicting records refused | `numbering_json_round_trips_and_conflicting_records_are_refused`, `numbering_commands_undo_and_redo_exactly`, `conflicting_allocations_and_interrupted_transactions_change_nothing` |
+| Format 1 migration and format 2 compatibility | conversion test asserts equal pages and empty numbering; format 2 projects without `numbering.json` load with the defaults |
+
+Known limitations and review points (S0):
+- **Retirement is by removal operation**, not by the low-level `RemoveDevice`/`Disconnect`
+  commands (which are also the inverses of additions, and must not retire). Every removal in
+  the editor, CLI script and MCP goes through `Project::removal`; a custom caller of raw
+  commands must do the same.
+- **Bounded resources are freed, not retired,** on removal (section 12.6): PLC channels,
+  strip terminal numbers, cores. They can be retired or reserved explicitly.
+- **Capacities** (PLC card channels, strip terminals) are numbering data until M9 gives
+  products their own; without one, channels count from 0 and strips sequentially.
+- **Baselines** don't exist yet (S1): retirement records have a note, not the change record and
+  last baseline; reuse after release needs approval once S1 adds releases.
+- **Node names** (junctions `J<n>`, potential points) keep lowest-free naming, skipping
+  reserved and retired tags; they are names, not engineering identifiers.
+- **Renumbering** covers wires, device tags `<prefix><n>`, a strip's drawn terminal groups
+  (undrawn groups keep their numbers) and numeric pages (suffixed pages follow their page).
+  PLC addresses are not renumbered globally.
+- **Replacement** takes explicit terminal renames by id; proposing a mapping from the new
+  product's terminal pattern needs M9's product model.
+- **Performance** (cachegrind, conveyor, sandbox, against main's baseline; M10's accepted head
+  in brackets): open +9.0% (+8.0%), save +2.4% (+1.1%), hash +1.0% (+0.6%), edit and check
+  −4.0% (−4.1%), netlist, render and pdf +0.2%. S0's own share: open about +1%
+  (`numbering.json` read through its commands, availability lookups in every assignment
+  check, O(log n) each), save +1.3% (`numbering.json` written), hash +0.4% (sparse page keys
+  in the serialized pages). Allocation blocks: open 13 179 (+2.6%), save 5 226 (+2.3%), the
+  rest unchanged. Workload counts match; content hashes changed only by the builders' sparse
+  page keys. Allocation helpers scan linearly and run per edit, never per load. Sandbox wall
+  clock is noise (±50% between runs); qualified timing remains #39.
+- **MCP** stays read-only for numbering (D32): it lists numbering and previews renumbering;
+  people apply renumbering in the app or with `ecad renumber --apply`.
 
 ## M10 plan and state
 
