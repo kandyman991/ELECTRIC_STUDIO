@@ -369,6 +369,18 @@ impl Project {
             .unwrap_or_default()
     }
 
+    /// The tag for a new cable `<prefix><n>` (`-W4`) by the cable policy, skipping used,
+    /// reserved and retired tags.
+    pub fn new_cable_tag(&self, prefix: &str) -> String {
+        self.next_in_series(
+            Kind::Cable,
+            (prefix, 0, ""),
+            |t| self.cables.values().any(|c| c.tag == t),
+            self.cables.values().map(|c| c.tag.clone()),
+            |tag| Identifier::Cable { tag },
+        )
+    }
+
     /// A device's slot range for a resource: PLC channels count from 0, terminals from 1.
     fn slots(&self, device: DeviceId, from: u64) -> Option<std::ops::RangeInclusive<u64>> {
         let cap = u64::from(*self.numbering.capacities.get(&device)?);
