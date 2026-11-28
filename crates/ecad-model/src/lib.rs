@@ -21,6 +21,8 @@ pub mod plc_address;
 pub mod potential;
 pub mod project;
 pub mod reference;
+pub mod renumber;
+mod replace;
 pub mod sample;
 pub mod sheet;
 pub mod symbol;

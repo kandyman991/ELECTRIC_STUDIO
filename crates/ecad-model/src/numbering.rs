@@ -552,6 +552,78 @@ impl Project {
         }
     }
 
+    /// Read identifiers as written on the command line, with ranges of up to 1000:
+    /// `tag:-K10`, `tag:-K10..-K19` (or `..19`), `cable:-W9`, `wire:W5..W9`,
+    /// `terminal:-X3:7..9`, `address:I1.0..I1.3`, `core:-W1:3`, `page:3a`.
+    pub fn parse_identifiers(&self, spec: &str) -> std::result::Result<Vec<Identifier>, String> {
+        let (kind, rest) = spec.split_once(':').ok_or_else(|| format!("`{spec}`: write kind:value, e.g. tag:-K10"))?;
+        let expand = |value: &str| -> std::result::Result<Vec<String>, String> {
+            let Some((a, b)) = value.split_once("..") else { return Ok(vec![value.to_owned()]) };
+            let split = |s: &str| {
+                let digits = s.len() - s.trim_end_matches(|c: char| c.is_ascii_digit()).len();
+                (s[..s.len() - digits].to_owned(), s[s.len() - digits..].to_owned())
+            };
+            let (pa, na) = split(a);
+            let (pb, nb) = split(b);
+            if na.is_empty() || nb.is_empty() || !(pb.is_empty() || pb == pa) {
+                return Err(format!("`{value}`: a range runs between two numbers of one series"));
+            }
+            let (x, y): (u64, u64) = (na.parse().map_err(|_| "bad number")?, nb.parse().map_err(|_| "bad number")?);
+            if y < x || y - x >= 1000 {
+                return Err(format!("`{value}`: a range runs upwards, up to 1000 values"));
+            }
+            Ok((x..=y).map(|n| format!("{pa}{n:0w$}", w = if na.starts_with('0') { na.len() } else { 0 })).collect())
+        };
+        let device = |t: &str| self.device_by_tag(t).map(|d| d.id).ok_or_else(|| format!("no device {t}"));
+        let cable =
+            |t: &str| self.cables.values().find(|c| c.tag == t).map(|c| c.id).ok_or_else(|| format!("no cable {t}"));
+        let owned = |s: &str| -> std::result::Result<(String, String), String> {
+            // `-X3:7`: the owner up to the last colon.
+            s.rsplit_once(':')
+                .map(|(a, b)| (a.to_owned(), b.to_owned()))
+                .ok_or_else(|| format!("`{s}`: write owner:number"))
+        };
+        Ok(match kind {
+            "tag" => expand(rest)?.into_iter().map(|tag| Identifier::Tag { tag }).collect(),
+            "cable" => expand(rest)?.into_iter().map(|tag| Identifier::Cable { tag }).collect(),
+            "wire" => expand(rest)?.into_iter().map(|number| Identifier::Wire { number }).collect(),
+            "page" => expand(rest)?.into_iter().map(|name| Identifier::Page { name }).collect(),
+            "terminal" => {
+                let (owner, n) = owned(rest)?;
+                let device = device(&owner)?;
+                expand(&n)?.into_iter().map(|designation| Identifier::Terminal { device, designation }).collect()
+            }
+            "core" => {
+                let (owner, n) = owned(rest)?;
+                let cable = cable(&owner)?;
+                expand(&n)?.into_iter().map(|core| Identifier::Core { cable, core }).collect()
+            }
+            "address" => {
+                let canon =
+                    |a: &str| crate::plc_address::canonical(a).ok_or_else(|| format!("`{a}` is not a PLC address"));
+                match rest.split_once("..") {
+                    None => vec![Identifier::Address { address: canon(rest)? }],
+                    Some((a, b)) => {
+                        let (a, b) = (canon(a)?, canon(b)?);
+                        let prefix: String = a.chars().take_while(char::is_ascii_alphabetic).collect();
+                        let (Some(x), Some(y)) = (ordinal(&prefix, &a), ordinal(&prefix, &b)) else {
+                            return Err(format!("`{rest}`: both ends of one kind"));
+                        };
+                        let step = if prefix.ends_with('W') { 2 } else { 1 };
+                        if y < x || (y - x) / step >= 1000 {
+                            return Err(format!("`{rest}`: a range runs upwards, up to 1000 values"));
+                        }
+                        (x..=y)
+                            .step_by(step as usize)
+                            .map(|n| Identifier::Address { address: address_at(&prefix, n) })
+                            .collect()
+                    }
+                }
+            }
+            other => return Err(format!("unknown kind `{other}` (tag, cable, wire, terminal, address, core, page)")),
+        })
+    }
+
     /// Whether an identifier names something that exists and fits it, for reserving.
     fn check_identifier(&self, id: &Identifier) -> Result<()> {
         let bad = || ModelError::BadIdentifier(self.describe_identifier(id));

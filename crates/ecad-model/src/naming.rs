@@ -8,7 +8,6 @@
 use crate::project::{Command, ConnectionId, ConnectionRef, PageId, Project};
 use crate::symbol::{Role, SymbolId};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -211,15 +210,17 @@ impl Project {
         )
     }
 
-    /// The number for a new wire from `from` to `to`, and the wires that must take it too. Per
-    /// wire: the next free number. Per potential: the name of the potential the wire joins, or
-    /// the number its wires already carry (the `from` side wins), or a new one; every other wire
-    /// of the joined potential is renumbered to match.
-    pub fn number_for_new_wire(&self, from: &ConnectionRef, to: &ConnectionRef) -> (String, Vec<ConnectionId>) {
+    /// The number for a new wire from `from` to `to`. Per wire: the next number (or the PLC
+    /// channel's). Per potential: the name of the potential the wire joins, or the number its
+    /// wires already carry, the `from` side first, or a new one. Joining two numbered
+    /// potentials renumbers neither (S0, D22): the wire takes the `from` side's number and the
+    /// `wire-numbers-differ` check reports the mismatch until someone reconciles them
+    /// explicitly ([`Self::set_wire_number_commands`]).
+    pub fn number_for_new_wire(&self, from: &ConnectionRef, to: &ConnectionRef) -> String {
         let page = self.function(from.function).map(|f| f.page).unwrap_or_default();
         if self.naming.wire_numbering == WireNumbering::PerWire {
             let plc = self.plc_number_of(&[from.clone(), to.clone()]).filter(|n| !self.wire_number_taken(n));
-            return (plc.unwrap_or_else(|| self.next_wire_number(page)), Vec::new());
+            return plc.unwrap_or_else(|| self.next_wire_number(page));
         }
         let potentials = self.potentials();
         let find = |r: &ConnectionRef| potentials.iter().find(|p| p.points.contains(r));
@@ -231,16 +232,7 @@ impl Project {
         let name = name.or_else(|| self.plc_number_of(&points));
         let existing =
             sides.iter().find_map(|p| p.connections.iter().find_map(|c| self.wire_number(*c).map(str::to_owned)));
-        let number = name.or(existing).unwrap_or_else(|| self.next_wire_number(page));
-        let renumber = sides
-            .iter()
-            .flat_map(|p| p.connections.iter())
-            .filter(|c| self.wire_number(**c) != Some(number.as_str()))
-            .copied()
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        (number, renumber)
+        name.or(existing).unwrap_or_else(|| self.next_wire_number(page))
     }
 
     /// Commands that give wire `c` the number `number`: per potential, every wire of its
@@ -310,6 +302,7 @@ impl Project {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     #[test]
     fn formats_split_at_the_counter() {
@@ -390,10 +383,7 @@ mod tests {
 
     fn wire(p: &mut Project, a: (FunctionId, &str), b: (FunctionId, &str)) -> String {
         let (from, to) = (ConnectionRef::new(a.0, a.1), ConnectionRef::new(b.0, b.1));
-        let (number, renumber) = p.number_for_new_wire(&from, &to);
-        for id in renumber {
-            p.apply(Command::SetWireNumber { id, number: Some(number.clone()) }).unwrap();
-        }
+        let number = p.number_for_new_wire(&from, &to);
         p.connect(Connection {
             bend: None,
             id: ConnectionId::new(),
@@ -423,7 +413,8 @@ mod tests {
         let k3 = place(&mut p, "iec.coil", None, (140.0, 40.0));
         assert_eq!(wire(&mut p, (k2, "A2"), (k3, "A1")), "101");
 
-        // Two numbered potentials joined by a new wire: the from side's number wins everywhere.
+        // Two numbered potentials joined by a new wire: neither is renumbered (S0); the wire
+        // takes the from side's number and the mismatch is reported.
         let j = place(&mut p, "iec.junction", None, (140.0, 0.0));
         let k4 = place(&mut p, "iec.coil", None, (180.0, 40.0));
         let w = wire(&mut p, (k3, "A2"), (j, "1"));
@@ -440,9 +431,9 @@ mod tests {
         .unwrap();
         assert_eq!(wire(&mut p, (j, "2"), (j2, "2")), "102");
         let numbers: BTreeSet<String> = p.connections.values().filter_map(|c| c.wire_number.clone()).collect();
-        assert!(!numbers.contains("X9"), "X9 joined 102: {numbers:?}");
+        assert!(numbers.contains("X9"), "X9 kept its number: {numbers:?}");
 
-        // Renumbering a wire renumbers its whole potential.
+        // Reconciling is explicit: renumbering a wire renumbers its whole potential.
         let any = p.connections.values().find(|c| c.wire_number.as_deref() == Some("102")).unwrap().id;
         let cmds = p.set_wire_number_commands(any, Some("150".into()));
         assert_eq!(cmds.len(), 3, "k3-j, j-j2 and j2-k4");
