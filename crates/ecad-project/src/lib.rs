@@ -485,7 +485,12 @@ pub fn save_locked(project: &Project, dir: &Path, extras: state::Extras) -> Resu
         Err(error) => {
             // Once the journal is published, an error is not proof of rollback.
             // Finish it under the same lock, then verify the exact intended commit.
-            if !dir.join(store::JOURNAL).exists() {
+            let journaled = dir.join(store::JOURNAL).exists();
+            let recorded = !extras.workflow.is_empty()
+                && extras.workflow.iter().all(|(path, bytes)| {
+                    state::read_workflow(dir, path).is_ok_and(|actual| actual == *bytes)
+                });
+            if !journaled && !recorded {
                 return Err(error);
             }
             let uncertain = || ProjectError::CommitUncertain(dir.to_owned());
@@ -508,7 +513,7 @@ pub fn save_locked(project: &Project, dir: &Path, extras: state::Extras) -> Resu
 
 fn commit_rendered(dir: &Path, files: &[(String, Vec<u8>)], extras: &state::Extras) -> Result<(Fingerprint, Revision)> {
     let v = state::verify_files(dir)?;
-    if v.committed.is_some() && !v.clean() {
+    if !v.unsafe_paths.is_empty() || (v.committed.is_some() && !v.clean()) {
         return Err(ProjectError::External { dir: dir.to_owned(), summary: v.summary() });
     }
     let revision = state::commit(dir, files, extras, v.committed.is_some())?;
