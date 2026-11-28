@@ -487,9 +487,10 @@ pub fn save_locked(project: &Project, dir: &Path, extras: state::Extras) -> Resu
             // Finish it under the same lock, then verify the exact intended commit.
             let journaled = dir.join(store::JOURNAL).exists();
             let recorded = !extras.workflow.is_empty()
-                && extras.workflow.iter().all(|(path, bytes)| {
-                    state::read_workflow(dir, path).is_ok_and(|actual| actual == *bytes)
-                });
+                && extras
+                    .workflow
+                    .iter()
+                    .all(|(path, bytes)| state::read_workflow(dir, path).is_ok_and(|actual| actual == *bytes));
             if !journaled && !recorded {
                 return Err(error);
             }
@@ -500,9 +501,10 @@ pub fn save_locked(project: &Project, dir: &Path, extras: state::Extras) -> Resu
             let revision = verification.committed.clone().ok_or_else(uncertain)?;
             if !verification.clean()
                 || revision.content != expected
-                || extras.workflow.iter().any(|(path, bytes)| {
-                    !state::read_workflow(dir, path).is_ok_and(|actual| actual == *bytes)
-                })
+                || extras
+                    .workflow
+                    .iter()
+                    .any(|(path, bytes)| !state::read_workflow(dir, path).is_ok_and(|actual| actual == *bytes))
             {
                 return Err(uncertain());
             }
