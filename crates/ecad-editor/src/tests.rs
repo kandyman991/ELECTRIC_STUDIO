@@ -230,7 +230,7 @@ fn a_stray_contact_can_join_a_coil_and_its_old_device_goes() {
     let contacts = e.project().contacts_of(k1);
     assert_eq!(contacts.len(), 1);
     assert_eq!(contacts[0].terminals, "11-12", "first contact of -K1 is 1x; NC keeps 1/2");
-    assert_eq!(e.undo_label(), Some("Move -S2 to -K1"));
+    assert_eq!(e.undo_label(), Some("Rewire -S2 to -K1"));
     e.key(Key::Undo);
     assert!(e.project().device_by_tag("-S2").is_some());
 }

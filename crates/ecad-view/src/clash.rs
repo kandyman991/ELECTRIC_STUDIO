@@ -152,7 +152,7 @@ pub fn page_clashes(project: &Project, page: PageId) -> Result<Vec<Clash>> {
             .find(|f| {
                 project.symbol(&f.symbol).is_ok_and(|sym| {
                     sym.connection_points.iter().any(|cp| {
-                        f.designation(&cp.name) == t.value
+                        project.designation(f, &cp.name) == t.value
                             && project
                                 .connection_point(&ecad_model::ConnectionRef::new(f.id, &cp.name))
                                 .is_ok_and(|(p, _)| near(p))

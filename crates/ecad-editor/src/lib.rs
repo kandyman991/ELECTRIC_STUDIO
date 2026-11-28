@@ -12,7 +12,7 @@ use ecad_model::{
     Command, Connection, ConnectionId, ConnectionRef, Device, DeviceId, Direction, Function, FunctionId, History,
     ModelError, Page, PageId, Point, Potential, Project, Rotation, SymbolId, route_between,
 };
-pub use ecad_model::{Naming, Part, PartRef, ProjectInfo, Revision, WireLengthSettings, WireNumbering};
+pub use ecad_model::{Naming, Part, PartRef, ProductId, ProjectInfo, Revision, WireLengthSettings, WireNumbering};
 pub use ecad_view::{Primitive, Shape};
 pub use session::{
     Button, CableInfo, Choice, DevicePart, Frame, KeyName, LayoutInfo, PageInfo, PaletteItem, SelectionInfo, Session,
@@ -314,18 +314,33 @@ impl Editor {
         self.execute(&label, Command::UpdatePart(part))
     }
 
-    pub fn remove_part(&mut self, number: &str) -> Result<(), ModelError> {
-        self.execute(&format!("Remove part {number}"), Command::RemovePart(number.to_owned()))
+    pub fn remove_part(&mut self, product: ProductId) -> Result<(), ModelError> {
+        let name = self.project.parts.get(&product).map_or_else(String::new, Part::label);
+        self.execute(&format!("Remove part {name}"), Command::RemovePart(product))
     }
 
-    /// Add new parts and update existing ones (by part number) in one undoable step. Returns
+    /// Add new parts and update existing ones in one undoable step. An incoming part is the
+    /// catalogue's product with the same manufacturer and number (keeping that product's id);
+    /// one without a manufacturer is the only product with its number, if there is one. Returns
     /// how many were added and how many changed.
     pub fn import_parts(&mut self, parts: Vec<Part>) -> Result<(usize, usize), ModelError> {
         let (mut added, mut updated) = (0, 0);
         let mut cmds = Vec::new();
         for mut part in parts {
+            let same = self.project.parts.values().find(|p| p.key() == part.key()).or_else(|| {
+                match self.project.parts_numbered(&part.number).as_slice() {
+                    [one] if part.manufacturer.trim().is_empty() => Some(*one),
+                    _ => None,
+                }
+            });
+            if let Some(existing) = same {
+                part.id = existing.id;
+                if part.manufacturer.trim().is_empty() {
+                    part.manufacturer = existing.manufacturer.clone();
+                }
+            }
             // A catalogue without contact blocks or sizes doesn't wipe the ones already entered.
-            if let Some(existing) = self.project.parts.get(&part.number) {
+            if let Some(existing) = self.project.parts.get(&part.id) {
                 if part.contacts.is_empty() {
                     part.contacts = existing.contacts.clone();
                 }
@@ -333,7 +348,7 @@ impl Editor {
                     (part.width, part.height, part.depth) = (existing.width, existing.height, existing.depth);
                 }
             }
-            match self.project.parts.get(&part.number) {
+            match self.project.parts.get(&part.id) {
                 None => {
                     added += 1;
                     cmds.push(Command::AddPart(part));
@@ -1172,6 +1187,7 @@ impl Editor {
         let cmd = Command::Batch(vec![
             Command::AddDevice(Device::new(device, &tag, &description)),
             Command::Place(Function {
+                terminals: Default::default(),
                 id: function,
                 device,
                 symbol: symbol.clone(),
@@ -1221,6 +1237,7 @@ impl Editor {
         };
         let function = FunctionId::new();
         let cmd = Command::Place(Function {
+            terminals: Default::default(),
             id: function,
             device,
             symbol: symbol.clone(),
@@ -1266,9 +1283,10 @@ impl Editor {
         self.execute(&label, Command::SetDesignations { id: f, designations })
     }
 
-    /// Make the selected drawing part of the device tagged `tag` (e.g. turn a stray contact
-    /// into a contact of -K1). It takes that device's next contact numbers; its old device is
-    /// removed when nothing else draws it.
+    /// Make the selected drawing show terminals of the device tagged `tag` (e.g. turn a stray
+    /// contact into a contact of -K1). It takes that device's next contact numbers, and its
+    /// wires go to those terminals: a rewiring, said so in the step's name (D2). Its old device
+    /// is removed when nothing else draws it.
     pub fn reassign_selected(&mut self, tag: &str) -> Result<(), ModelError> {
         let Some(Selected::Function(f)) = self.selection else { return Ok(()) };
         let tag = tag.trim();
@@ -1280,11 +1298,11 @@ impl Editor {
         }
         let old_tag = self.project.device(func.device)?.tag.clone();
         let designations = self.project.next_designations(target, &func.symbol);
-        let mut cmds = vec![Command::Reassign { id: f, device: target, designations }];
+        let mut cmds = vec![Command::Reassign { id: f, device: target, designations, terminals: Default::default() }];
         if self.project.functions_of(func.device).count() == 1 {
             cmds.push(Command::RemoveDevice(func.device));
         }
-        self.execute(&format!("Move {old_tag} to {tag}"), Command::Batch(cmds))
+        self.execute(&format!("Rewire {old_tag} to {tag}"), Command::Batch(cmds))
     }
 
     fn wire_click(&mut self, hit: Option<Hit>) {

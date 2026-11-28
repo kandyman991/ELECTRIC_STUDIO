@@ -356,11 +356,22 @@ fn list_devices(p: &Project, page: Option<&str>) -> Result<Value, String> {
                 .functions_of(d.id)
                 .map(|f| json!({ "symbol": f.symbol.0, "page": page_name(p, f.page), "x": f.position.x, "y": f.position.y }))
                 .collect();
-            let parts: Vec<Value> = d.parts.iter().map(|r| json!({ "number": r.number, "quantity": r.quantity })).collect();
+            let parts: Vec<Value> = d.parts.iter().map(|r| part_json(p, r)).collect();
             json!({ "tag": d.tag, "description": d.description, "parts": parts, "drawings": drawings })
         })
         .collect();
     Ok(json!({ "devices": list }))
+}
+
+/// A device's product: its number and maker as the catalogue has them, its id, the quantity.
+fn part_json(p: &Project, r: &ecad_model::PartRef) -> Value {
+    let part = p.parts.get(&r.product);
+    json!({
+        "product": r.product.0.to_string(),
+        "number": part.map(|x| x.number.as_str()),
+        "manufacturer": part.map(|x| x.manufacturer.as_str()),
+        "quantity": r.quantity,
+    })
 }
 
 /// A drawing's connection points as drawn, each with its wire and that wire's other end.
@@ -376,7 +387,7 @@ fn points_of(p: &Project, f: &ecad_model::Function) -> Vec<Value> {
                 let to = p.describe(other).map(|(t, pt)| format!("{t}:{pt}")).unwrap_or_default();
                 json!({ "number": c.wire_number, "to": to })
             });
-            json!({ "point": f.designation(&cp.name), "wire": wire })
+            json!({ "point": p.designation(f, &cp.name), "wire": wire })
         })
         .collect()
 }
@@ -397,7 +408,7 @@ fn device_details(p: &Project, tag: &str) -> Result<Value, String> {
             })
         })
         .collect();
-    let parts: Vec<Value> = d.parts.iter().map(|r| json!({ "number": r.number, "quantity": r.quantity })).collect();
+    let parts: Vec<Value> = d.parts.iter().map(|r| part_json(p, r)).collect();
     Ok(json!({ "tag": d.tag, "description": d.description, "parts": parts, "drawings": drawings }))
 }
 

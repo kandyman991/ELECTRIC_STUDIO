@@ -11,14 +11,14 @@ merged PR.
 - **Review policy:** milestone-based. Implementation slices are merged once CI is green. Independent
   review happens when a milestone is ready for formal acceptance, or when a significant
   architectural issue needs a decision.
-- **Current milestone:** M10, format 2 canonical connectivity (authorized, implementation next).
+- **Current milestone:** M10, format 2 canonical connectivity (in progress).
   - M7a (PR #33) and M7b (PR #34) merged; corrective PR #35 merged at `e258a59`.
   - M7 formally accepted on 27 Nov 2026 with R5 (controlled Legion wall-clock and peak RSS)
     explicitly deferred by the owner, not passed. All six exact-head CI jobs passed at `90d6dfb`.
-  - **Next:** implement M10 according to ROADMAP.md and platform architecture, preserving stable
+  - **Next:** M10c nodes and remaining M10 slices according to ROADMAP.md and platform architecture, preserving stable
     identities, explicit ambiguity reporting and byte-identical golden drawings. Review at the
     major milestone, not every implementation slice.
-  - **Outstanding pre-release gate:** qualified D41 Legion benchmark when access returns;
+  - **Outstanding pre-release gate:** qualified D41 Legion benchmark ([#39](https://github.com/kandyman991/ELECTRIC_STUDIO/issues/39)) when access returns;
     retain recorded conditions and cold/warm timing and RSS evidence before first production release.
 - **On hold:** PR #32 (component library, draft), reused in M9 after reconciliation (D13).
 
@@ -73,3 +73,25 @@ cargo test --workspace
 ## M7 acceptance closure (PR #35)
 
 M7 accepted with the owner-approved R5 exception. R1–R4 validated: multi-level terminal report identity and completeness, strict benchmark comparison, prepared-fixture disk-cold open, allocation counting with DHAT, and controlled benchmark provenance. [Validation evidence and allocation reference](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/35#issuecomment-7226987361); [owner decision](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/35#issuecomment-7228169838). The qualified Legion run has not been performed and is mandatory before first production release. Track check/render scaling as a dedicated profiling follow-up, not a sandbox-timing acceptance gate.
+
+## M10 plan and state
+
+M10 (format 2: canonical connectivity) is implemented in four slices, each merged when CI is
+green; independent review comes at M10 acceptance (docs/ROADMAP.md).
+
+| Slice | Scope | State |
+| --- | --- | --- |
+| M10a (PR #37, merged) | Format 2 groundwork: `FORMAT = 2`, format 1 read and converted on load, first-save note (`ecad_project::upgrade_note`); products by canonical id (`ProductId`, `products.json`, `PartRef.product`, two makers' same number coexist; BOM one line per product); sparse page sort keys (`PAGE_STEP`, `sparse_keys`, `SetPageKeys` for undo); the M7 conveyor committed as a format 1 fixture (`tests/acceptance/conveyor/format1`, written by `ecad new-sample` at e258a59) and shown to convert to the same project and drawings | Merged |
+| M10b | Terminals as entities: `Project.terminals` (`TerminalEntry`: id, device, group, point, designation) saved in `terminals.json`; `Function.terminals` maps each point to the terminal it shows; `Place` creates missing terminals (id `terminal/<drawing>/<point>` as M7, designation from `Function.designations`, then cleared) or shows existing ones of the same device (repeated drawings, no new endpoint); `Unplace` removes the terminals only it showed and undo restores them exactly; `SetDesignations` renumbers terminals (ids and wires unchanged); `AddTerminal`/`RemoveTerminal` (undrawn terminals); `Reassign` gives the drawing the other device's terminals (rewiring, so named in the editor) with exact undo; `Project::designation(f, point)` replaces `Function::designation` | PR #38, merged |
+| M10b′ | Typed PLC channel data on terminals (today still drawing properties, typed in the derived view) | Pending: fold into M10c or M10d |
+| M10c | Nodes (`nodes.json`): junctions, potentials, interruptions stop being devices; node drawings; scoped names and explicit bindings; ambiguous format 1 mappings kept apart and reported | |
+| M10d | Wires (`wires.json`) with terminal or node ends, wire graphics in page files, undrawn wires; the M10 acceptance tests; docs | |
+
+Notes:
+- **Product ids** of format 1 projects and of the built-in samples are UUID v5 of the number
+  (`ProductId::for_number`), so converting twice gives the same ids and `PartRef::new(number)`
+  still names a sample's product. Products made in the app or imported from CSV get random
+  ids; imports match the catalogue by manufacturer and number.
+- **Retired files:** a save removes format 1's top-level `parts.json` (`store::RETIRED`).
+- **Page keys:** format 1's dense order becomes `PAGE_STEP * (i + 1)`. Samples built in code
+  may still use small keys; only the relative order matters.

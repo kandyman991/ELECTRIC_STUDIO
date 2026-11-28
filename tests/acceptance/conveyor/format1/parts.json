@@ -1,0 +1,137 @@
+[
+  {
+    "number": "EX-CT-4KW-24DC",
+    "manufacturer": "Example",
+    "description": "Contactor 4 kW AC-3, 24 V DC coil, 1 NO + 1 NC",
+    "contacts": [
+      "13-14",
+      "21-22"
+    ],
+    "width": 45.0,
+    "height": 77.0,
+    "depth": 98.0
+  },
+  {
+    "number": "EX-ES-2NC",
+    "manufacturer": "Example",
+    "description": "Emergency stop mushroom, twist release, 2 NC"
+  },
+  {
+    "number": "EX-FH-10x38",
+    "manufacturer": "Example",
+    "description": "Fuse holder 1P 10x38 with fuse 4 A gG",
+    "width": 18.0,
+    "height": 81.0,
+    "depth": 68.0
+  },
+  {
+    "number": "EX-LAMP-24-G",
+    "manufacturer": "Example",
+    "description": "Pilot lamp 24 V DC, green"
+  },
+  {
+    "number": "EX-LAMP-24-R",
+    "manufacturer": "Example",
+    "description": "Pilot lamp 24 V DC, red"
+  },
+  {
+    "number": "EX-MOT-0.55-4P",
+    "manufacturer": "Example",
+    "description": "Three-phase motor 0.55 kW 400 V 4 pole IE3"
+  },
+  {
+    "number": "EX-MPCB-1.6",
+    "manufacturer": "Example",
+    "description": "Motor protection circuit breaker 1.1-1.6 A, 1 NO",
+    "contacts": [
+      "13-14"
+    ],
+    "width": 45.0,
+    "height": 97.0,
+    "depth": 97.0
+  },
+  {
+    "number": "EX-MS-16",
+    "manufacturer": "Example",
+    "description": "Main switch 3P 16 A, lockable handle",
+    "width": 54.0,
+    "height": 90.0,
+    "depth": 70.0
+  },
+  {
+    "number": "EX-PB-BLACK",
+    "manufacturer": "Example",
+    "description": "Pushbutton black"
+  },
+  {
+    "number": "EX-PB-GREEN",
+    "manufacturer": "Example",
+    "description": "Pushbutton green"
+  },
+  {
+    "number": "EX-PB-RED",
+    "manufacturer": "Example",
+    "description": "Pushbutton red"
+  },
+  {
+    "number": "EX-PE-PNP-M12",
+    "manufacturer": "Example",
+    "description": "Photoelectric sensor PNP NO 24 V DC, M12"
+  },
+  {
+    "number": "EX-PLC-14-10",
+    "manufacturer": "Example",
+    "description": "Compact PLC 24 V DC, 14 DI / 10 DO, Ethernet",
+    "width": 110.0,
+    "height": 100.0,
+    "depth": 75.0
+  },
+  {
+    "number": "EX-PS-24-5",
+    "manufacturer": "Example",
+    "description": "Power supply 24 V DC 5 A, DIN rail",
+    "width": 40.0,
+    "height": 125.0,
+    "depth": 110.0
+  },
+  {
+    "number": "EX-RCBO-C6",
+    "manufacturer": "Example",
+    "description": "RCBO 1P+N C6 30 mA",
+    "width": 36.0,
+    "height": 90.0,
+    "depth": 70.0
+  },
+  {
+    "number": "EX-SR-2CH",
+    "manufacturer": "Example",
+    "description": "Safety relay 24 V DC, 2 channels, 2 NO + 1 NO aux",
+    "width": 22.5,
+    "height": 100.0,
+    "depth": 120.0
+  },
+  {
+    "number": "EX-TB-2.5",
+    "manufacturer": "Example",
+    "description": "Terminal 2.5 mm², grey",
+    "width": 5.1,
+    "height": 60.0,
+    "depth": 47.0
+  },
+  {
+    "number": "EX-TB-2.5-PE",
+    "manufacturer": "Example",
+    "description": "Terminal 2.5 mm², green-yellow, PE",
+    "width": 5.1,
+    "height": 60.0,
+    "depth": 47.0
+  },
+  {
+    "number": "EX-TB2L-2.5",
+    "manufacturer": "Example",
+    "description": "Two-level terminal 2.5 mm²",
+    "width": 5.1,
+    "height": 70.0,
+    "depth": 55.0
+  }
+]

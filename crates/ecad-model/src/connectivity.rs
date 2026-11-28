@@ -24,7 +24,7 @@
 
 use crate::project::{ADDRESS, COMMENT, ConnectionId, ConnectionRef, DeviceId, FunctionId, Project, SYMBOL};
 use crate::symbol::{IoKind, Role, SymbolDef};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
@@ -36,19 +36,19 @@ fn v5(key: &str) -> Uuid {
 }
 
 /// A physical connection point of a device. Persistent from format 2 on; derived until then.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct TerminalId(pub Uuid);
 
 /// A logical connection point with no physical terminal.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct NodeId(pub Uuid);
 
 /// A physical terminal: the group a terminal's points belong to (a strip terminal's sides and
 /// levels). Derived from the drawing, not from the printed designation, so renumbering a
 /// terminal never changes which group its points are in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct GroupId(pub Uuid);
 
@@ -181,6 +181,28 @@ fn is_junction(sym: &SymbolDef) -> bool {
     sym.role == Role::Single && sym.bridged
 }
 
+/// Whether a symbol's points are physical connection points (terminals), rather than a node's
+/// drawing (a junction dot, a potential or interruption point).
+pub(crate) fn bears_terminals(sym: &SymbolDef) -> bool {
+    !sym.role.joins_drawings() && !is_junction(sym)
+}
+
+/// The terminal id a drawing's point gets when it is placed without one: the same formula M7
+/// derived ids with, so a format 1 project converts to the same ids.
+pub(crate) fn default_terminal(f: FunctionId, point: &str) -> TerminalId {
+    TerminalId(v5(&format!("terminal/{}/{point}", f.0)))
+}
+
+/// The physical group and point key of a new terminal: a numbered drawing (a strip terminal, a
+/// PLC channel) is one group with a point per side or level; any other point is its own.
+pub(crate) fn default_group(f: FunctionId, t: TerminalId, point: &str, numbered: bool) -> (GroupId, String) {
+    if numbered {
+        (GroupId(v5(&format!("group/drawing/{}", f.0))), point.to_owned())
+    } else {
+        (GroupId(v5(&format!("group/terminal/{}", t.0))), String::new())
+    }
+}
+
 impl Project {
     /// Terminals, nodes and bridges, derived from the drawings.
     pub fn connectivity(&self) -> Connectivity {
@@ -242,17 +264,27 @@ impl Project {
             }
 
             let numbered = sym.role.numbered();
-            let drawing_group = GroupId(v5(&format!("group/drawing/{}", f.id.0)));
             let mut mine: Vec<(String, TerminalId)> = Vec::new();
             for cp in &sym.connection_points {
-                let designation = f.designation(&cp.name).to_owned();
-                let id = TerminalId(v5(&format!("terminal/{}/{}", f.id.0, cp.name)));
-                // A numbered drawing is one physical terminal with a point per side or level;
-                // any other point is its own.
-                let (group, point) = if numbered {
-                    (drawing_group, cp.name.clone())
-                } else {
-                    (GroupId(v5(&format!("group/terminal/{}", id.0))), String::new())
+                // The terminal the point shows (D2); a point the drawing has none for (its
+                // symbol gained one) is derived as M7 did.
+                let id = f.terminals.get(&cp.name).copied().unwrap_or_else(|| default_terminal(f.id, &cp.name));
+                let r = ConnectionRef::new(f.id, &cp.name);
+                c.by_point.insert((r.function, r.point.clone()), Endpoint::Terminal(id));
+                mine.push((cp.name.clone(), id));
+                if let Some(t) = c.terminals.get_mut(&id) {
+                    // Another drawing of the same terminal: no new endpoint.
+                    t.drawings.push(r);
+                    continue;
+                }
+                let (designation, group, point) = match self.terminals.get(&id) {
+                    Some(t) => (t.designation.clone(), t.group, t.point.clone()),
+                    None => {
+                        // A drawing put in without its terminals (only behind the commands'
+                        // back): what it would have been given.
+                        let (group, point) = default_group(f.id, id, &cp.name, numbered);
+                        (f.designations.get(&cp.name).cloned().unwrap_or_else(|| cp.name.clone()), group, point)
+                    }
                 };
                 by_designation.entry((f.device, designation.clone())).or_default().entry(group).or_default().push(id);
                 let kind = match sym.role {
@@ -269,16 +301,8 @@ impl Project {
                     }
                     _ => TerminalKind::Device,
                 };
-                c.terminals.insert(
-                    id,
-                    Terminal { id, device: f.device, group, designation, point, kind, drawings: Vec::new() },
-                );
-                let r = ConnectionRef::new(f.id, &cp.name);
-                c.by_point.insert((r.function, r.point.clone()), Endpoint::Terminal(id));
-                if let Some(t) = c.terminals.get_mut(&id) {
-                    t.drawings.push(r);
-                }
-                mine.push((cp.name.clone(), id));
+                c.terminals
+                    .insert(id, Terminal { id, device: f.device, group, designation, point, kind, drawings: vec![r] });
             }
             // Explicit joints: all points of a bridged symbol (a strip terminal's sides), and a
             // symbol's bridge groups (a black box's joined terminals, one level of a terminal).
@@ -296,6 +320,26 @@ impl Project {
                         c.bridges.push(Bridge { a, b });
                     }
                 }
+            }
+        }
+        // Terminals no drawing shows yet: endpoints all the same.
+        for t in self.terminals.values() {
+            if let std::collections::btree_map::Entry::Vacant(slot) = c.terminals.entry(t.id) {
+                by_designation
+                    .entry((t.device, t.designation.clone()))
+                    .or_default()
+                    .entry(t.group)
+                    .or_default()
+                    .push(t.id);
+                slot.insert(Terminal {
+                    id: t.id,
+                    device: t.device,
+                    group: t.group,
+                    designation: t.designation.clone(),
+                    point: t.point.clone(),
+                    kind: TerminalKind::Device,
+                    drawings: Vec::new(),
+                });
             }
         }
         c.bridges.sort();
@@ -457,6 +501,7 @@ mod tests {
 
     fn function(device: DeviceId, symbol: &str, x: f64, designations: &[(&str, &str)]) -> Function {
         Function {
+            terminals: Default::default(),
             id: FunctionId::new(),
             device,
             symbol: SymbolId::new(symbol),
@@ -474,6 +519,115 @@ mod tests {
         let id = f.id;
         p.place(f).unwrap();
         id
+    }
+
+    // ---- M10b: terminals as entities ----
+
+    #[test]
+    fn placing_gives_each_point_a_persistent_terminal_with_its_designation() {
+        let p = sample::with_contacts().unwrap();
+        let f = p.function(sample::K1_NO).unwrap();
+        assert!(f.designations.is_empty(), "moved onto the terminals");
+        assert_eq!(f.terminals.len(), 2);
+        for (point, t) in &f.terminals {
+            let entry = &p.terminals[t];
+            assert_eq!(entry.device, f.device);
+            assert_eq!(*t, default_terminal(f.id, point), "the id M7 derived");
+            assert_eq!(p.designation(f, point), entry.designation);
+        }
+        assert_eq!(p.connectivity().terminals.len(), p.terminals.len(), "every derived terminal is stored");
+    }
+
+    #[test]
+    fn removing_a_drawing_removes_its_terminals_and_undo_restores_them_exactly() {
+        let mut p = sample::with_terminals().unwrap();
+        // Renumber first, so undo has a designation to restore that isn't the point's name.
+        let before_number = p.drawing_number(sample::X2_2).unwrap();
+        let undo_renumber = p
+            .apply(Command::SetDesignations {
+                id: sample::X2_2,
+                designations: [("1".into(), "7".into()), ("2".into(), "7".into())].into(),
+            })
+            .unwrap();
+        let ids: Vec<TerminalId> = p.function(sample::X2_2).unwrap().terminals.values().copied().collect();
+        let wires = p.connections.clone();
+        let before = p.clone();
+        let undo = p.apply(Command::Unplace(sample::X2_2)).unwrap();
+        assert!(ids.iter().all(|t| !p.terminals.contains_key(t)));
+        p.apply(undo).unwrap();
+        assert_eq!(p, before, "same terminal ids, designations and wires");
+        assert_eq!(p.connections, wires);
+        p.apply(undo_renumber).unwrap();
+        assert_eq!(p.drawing_number(sample::X2_2).unwrap(), before_number);
+    }
+
+    #[test]
+    fn a_drawing_can_show_terminals_another_drawing_shows_without_new_endpoints() {
+        let mut p = sample::start_circuit().unwrap();
+        let coil = p.function(sample::K1_COIL).unwrap().clone();
+        let endpoints = p.connectivity().terminals.len();
+        let again = Function {
+            id: FunctionId::new(),
+            position: Point::new(200.0, 90.0),
+            designations: Default::default(),
+            ..coil.clone()
+        };
+        let id = again.id;
+        p.place(again).unwrap();
+        let c = p.connectivity();
+        assert_eq!(c.terminals.len(), endpoints, "the same terminals, drawn twice");
+        assert!(c.ambiguities.is_empty(), "{:?}", c.ambiguities);
+        assert_eq!(c.endpoint(&ConnectionRef::new(id, "A1")), c.endpoint(&ConnectionRef::new(coil.id, "A1")));
+        assert_eq!(c.drawings(c.endpoint(&ConnectionRef::new(id, "A1")).unwrap()).len(), 2);
+        // Removing one drawing keeps the terminals the other shows.
+        p.apply(Command::Unplace(id)).unwrap();
+        assert!(coil.terminals.values().all(|t| p.terminals.contains_key(t)));
+        // Another device's terminal can't be shown.
+        let s1 = p.device_by_tag("-S1").unwrap().id;
+        let stray = Function { id: FunctionId::new(), device: s1, ..coil.clone() };
+        assert_eq!(p.place(stray).unwrap_err(), ModelError::TerminalOfOtherDevice);
+    }
+
+    #[test]
+    fn a_terminal_need_not_be_drawn_and_cant_be_removed_while_drawn() {
+        let mut p = sample::start_circuit().unwrap();
+        let k1 = p.device_by_tag("-K1").unwrap().id;
+        let t = crate::TerminalEntry {
+            id: TerminalId(Uuid::from_u128(0x7e)),
+            device: k1,
+            group: GroupId(Uuid::from_u128(0x7f)),
+            point: String::new(),
+            designation: "X9".into(),
+        };
+        let undo = p.apply(Command::AddTerminal(t.clone())).unwrap();
+        let c = p.connectivity();
+        assert!(c.terminals[&t.id].drawings.is_empty());
+        assert_eq!(p.apply(Command::AddTerminal(t.clone())).unwrap_err(), ModelError::DuplicateId(t.id.0));
+        let drawn = *p.function(sample::K1_COIL).unwrap().terminals.values().next().unwrap();
+        assert_eq!(p.apply(Command::RemoveTerminal(drawn)).unwrap_err(), ModelError::TerminalInUse(drawn.0));
+        p.apply(undo).unwrap();
+        assert!(!p.terminals.contains_key(&t.id));
+    }
+
+    #[test]
+    fn reassigning_rewires_to_the_other_devices_terminals_and_undo_restores_the_ids() {
+        let mut p = sample::with_contacts().unwrap();
+        let before = p.clone();
+        let old: Vec<TerminalId> = p.function(sample::K1_NO).unwrap().terminals.values().copied().collect();
+        let s1 = p.device_by_tag("-S1").unwrap().id;
+        let undo = p
+            .apply(Command::Reassign {
+                id: sample::K1_NO,
+                device: s1,
+                designations: Default::default(),
+                terminals: Default::default(),
+            })
+            .unwrap();
+        let f = p.function(sample::K1_NO).unwrap();
+        assert!(f.terminals.values().all(|t| p.terminals[t].device == s1 && !old.contains(t)), "new terminals of -S1");
+        assert!(old.iter().all(|t| !p.terminals.contains_key(t)), "-K1's terminals only it showed are gone");
+        p.apply(undo).unwrap();
+        assert_eq!(p, before);
     }
 
     fn terminal(c: &Connectivity, f: FunctionId, point: &str) -> TerminalId {
@@ -705,7 +859,12 @@ mod tests {
         let strip = p.function(sample::X2_1).unwrap().device;
         let n = p.drawing_number(sample::X2_1).unwrap();
         let taken = [("1".to_owned(), n.clone()), ("2".to_owned(), n)].into();
-        let r = p.apply(Command::Reassign { id: sample::X2_2, device: strip, designations: taken });
+        let r = p.apply(Command::Reassign {
+            id: sample::X2_2,
+            device: strip,
+            designations: taken,
+            terminals: Default::default(),
+        });
         assert!(matches!(r, Err(ModelError::DuplicateNumber(..))), "{r:?}");
     }
 

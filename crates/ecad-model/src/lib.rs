@@ -281,6 +281,7 @@ mod tests {
             let id = FunctionId::new();
             let page = p.function(K1_COIL).unwrap().page;
             p.place(Function {
+                terminals: Default::default(),
                 id,
                 device: k1,
                 symbol,
@@ -295,28 +296,8 @@ mod tests {
             id
         };
         // A relay with one changeover, used twice: whole, then (the open side) as an NO.
-        p.apply(Command::AddPart(Part {
-            number: "R-1CO".into(),
-            manufacturer: String::new(),
-            description: String::new(),
-            code: String::new(),
-            contacts: vec!["11-12-14".into()],
-            width: None,
-            height: None,
-            depth: None,
-        }))
-        .unwrap();
-        p.apply(Command::AddPart(Part {
-            number: "BLK-NO".into(),
-            manufacturer: String::new(),
-            description: String::new(),
-            code: String::new(),
-            contacts: vec!["13-14".into()],
-            width: None,
-            height: None,
-            depth: None,
-        }))
-        .unwrap();
+        p.apply(Command::AddPart(Part { contacts: vec!["11-12-14".into()], ..Part::new("R-1CO") })).unwrap();
+        p.apply(Command::AddPart(Part { contacts: vec!["13-14".into()], ..Part::new("BLK-NO") })).unwrap();
         // Drop the sample's two contacts so the parts decide.
         for f in [sample::K1_NO, sample::K1_NC] {
             for c in p
@@ -341,7 +322,7 @@ mod tests {
         let numbers = |p: &Project, f| {
             let f = p.function(f).unwrap();
             let sym = p.symbol(&f.symbol).unwrap();
-            sym.connection_points.iter().map(|cp| f.designation(&cp.name).to_owned()).collect::<Vec<_>>()
+            sym.connection_points.iter().map(|cp| p.designation(f, &cp.name).to_owned()).collect::<Vec<_>>()
         };
         let no1 = place(&mut p, "iec.contact_no", 110.0);
         let no2 = place(&mut p, "iec.contact_no", 120.0);
@@ -369,6 +350,7 @@ mod tests {
         p.add_device(Device::new(device, "-K9", "")).unwrap();
         let f = FunctionId::new();
         p.place(Function {
+            terminals: Default::default(),
             id: f,
             device,
             symbol: SymbolId::new("iec.contact_co"),
@@ -393,6 +375,7 @@ mod tests {
         // A right-leaving point leaves left when mirrored.
         let motor = FunctionId::new();
         p.place(Function {
+            terminals: Default::default(),
             id: motor,
             device,
             symbol: SymbolId::new("iec.motor_3"),
@@ -413,8 +396,14 @@ mod tests {
         let original = sample::with_contacts().unwrap();
         let mut p = original.clone();
         let s1 = DeviceId::from_u128(0x102);
-        let undo =
-            p.apply(Command::Reassign { id: sample::K1_NO, device: s1, designations: Default::default() }).unwrap();
+        let undo = p
+            .apply(Command::Reassign {
+                id: sample::K1_NO,
+                device: s1,
+                designations: Default::default(),
+                terminals: Default::default(),
+            })
+            .unwrap();
         assert_eq!(p.contacts_of(DeviceId::from_u128(0x103)).len(), 1);
         assert_eq!(p.describe(&ConnectionRef::new(sample::K1_NO, "13")).unwrap(), ("-S1".into(), "13".into()));
         p.apply(undo).unwrap();
@@ -427,30 +416,41 @@ mod tests {
         let mut p = original.clone();
         let mut h = History::new();
         let k1 = DeviceId::from_u128(0x103);
-        let part = |n: &str| Part {
-            number: n.into(),
-            manufacturer: "M".into(),
-            description: String::new(),
-            code: String::new(),
-            contacts: Vec::new(),
-            width: None,
-            height: None,
-            depth: None,
-        };
+        let part = |n: &str| Part { manufacturer: "Example".into(), ..Part::new(n) };
+        // The same maker's number twice is refused, under any id; another maker's is a product
+        // of its own (D7).
         assert_eq!(
-            p.apply(Command::AddPart(part("EX-CT-24DC"))).unwrap_err(),
-            ModelError::DuplicatePart("EX-CT-24DC".into())
+            p.apply(Command::AddPart(Part { id: ProductId::new(), ..part("EX-CT-24DC") })).unwrap_err(),
+            ModelError::DuplicatePart("Example EX-CT-24DC".into())
+        );
+        assert_eq!(
+            p.apply(Command::AddPart(Part {
+                id: ProductId::new(),
+                manufacturer: " example ".into(),
+                ..part("EX-CT-24DC")
+            }))
+            .unwrap_err(),
+            ModelError::DuplicatePart("example EX-CT-24DC".into()),
+            "makers compare without case or spaces"
+        );
+        let other = Part { id: ProductId::new(), manufacturer: "Other".into(), ..part("EX-CT-24DC") };
+        h.execute(&mut p, "Other maker", Command::AddPart(other.clone())).unwrap();
+        assert_eq!(p.parts_numbered("EX-CT-24DC").len(), 2);
+        assert_eq!(p.part_by_number("EX-CT-24DC").unwrap_err(), ModelError::AmbiguousPart("EX-CT-24DC".into()));
+        assert_eq!(
+            p.apply(Command::UpdatePart(Part { manufacturer: "Example".into(), ..other.clone() })).unwrap_err(),
+            ModelError::DuplicatePart("Example EX-CT-24DC".into())
         );
         assert_eq!(p.apply(Command::AddPart(part("  "))).unwrap_err(), ModelError::EmptyPartNumber);
         h.execute(&mut p, "Add", Command::AddPart(part(" EX-NEW "))).unwrap();
-        assert!(p.parts.contains_key("EX-NEW"), "trimmed");
+        assert_eq!(p.part_by_number("EX-NEW").unwrap().number, "EX-NEW", "trimmed");
         assert_eq!(
-            p.apply(Command::RemovePart("EX-CT-24DC".into())).unwrap_err(),
-            ModelError::PartInUse("EX-CT-24DC".into(), "-K1".into())
+            p.apply(Command::RemovePart(ProductId::for_number("EX-CT-24DC"))).unwrap_err(),
+            ModelError::PartInUse("Example EX-CT-24DC".into(), "-K1".into())
         );
         assert_eq!(
             p.apply(Command::SetDeviceParts { id: k1, parts: vec![PartRef::new("NOPE", 1)] }).unwrap_err(),
-            ModelError::UnknownPart("NOPE".into())
+            ModelError::UnknownPart(ProductId::for_number("NOPE").0.to_string())
         );
         assert_eq!(
             p.apply(Command::SetDeviceParts { id: k1, parts: vec![PartRef::new("EX-NEW", 0)] }).unwrap_err(),
@@ -460,7 +460,7 @@ mod tests {
         h.execute(&mut p, "Parts", Command::SetDeviceParts { id: k1, parts: parts.clone() }).unwrap();
         assert_eq!(p.device(k1).unwrap().parts, parts);
         h.execute(&mut p, "Edit", Command::UpdatePart(Part { description: "new".into(), ..part("EX-NEW") })).unwrap();
-        h.execute(&mut p, "Remove", Command::RemovePart("EX-NEW".into())).unwrap();
+        h.execute(&mut p, "Remove", Command::RemovePart(ProductId::for_number("EX-NEW"))).unwrap();
         while h.can_undo() {
             h.undo(&mut p).unwrap();
         }

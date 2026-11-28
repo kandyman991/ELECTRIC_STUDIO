@@ -441,7 +441,7 @@ fn contacts_on_parts(out: &mut Out) {
                 continue;
             }
             let Ok(sym) = project.symbol(&f.symbol) else { continue };
-            let numbers: Vec<&str> = sym.connection_points.iter().map(|cp| f.designation(&cp.name)).collect();
+            let numbers: Vec<&str> = sym.connection_points.iter().map(|cp| project.designation(f, &cp.name)).collect();
             let fits = blocks.iter().any(|b| {
                 let b: Vec<&str> = b.iter().map(String::as_str).collect();
                 numbers == b || matches!(b.as_slice(), [c, nc, no] if numbers == [*c, *no] || numbers == [*c, *nc])
@@ -627,14 +627,8 @@ mod tests {
         let k1 = p.function(sample::K1_COIL).unwrap().device;
         assert!(!rules(&check(&p)).iter().any(|r| r.starts_with("contact-not-on-part")), "no blocks, no check");
         p.apply(Command::AddPart(ecad_model::Part {
-            number: "CT-1NO".into(),
-            manufacturer: String::new(),
-            description: String::new(),
-            code: String::new(),
             contacts: vec!["13-14".into()],
-            width: None,
-            height: None,
-            depth: None,
+            ..ecad_model::Part::new("CT-1NO")
         }))
         .unwrap();
         p.apply(Command::SetDeviceParts { id: k1, parts: vec![ecad_model::PartRef::new("CT-1NO", 1)] }).unwrap();
@@ -665,7 +659,7 @@ mod tests {
         );
         assert!(r.iter().any(|r| r == "panel-off-plate L7 X0 sticks out of the plate"), "{r:#?}");
         // The thermostat's part loses its size: its footprint is a guess.
-        let mut tmf = p.parts["TMF"].clone();
+        let mut tmf = p.part_by_number("TMF").unwrap().clone();
         (tmf.width, tmf.height) = (None, None);
         p.apply(Command::UpdatePart(tmf)).unwrap();
         let r = rules(&check(&p));
@@ -695,6 +689,7 @@ mod tests {
         let mut p = sample::with_contacts().unwrap();
         let k1 = DeviceId::from_u128(0x103);
         let f = ecad_model::Function {
+            terminals: Default::default(),
             id: FunctionId::new(),
             device: k1,
             symbol: ecad_model::SymbolId::new("iec.coil"),
@@ -736,6 +731,7 @@ mod tests {
         let mut p = sample::start_circuit().unwrap();
         let l_plus = DeviceId::from_u128(0x101);
         let f = ecad_model::Function {
+            terminals: Default::default(),
             id: FunctionId::new(),
             device: l_plus,
             symbol: ecad_model::SymbolId::new("iec.interruption"),

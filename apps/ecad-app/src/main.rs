@@ -56,7 +56,7 @@ struct App {
     show_project: bool,
     project_fields: ProjectFields,
     /// Edit buffers for catalogue rows: number → (manufacturer, description).
-    part_edits: std::collections::BTreeMap<String, (String, String, String, String, String)>,
+    part_edits: std::collections::BTreeMap<ecad_editor::ProductId, (String, String, String, String, String)>,
     /// The "new part" row: number, manufacturer, description.
     new_part: (String, String, String, String),
     title: String,
@@ -433,7 +433,7 @@ impl App {
                         ui.horizontal(|ui| {
                             let mut q = p.quantity;
                             if ui.add(egui::DragValue::new(&mut q).range(1..=999).suffix("×")).changed() {
-                                events.push(UiEvent::SetDevicePartQuantity { number: p.number.clone(), quantity: q });
+                                events.push(UiEvent::SetDevicePartQuantity { product: p.product, quantity: q });
                             }
                             ui.label(&p.number).on_hover_text(&p.description);
                             if role == "terminal" {
@@ -456,7 +456,7 @@ impl App {
                                         for o in &options {
                                             if ui.selectable_label(*o == p.count, label(o)).clicked() && *o != p.count {
                                                 events.push(UiEvent::SetDevicePartCount {
-                                                    number: p.number.clone(),
+                                                    product: p.product,
                                                     count: o.clone(),
                                                 });
                                             }
@@ -466,7 +466,7 @@ impl App {
                                     .on_hover_text("How the BOM counts this part on the strip: per terminal, once for the strip (end plate, bracket), or per terminal of one kind (feed-through, PE)");
                             }
                             if ui.small_button("✕").on_hover_text("Remove from this device").clicked() {
-                                events.push(UiEvent::RemoveDevicePart { number: p.number.clone() });
+                                events.push(UiEvent::RemoveDevicePart { product: p.product });
                             }
                         });
                     }
@@ -476,7 +476,7 @@ impl App {
                             for part in &frame.parts {
                                 let label = format!("{}  {}", part.number, part.description);
                                 if ui.selectable_label(false, label).clicked() {
-                                    events.push(UiEvent::AddDevicePart { number: part.number.clone() });
+                                    events.push(UiEvent::AddDevicePart { product: part.id });
                                 }
                             }
                             if frame.parts.is_empty() {
@@ -1344,7 +1344,7 @@ impl App {
             });
             ui.separator();
             // Keep edit buffers in step with the catalogue.
-            self.part_edits.retain(|n, _| frame.parts.iter().any(|p| &p.number == n));
+            self.part_edits.retain(|id, _| frame.parts.iter().any(|p| &p.id == id));
             egui::ScrollArea::vertical().max_height(ui.available_height() - 40.0).show(ui, |ui| {
                 egui::Grid::new("parts-grid").striped(true).num_columns(7).show(ui, |ui| {
                     ui.strong("Part number");
@@ -1360,7 +1360,7 @@ impl App {
                     ui.label("");
                     ui.end_row();
                     for part in &frame.parts {
-                        let buf = self.part_edits.entry(part.number.clone()).or_insert_with(|| {
+                        let buf = self.part_edits.entry(part.id).or_insert_with(|| {
                             (
                                 part.manufacturer.clone(),
                                 part.description.clone(),
@@ -1382,30 +1382,26 @@ impl App {
                         {
                             events.push(UiEvent::UpdatePart {
                                 part: ecad_editor::Part {
-                                    number: part.number.clone(),
                                     manufacturer: buf.0.trim().to_owned(),
                                     description: buf.1.trim().to_owned(),
                                     code: buf.2.trim().to_owned(),
-                                    contacts: part.contacts.clone(),
-                                    width: part.width,
-                                    height: part.height,
-                                    depth: part.depth,
+                                    ..part.clone()
                                 },
                             });
                         }
                         if z.lost_focus() && buf.4.trim() != ecad_model_size(part) {
-                            events.push(UiEvent::PartSize { number: part.number.clone(), size: buf.4.clone() });
-                            self.part_edits.remove(&part.number);
+                            events.push(UiEvent::PartSize { product: part.id, size: buf.4.clone() });
+                            self.part_edits.remove(&part.id);
                             ui.end_row();
                             continue;
                         }
                         if k.lost_focus() && buf.3.trim() != part.contacts.join(" ") {
-                            events.push(UiEvent::PartContacts { number: part.number.clone(), contacts: buf.3.clone() });
+                            events.push(UiEvent::PartContacts { product: part.id, contacts: buf.3.clone() });
                             // Show the catalogue's version again (normalised, or unchanged if refused).
-                            self.part_edits.remove(&part.number);
+                            self.part_edits.remove(&part.id);
                         }
                         if ui.small_button("✕").on_hover_text("Remove from the catalogue").clicked() {
-                            events.push(UiEvent::RemovePart { number: part.number.clone() });
+                            events.push(UiEvent::RemovePart { product: part.id });
                         }
                         ui.end_row();
                     }
@@ -1420,15 +1416,13 @@ impl App {
                 ui.add(egui::TextEdit::singleline(c).hint_text("Internal code").desired_width(90.0));
                 if ui.add_enabled(!n.trim().is_empty(), egui::Button::new("Add")).clicked() {
                     events.push(UiEvent::AddPart {
+                        // A new product of its own (D7): another maker may use the same number.
                         part: ecad_editor::Part {
-                            number: n.trim().to_owned(),
+                            id: ecad_editor::ProductId::new(),
                             manufacturer: m.trim().to_owned(),
                             description: d.trim().to_owned(),
                             code: c.trim().to_owned(),
-                            contacts: Vec::new(),
-                            width: None,
-                            height: None,
-                            depth: None,
+                            ..ecad_editor::Part::new(n.trim())
                         },
                     });
                     self.new_part = Default::default();

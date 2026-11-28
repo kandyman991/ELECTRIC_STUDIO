@@ -335,6 +335,7 @@ fn pages_match_the_golden_drawings() {
 
 fn extra_drawing(p: &Project, tag: &str, symbol: &str, page: &str, at: Point) -> Function {
     Function {
+        terminals: Default::default(),
         id: FunctionId::new(),
         device: p.device_by_tag(tag).unwrap().id,
         symbol: SymbolId::new(symbol),
@@ -445,4 +446,61 @@ fn multi_level_terminal_reports_include_every_wired_point() {
         assert_eq!((blue.to_point.as_str(), blue.to_terminal_point.as_str()), (number, "4"));
         assert_eq!((brown.potential.as_str(), blue.potential.as_str()), ("L+", "M"));
     }
+}
+
+// M10: the conveyor as M7 saved it (format 1, `conveyor/format1`, written by `ecad new-sample`
+// at the M7 acceptance commit) converts on load to the same project.
+
+fn format1() -> Project {
+    ecad_project::load(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("conveyor").join("format1")).unwrap()
+}
+
+#[test]
+fn the_format_1_conveyor_converts_to_the_same_project() {
+    let built = conveyor().unwrap();
+    let a = format1();
+    let b = format1();
+    assert_eq!(a, b, "converting twice gives the same project");
+    assert_eq!(a.parts, built.parts, "products keep their ids from their numbers");
+    assert_eq!(a.devices, built.devices);
+    assert_eq!(a.functions, built.functions);
+    assert_eq!(a.connections, built.connections);
+    assert_eq!(a.connectivity(), built.connectivity(), "the same terminals and nodes, same ids");
+    assert_eq!(a.netlist(), built.netlist());
+    let order = |p: &Project| p.pages_in_order().iter().map(|pg| pg.id).collect::<Vec<_>>();
+    assert_eq!(order(&a), order(&built), "pages in the same order, now with sparse keys");
+    assert!(a.pages.values().all(|pg| pg.order % ecad_model::PAGE_STEP == 0));
+    // The same drawings, byte for byte.
+    for page in a.pages_in_order() {
+        assert_eq!(
+            ecad_view::page_dxf(&a, page.id).unwrap(),
+            ecad_view::page_dxf(&built, page.id).unwrap(),
+            "page {}",
+            page.name
+        );
+    }
+    // Saved, it is format 2 and reads back identical.
+    let loaded = save_and_load(&a);
+    assert_eq!(loaded, a);
+    assert_eq!(loaded.content_hash().unwrap(), a.content_hash().unwrap());
+}
+
+#[test]
+fn renumbering_a_terminal_group_changes_its_designation_not_its_ids_or_wires() {
+    let mut p = conveyor().unwrap();
+    let f = drawing(&p, "-X3", ecad_model::conveyor::TWO_LEVEL, Some("1"));
+    let ends = wire_ends(&p);
+    let wires = p.connections.clone();
+    let ids: BTreeMap<String, ecad_model::TerminalId> = p.function(f).unwrap().terminals.clone();
+    let renumber: BTreeMap<String, String> = ids.keys().map(|pt| (pt.clone(), "9".to_owned())).collect();
+    p.apply(Command::SetDesignations { id: f, designations: renumber }).unwrap();
+    assert_eq!(p.drawing_number(f).as_deref(), Some("9"));
+    assert!(ids.values().all(|t| p.terminals[t].designation == "9"), "every level of the group");
+    assert_eq!(p.function(f).unwrap().terminals, ids, "the same terminals");
+    assert_eq!(wire_ends(&p), ends, "every wire ends where it did");
+    assert_eq!(p.connections, wires);
+    // And so after a save and load (terminals.json).
+    let loaded = save_and_load(&p);
+    assert_eq!(loaded.terminals, p.terminals);
+    assert_eq!(wire_ends(&loaded), ends);
 }

@@ -4,6 +4,7 @@
 //!
 //! Every change goes through [`Project::apply`], which returns the command that undoes it.
 
+use crate::connectivity::{GroupId, TerminalId};
 use crate::geometry::{Direction, Point, Rotation};
 use crate::parts::{Part, PartRef};
 use crate::sheet::Sheet;
@@ -11,6 +12,61 @@ use crate::symbol::{ContactKind, IoKind, Role, SymbolDef, SymbolId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uuid::Uuid;
+
+/// The gap between the sort keys of pages added in a row, so a page fits between any two.
+pub const PAGE_STEP: u64 = 1 << 16;
+
+/// Sort keys putting the pages in `order`, changing as few as possible of `old`: the longest run
+/// of pages already in increasing key order keeps its keys, and each other page takes a key
+/// between its neighbours. Only if there is no room between two is every page re-keyed, one
+/// [`PAGE_STEP`] apart.
+pub fn sparse_keys(order: &[PageId], old: &BTreeMap<PageId, u64>) -> BTreeMap<PageId, u64> {
+    let keys: Vec<u64> = order.iter().map(|id| old.get(id).copied().unwrap_or(0)).collect();
+    // Longest strictly increasing subsequence of the keys, O(n log n).
+    let mut tails: Vec<usize> = Vec::new();
+    let mut prev = vec![usize::MAX; keys.len()];
+    for i in 0..keys.len() {
+        let at = tails.partition_point(|&t| keys[t] < keys[i]);
+        if at > 0 {
+            prev[i] = tails[at - 1];
+        }
+        if at == tails.len() {
+            tails.push(i);
+        } else {
+            tails[at] = i;
+        }
+    }
+    let mut keep = vec![false; keys.len()];
+    let mut i = tails.last().copied().unwrap_or(usize::MAX);
+    while i != usize::MAX {
+        keep[i] = true;
+        i = prev[i];
+    }
+    let mut out = BTreeMap::new();
+    let mut lower = 0u64;
+    let mut i = 0;
+    while i < order.len() {
+        if keep[i] {
+            out.insert(order[i], keys[i]);
+            lower = keys[i];
+            i += 1;
+            continue;
+        }
+        // A run of pages to place between `lower` and the next kept key.
+        let end = (i..order.len()).find(|&j| keep[j]).unwrap_or(order.len());
+        let upper = if end < order.len() { keys[end] } else { lower.saturating_add(PAGE_STEP * (end - i + 1) as u64) };
+        let gap = upper.saturating_sub(lower) / (end - i + 1) as u64;
+        if gap == 0 {
+            return order.iter().enumerate().map(|(n, id)| (*id, PAGE_STEP * (n as u64 + 1))).collect();
+        }
+        for (n, id) in order[i..end].iter().enumerate() {
+            out.insert(*id, lower + gap * (n as u64 + 1));
+        }
+        lower += gap * (end - i) as u64;
+        i = end;
+    }
+    out
+}
 
 macro_rules! id_type {
     ($(#[$doc:meta])* $name:ident) => {
@@ -48,6 +104,22 @@ id_type!(
     FunctionId
 );
 id_type!(ConnectionId);
+id_type!(
+    /// A product in the project's catalogue (D7). Its manufacturer and order number are
+    /// properties: two makers' products with the same number are two products.
+    ProductId
+);
+
+/// The namespace of ids derived from legacy data (format 1 products, D7).
+const LEGACY: Uuid = Uuid::from_u128(0x6563_6164_2d6c_6567_6163_792d_6964_7300);
+
+impl ProductId {
+    /// The id a product numbered `number` gets when a format 1 project (where numbers were
+    /// unique) is read, and in the built-in samples: the same on every conversion.
+    pub fn for_number(number: &str) -> Self {
+        ProductId(Uuid::new_v5(&LEGACY, format!("product/{}", number.trim()).as_bytes()))
+    }
+}
 id_type!(CableId);
 id_type!(BoxId);
 id_type!(
@@ -68,11 +140,11 @@ pub struct Page {
     pub subtitle: String,
     /// Position in the project; pages are shown sorted by it.
     #[serde(default)]
-    pub order: u32,
+    pub order: u64,
 }
 
 impl Page {
-    pub fn new(name: &str, order: u32) -> Self {
+    pub fn new(name: &str, order: u64) -> Self {
         Page { id: PageId::new(), name: name.to_owned(), description: String::new(), subtitle: String::new(), order }
     }
 }
@@ -108,14 +180,37 @@ pub struct Function {
     /// a horizontal line.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mirrored: bool,
-    /// Terminal designations shown for this drawing, by connection-point name, where they
-    /// differ from the symbol's: a device's second NO contact shows `23`/`24` for the
-    /// symbol's `13`/`14`.
+    /// Designations for the terminals this drawing creates, by connection-point name, where
+    /// they differ from the symbol's: a device's second NO contact gets `23`/`24` for the
+    /// symbol's `13`/`14`. Read by [`Command::Place`], which moves them onto the terminals and
+    /// leaves this empty: a placed drawing's designations are its terminals'
+    /// ([`Project::designation`]). Format 1 page files store them here.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub designations: BTreeMap<String, String>,
+    /// The terminal each connection point shows (D2), for drawings of physical connection
+    /// points. [`Command::Place`] fills in the points not given, with new terminals; a point
+    /// given an existing terminal of the same device shows that one (a repeated drawing).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub terminals: BTreeMap<String, TerminalId>,
     /// Extra fields some drawings carry, e.g. a PLC channel's `address`, `symbol`, `comment`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub properties: BTreeMap<String, String>,
+}
+
+/// A physical connection point of a device (D2), persistent from format 2 on: its id never
+/// changes when it is renumbered, redrawn or drawn more than once.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalEntry {
+    pub id: TerminalId,
+    pub device: DeviceId,
+    /// The physical terminal it belongs to (a strip terminal's sides and levels share one).
+    pub group: GroupId,
+    /// The point within the group (a strip terminal's side or level); empty for an ordinary
+    /// device terminal.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub point: String,
+    /// The printed designation, an editable property: `A1`, `13`, a strip terminal's `3`.
+    pub designation: String,
 }
 
 /// Property keys of a PLC channel.
@@ -127,11 +222,6 @@ impl Function {
     /// A property's value, or `""`.
     pub fn property(&self, key: &str) -> &str {
         self.properties.get(key).map_or("", String::as_str)
-    }
-
-    /// The designation shown for one of this function's connection points.
-    pub fn designation<'a>(&'a self, point: &'a str) -> &'a str {
-        self.designations.get(point).map_or(point, String::as_str)
     }
 
     /// A symbol-local point in page coordinates.
@@ -360,14 +450,26 @@ pub enum Command {
         page: PageId,
         underlay: Option<Box<crate::underlay::Underlay>>,
     },
-    /// Put the pages in this order (every page, once).
+    /// Put the pages in this order (every page, once). Only the pages that move get a new
+    /// sort key; the others keep theirs (sparse keys, so a page fits between two).
     ReorderPages(Vec<PageId>),
-    /// Make a function part of another device, with the designations it gets there.
+    /// Give these pages these exact sort keys, leaving the others': how a reorder is undone.
+    SetPageKeys(BTreeMap<PageId, u64>),
+    /// Show another device's terminals with this drawing (D2): its points get terminals of
+    /// `device`, with these designations, and its wires go with them: a rewiring. The
+    /// terminals only this drawing showed are removed. `terminals`: the ids to use, by point
+    /// (how a reassign is undone); empty for new ones.
     Reassign {
         id: FunctionId,
         device: DeviceId,
         designations: BTreeMap<String, String>,
+        #[serde(default)]
+        terminals: BTreeMap<String, TerminalId>,
     },
+    /// A terminal, drawn or not yet (format 2 files list them before the drawings).
+    AddTerminal(TerminalEntry),
+    /// Remove a terminal no drawing shows.
+    RemoveTerminal(TerminalId),
     /// Draw a location box (at least 4 mm each way).
     /// Make a page a layout page with this mounting plate (`None`: an ordinary page again).
     SetPanel {
@@ -406,7 +508,7 @@ pub enum Command {
     /// Replace a catalogue entry with the same number.
     UpdatePart(Part),
     /// Remove a catalogue entry no device uses.
-    RemovePart(String),
+    RemovePart(ProductId),
     /// Set the parts a device is built from.
     SetDeviceParts {
         id: DeviceId,
@@ -476,8 +578,16 @@ pub enum ModelError {
     UnknownTag(String),
     #[error("there is no cable `{0}`")]
     UnknownCable(String),
+    #[error("terminal {0} is not in the project")]
+    NoTerminal(Uuid),
+    #[error("terminal {0} is shown by a drawing")]
+    TerminalInUse(Uuid),
+    #[error("a drawing can only show its own device's terminals")]
+    TerminalOfOtherDevice,
     #[error("part `{0}` is already in the catalogue")]
     DuplicatePart(String),
+    #[error("more than one manufacturer makes a part numbered `{0}`; say which")]
+    AmbiguousPart(String),
     #[error("part `{0}` is not in the catalogue")]
     UnknownPart(String),
     #[error("part `{0}` is used by {1}")]
@@ -551,9 +661,12 @@ pub struct Project {
     /// The sheet every page is drawn on.
     #[serde(default)]
     pub sheet: Sheet,
-    /// The parts catalogue, by part number.
+    /// The physical connection points of the devices (D2), by id.
     #[serde(default)]
-    pub parts: BTreeMap<String, Part>,
+    pub terminals: BTreeMap<TerminalId, TerminalEntry>,
+    /// The parts catalogue (the project's products), by product id.
+    #[serde(default)]
+    pub parts: BTreeMap<ProductId, Part>,
     /// What the title block shows besides the project name.
     #[serde(default)]
     pub info: ProjectInfo,
@@ -667,7 +780,7 @@ impl Project {
     /// `(device tag, point)` for display and reports.
     pub fn describe(&self, r: &ConnectionRef) -> Result<(String, String)> {
         let f = self.function(r.function)?;
-        Ok((self.device(f.device)?.tag.clone(), f.designation(&r.point).to_owned()))
+        Ok((self.device(f.device)?.tag.clone(), self.designation(f, &r.point).to_owned()))
     }
 
     // ---- cross-references ----
@@ -700,7 +813,7 @@ impl Project {
             .filter_map(|f| {
                 let sym = self.symbol(&f.symbol).ok()?;
                 let Role::Contact { kind } = sym.role else { return None };
-                let names: Vec<&str> = sym.connection_points.iter().map(|cp| f.designation(&cp.name)).collect();
+                let names: Vec<&str> = sym.connection_points.iter().map(|cp| self.designation(f, &cp.name)).collect();
                 let (poles, terminals) = if let (ContactKind::Changeover, [common, nc, no]) = (kind, names.as_slice()) {
                     // One row, read `11 12/14`: the common, then the closed and open sides.
                     (vec![(format!("{nc}/{no}"), (*common).to_owned())], format!("{common}-{nc}-{no}"))
@@ -737,7 +850,7 @@ impl Project {
         let Ok(d) = self.device(device) else { return Vec::new() };
         let mut out = Vec::new();
         for r in &d.parts {
-            let Some(part) = self.parts.get(&r.number) else { continue };
+            let Some(part) = self.parts.get(&r.product) else { continue };
             for copy in 0..r.quantity.max(1) {
                 for block in &part.contacts {
                     let points = crate::parts::block_points(block);
@@ -767,7 +880,7 @@ impl Project {
             .filter(|f| matches!(self.role(f.id), Ok(Role::Contact { .. })))
             .filter_map(|f| {
                 let sym = self.symbol(&f.symbol).ok()?;
-                Some(sym.connection_points.iter().map(|cp| f.designation(&cp.name).to_owned()).collect())
+                Some(sym.connection_points.iter().map(|cp| self.designation(f, &cp.name).to_owned()).collect())
             })
             .collect();
         let taken = |numbers: &[&String]| drawn.iter().any(|d| d.iter().eq(numbers.iter().copied()));
@@ -838,11 +951,100 @@ impl Project {
             .collect()
     }
 
+    /// The designation a drawing shows for one of its connection points: its terminal's, or
+    /// the point's own name (node drawings, a point without a terminal).
+    pub fn designation<'a>(&'a self, f: &'a Function, point: &'a str) -> &'a str {
+        f.terminals.get(point).and_then(|t| self.terminals.get(t)).map_or(point, |t| t.designation.as_str())
+    }
+
+    /// The designations a drawing shows that differ from its symbol's point names.
+    pub fn designations_of(&self, f: &Function) -> BTreeMap<String, String> {
+        f.terminals
+            .iter()
+            .filter_map(|(point, t)| self.terminals.get(t).map(|t| (point, &t.designation)))
+            .filter(|(point, d)| *point != *d)
+            .map(|(point, d)| (point.clone(), d.clone()))
+            .collect()
+    }
+
+    /// Insert a drawing, giving each of its physical connection points a terminal: the one it
+    /// names, if it exists (it must be the drawing's device's), or a new one with the id it
+    /// names or the drawing's default id, and the designation `f.designations` gives it (else
+    /// the point's name). Returns the terminals created. Nothing changes on error.
+    fn attach_terminals(&mut self, mut f: Function) -> Result<Vec<TerminalId>> {
+        let sym = self.symbol(&f.symbol)?.clone();
+        let mut created = Vec::new();
+        let mut new_entries = Vec::new();
+        if crate::connectivity::bears_terminals(&sym) {
+            let numbered = sym.role.numbered();
+            for cp in &sym.connection_points {
+                let id = f
+                    .terminals
+                    .get(&cp.name)
+                    .copied()
+                    .unwrap_or_else(|| crate::connectivity::default_terminal(f.id, &cp.name));
+                match self.terminals.get(&id) {
+                    Some(t) if t.device != f.device => return Err(ModelError::TerminalOfOtherDevice),
+                    Some(_) => {}
+                    None if new_entries.iter().any(|t: &TerminalEntry| t.id == id) => {}
+                    None => {
+                        let designation = f.designations.get(&cp.name).cloned().unwrap_or_else(|| cp.name.clone());
+                        let (group, point) = crate::connectivity::default_group(f.id, id, &cp.name, numbered);
+                        new_entries.push(TerminalEntry { id, device: f.device, group, point, designation });
+                    }
+                }
+                f.terminals.insert(cp.name.clone(), id);
+            }
+        }
+        for t in new_entries {
+            created.push(t.id);
+            self.terminals.insert(t.id, t);
+        }
+        f.designations.clear();
+        self.functions.insert(f.id, f);
+        Ok(created)
+    }
+
+    /// Take a drawing out, removing the terminals only it showed. Returns the drawing as it
+    /// would be placed again: its terminal ids and their designations.
+    fn detach_terminals(&mut self, id: FunctionId) -> Result<Function> {
+        let mut f = self.functions.remove(&id).ok_or(ModelError::NoFunction(id))?;
+        f.designations = self.designations_of(&f);
+        for t in f.terminals.values() {
+            let shown = self.functions.values().any(|g| g.terminals.values().any(|u| u == t));
+            if !shown {
+                self.terminals.remove(t);
+            }
+        }
+        Ok(f)
+    }
+
+    /// A drawing and the terminals it shows, to put back exactly if a change fails.
+    fn clone_drawing_state(&self, id: FunctionId) -> Result<(Function, Vec<TerminalEntry>)> {
+        let f = self.function(id)?.clone();
+        let terminals = f.terminals.values().filter_map(|t| self.terminals.get(t).cloned()).collect();
+        Ok((f, terminals))
+    }
+
+    fn restore_drawing_state(&mut self, id: FunctionId, (f, terminals): (Function, Vec<TerminalEntry>)) {
+        if let Some(now) = self.functions.remove(&id) {
+            for t in now.terminals.values() {
+                if !self.functions.values().any(|g| g.terminals.values().any(|u| u == t)) {
+                    self.terminals.remove(t);
+                }
+            }
+        }
+        for t in terminals {
+            self.terminals.insert(t.id, t);
+        }
+        self.functions.insert(id, f);
+    }
+
     /// The number of a terminal or PLC channel: the designation of its first connection point.
     pub fn drawing_number(&self, f: FunctionId) -> Option<String> {
         let f = self.function(f).ok()?;
         let sym = self.symbol(&f.symbol).ok()?;
-        sym.role.numbered().then(|| sym.connection_points.first().map(|cp| f.designation(&cp.name).to_owned()))?
+        sym.role.numbered().then(|| sym.connection_points.first().map(|cp| self.designation(f, &cp.name).to_owned()))?
     }
 
     /// A terminal's number.
@@ -1007,9 +1209,12 @@ impl Project {
                 self.device(f.device)?;
                 self.symbol(&f.symbol)?;
                 let id = f.id;
-                self.functions.insert(id, f);
+                let created = self.attach_terminals(f)?;
                 if let Err(e) = self.check_terminal(id).and_then(|()| self.check_plc(id)) {
                     self.functions.remove(&id);
+                    for t in created {
+                        self.terminals.remove(&t);
+                    }
                     return Err(e);
                 }
                 Ok(Command::Unplace(id))
@@ -1028,7 +1233,7 @@ impl Project {
                         undo.push(Command::Connect(c));
                     }
                 }
-                let f = self.functions.remove(&id).ok_or(ModelError::NoFunction(id))?;
+                let f = self.detach_terminals(id)?;
                 undo.insert(0, Command::Place(f));
                 Ok(Command::Batch(undo))
             }
@@ -1144,29 +1349,73 @@ impl Project {
                 if sorted.len() != order.len() || sorted != self.pages.keys().copied().collect::<Vec<_>>() {
                     return Err(ModelError::BadPageOrder);
                 }
-                let old: Vec<PageId> = self.pages_in_order().iter().map(|p| p.id).collect();
-                for (i, id) in order.iter().enumerate() {
-                    if let Some(p) = self.pages.get_mut(id) {
-                        p.order = i as u32;
+                let old: BTreeMap<PageId, u64> = self.pages.values().map(|p| (p.id, p.order)).collect();
+                for (id, key) in sparse_keys(&order, &old) {
+                    if let Some(p) = self.pages.get_mut(&id) {
+                        p.order = key;
                     }
                 }
-                Ok(Command::ReorderPages(old))
+                Ok(Command::SetPageKeys(old))
             }
-            Command::Reassign { id, device, designations } => {
+            Command::SetPageKeys(keys) => {
+                if let Some(id) = keys.keys().find(|id| !self.pages.contains_key(id)) {
+                    return Err(ModelError::NoPage(*id));
+                }
+                let old: BTreeMap<PageId, u64> =
+                    keys.keys().filter_map(|id| self.pages.get(id).map(|p| (*id, p.order))).collect();
+                for (id, key) in keys {
+                    if let Some(p) = self.pages.get_mut(&id) {
+                        p.order = key;
+                    }
+                }
+                Ok(Command::SetPageKeys(old))
+            }
+            Command::Reassign { id, device, designations, terminals } => {
                 self.device(device)?;
-                let f = self.functions.get_mut(&id).ok_or(ModelError::NoFunction(id))?;
-                let old_device = std::mem::replace(&mut f.device, device);
-                let old_designations = std::mem::replace(&mut f.designations, designations);
+                let before = self.clone_drawing_state(id)?;
+                let old = self.detach_terminals(id)?;
+                let old_device = old.device;
+                let old_designations = old.designations.clone();
+                let old_terminals = old.terminals.clone();
+                let mut moved = Function { device, designations, terminals, ..old };
+                for (point, t) in &old_terminals {
+                    moved.terminals.entry(point.clone()).or_insert_with(|| {
+                        // A new connection point of the other device, the same on every run.
+                        TerminalId(Uuid::new_v5(&t.0, device.0.as_bytes()))
+                    });
+                }
                 // The same rules as placing it there: no second terminal or channel with its
                 // number, no PLC address used twice.
-                if let Err(e) = self.check_terminal(id).and_then(|()| self.check_plc(id)) {
-                    if let Some(f) = self.functions.get_mut(&id) {
-                        f.device = old_device;
-                        f.designations = old_designations;
-                    }
+                let placed = self
+                    .attach_terminals(moved)
+                    .and_then(|_| self.check_terminal(id))
+                    .and_then(|()| self.check_plc(id));
+                if let Err(e) = placed {
+                    self.restore_drawing_state(id, before);
                     return Err(e);
                 }
-                Ok(Command::Reassign { id, device: old_device, designations: old_designations })
+                Ok(Command::Reassign {
+                    id,
+                    device: old_device,
+                    designations: old_designations,
+                    terminals: old_terminals,
+                })
+            }
+            Command::AddTerminal(t) => {
+                if self.terminals.contains_key(&t.id) {
+                    return Err(ModelError::DuplicateId(t.id.0));
+                }
+                self.device(t.device)?;
+                let id = t.id;
+                self.terminals.insert(id, t);
+                Ok(Command::RemoveTerminal(id))
+            }
+            Command::RemoveTerminal(id) => {
+                if self.functions.values().any(|f| f.terminals.values().any(|t| *t == id)) {
+                    return Err(ModelError::TerminalInUse(id.0));
+                }
+                let t = self.terminals.remove(&id).ok_or(ModelError::NoTerminal(id.0))?;
+                Ok(Command::AddTerminal(t))
             }
             Command::SetUnderlay { page, underlay } => {
                 self.page(page)?;
@@ -1295,37 +1544,30 @@ impl Project {
                 Ok(Command::AddSymbol(symbol))
             }
             Command::AddPart(part) => {
-                finite(&part)?;
-                let part = Part { number: part.number.trim().to_owned(), ..part };
-                if part.number.is_empty() {
-                    return Err(ModelError::EmptyPartNumber);
-                }
-                if self.parts.contains_key(&part.number) {
-                    return Err(ModelError::DuplicatePart(part.number));
-                }
-                let number = part.number.clone();
-                self.parts.insert(number.clone(), part);
-                Ok(Command::RemovePart(number))
+                let part = self.check_part(part, true)?;
+                let id = part.id;
+                self.parts.insert(id, part);
+                Ok(Command::RemovePart(id))
             }
             Command::UpdatePart(part) => {
-                finite(&part)?;
-                let slot =
-                    self.parts.get_mut(&part.number).ok_or_else(|| ModelError::UnknownPart(part.number.clone()))?;
+                let part = self.check_part(part, false)?;
+                let slot = self.parts.get_mut(&part.id).ok_or_else(|| ModelError::UnknownPart(part.number.clone()))?;
                 let old = std::mem::replace(slot, part);
                 Ok(Command::UpdatePart(old))
             }
-            Command::RemovePart(number) => {
+            Command::RemovePart(id) => {
+                let name = self.parts.get(&id).map_or_else(|| id.0.to_string(), Part::label);
                 let mut users: Vec<&str> = self
                     .devices
                     .values()
-                    .filter(|d| d.parts.iter().any(|p| p.number == number))
+                    .filter(|d| d.parts.iter().any(|p| p.product == id))
                     .map(|d| d.tag.as_str())
                     .collect();
                 if !users.is_empty() {
                     users.sort();
-                    return Err(ModelError::PartInUse(number, users.join(", ")));
+                    return Err(ModelError::PartInUse(name, users.join(", ")));
                 }
-                let part = self.parts.remove(&number).ok_or(ModelError::UnknownPart(number))?;
+                let part = self.parts.remove(&id).ok_or(ModelError::UnknownPart(name))?;
                 Ok(Command::AddPart(part))
             }
             Command::SetDeviceParts { id, parts } => {
@@ -1351,15 +1593,35 @@ impl Project {
                 Ok(Command::SetProperties { id, properties: old })
             }
             Command::SetDesignations { id, designations } => {
-                let f = self.functions.get_mut(&id).ok_or(ModelError::NoFunction(id))?;
-                let old = std::mem::replace(&mut f.designations, designations);
+                // The designations are the drawing's terminals': renumbering changes no id
+                // and no wire.
+                let f = self.function(id)?.clone();
+                let mut old = BTreeMap::new();
+                for (point, t) in &f.terminals {
+                    let Some(entry) = self.terminals.get_mut(t) else { continue };
+                    let new = designations.get(point).cloned().unwrap_or_else(|| point.clone());
+                    if new != entry.designation {
+                        old.insert(point.clone(), std::mem::replace(&mut entry.designation, new));
+                    }
+                }
+                // Points the map leaves out show the symbol's name again; undo restores exactly.
+                let undo: BTreeMap<String, String> = f
+                    .terminals
+                    .iter()
+                    .filter_map(|(point, t)| {
+                        let now = self.terminals.get(t)?.designation.clone();
+                        Some((point.clone(), old.get(point).cloned().unwrap_or(now)))
+                    })
+                    .collect();
                 if let Err(e) = self.check_terminal(id) {
-                    if let Some(f) = self.functions.get_mut(&id) {
-                        f.designations = old;
+                    for (point, d) in old {
+                        if let Some(entry) = f.terminals.get(&point).and_then(|t| self.terminals.get_mut(t)) {
+                            entry.designation = d;
+                        }
                     }
                     return Err(e);
                 }
-                Ok(Command::SetDesignations { id, designations: old })
+                Ok(Command::SetDesignations { id, designations: undo })
             }
             Command::Batch(cmds) => {
                 let mut undo = Vec::with_capacity(cmds.len());
@@ -1398,9 +1660,13 @@ impl Project {
             return Err(ModelError::EmptyNumber);
         }
         let device = self.function(f)?.device;
-        let taken = self
-            .functions_of(device)
-            .any(|g| g.id != f && self.drawing_number(g.id).as_deref() == Some(number.as_str()));
+        let mine: Vec<TerminalId> = self.function(f)?.terminals.values().copied().collect();
+        // Another drawing of the same terminal (a repeated representation) is no second one.
+        let taken = self.functions_of(device).any(|g| {
+            g.id != f
+                && !g.terminals.values().any(|t| mine.contains(t))
+                && self.drawing_number(g.id).as_deref() == Some(number.as_str())
+        });
         if taken {
             return Err(ModelError::DuplicateNumber(self.device(device)?.tag.clone(), number));
         }
@@ -1441,10 +1707,45 @@ impl Project {
         Ok(())
     }
 
+    /// A product as it may enter the catalogue: a non-empty number (trimmed), finite sizes, and
+    /// no other product with the same manufacturer and number (the same number from two makers
+    /// is fine). `new`: the id must be free; otherwise it must exist.
+    fn check_part(&self, part: Part, new: bool) -> Result<Part> {
+        finite(&part)?;
+        let part =
+            Part { number: part.number.trim().to_owned(), manufacturer: part.manufacturer.trim().to_owned(), ..part };
+        if part.number.is_empty() {
+            return Err(ModelError::EmptyPartNumber);
+        }
+        if new && self.parts.contains_key(&part.id) {
+            return Err(ModelError::DuplicateId(part.id.0));
+        }
+        let key = part.key();
+        if self.parts.values().any(|other| other.id != part.id && other.key() == key) {
+            return Err(ModelError::DuplicatePart(part.label()));
+        }
+        Ok(part)
+    }
+
+    /// The products numbered `number` (trimmed), by any manufacturer.
+    pub fn parts_numbered(&self, number: &str) -> Vec<&Part> {
+        let number = number.trim();
+        self.parts.values().filter(|p| p.number == number).collect()
+    }
+
+    /// The one product numbered `number`: an error if there is none, or more than one maker's.
+    pub fn part_by_number(&self, number: &str) -> Result<&Part> {
+        match self.parts_numbered(number).as_slice() {
+            [one] => Ok(one),
+            [] => Err(ModelError::UnknownPart(number.trim().to_owned())),
+            _ => Err(ModelError::AmbiguousPart(number.trim().to_owned())),
+        }
+    }
+
     fn check_part_refs(&self, parts: &[PartRef]) -> Result<()> {
         for p in parts {
-            if !self.parts.contains_key(&p.number) {
-                return Err(ModelError::UnknownPart(p.number.clone()));
+            if !self.parts.contains_key(&p.product) {
+                return Err(ModelError::UnknownPart(p.product.0.to_string()));
             }
             if p.quantity == 0 {
                 return Err(ModelError::ZeroQuantity);
@@ -1656,7 +1957,7 @@ impl Project {
             .collect();
         let pe_point = |r: &ConnectionRef| {
             let Ok(f) = self.function(r.function) else { return false };
-            let d = f.designation(&r.point).to_ascii_uppercase();
+            let d = self.designation(f, &r.point).to_ascii_uppercase();
             d.strip_prefix("PE").is_some_and(|rest| rest.chars().all(|ch| ch == '\'' || ch.is_ascii_digit()))
         };
         for c in self.connections.values() {
@@ -1765,4 +2066,56 @@ fn simplify(points: Vec<Point>) -> Vec<Point> {
         out.push(p);
     }
     out
+}
+
+#[cfg(test)]
+mod page_key_tests {
+    use super::*;
+
+    fn ids(n: u128) -> Vec<PageId> {
+        (1..=n).map(PageId::from_u128).collect()
+    }
+
+    #[test]
+    fn moving_one_page_changes_only_its_key() {
+        let pages = ids(5);
+        let old: BTreeMap<PageId, u64> =
+            pages.iter().enumerate().map(|(i, p)| (*p, PAGE_STEP * (i as u64 + 1))).collect();
+        // Page 5 moved between 1 and 2.
+        let order = vec![pages[0], pages[4], pages[1], pages[2], pages[3]];
+        let new = sparse_keys(&order, &old);
+        let changed: Vec<_> = pages.iter().filter(|p| new[p] != old[p]).collect();
+        assert_eq!(changed, [&pages[4]]);
+        let mut sorted = order.clone();
+        sorted.sort_by_key(|p| new[p]);
+        assert_eq!(sorted, order);
+    }
+
+    #[test]
+    fn without_room_every_page_is_rekeyed_in_order() {
+        let pages = ids(3);
+        let old: BTreeMap<PageId, u64> = [(pages[0], 1), (pages[1], 2), (pages[2], 3)].into();
+        let order = vec![pages[0], pages[2], pages[1]];
+        let new = sparse_keys(&order, &old);
+        let mut sorted = order.clone();
+        sorted.sort_by_key(|p| new[p]);
+        assert_eq!(sorted, order);
+    }
+
+    #[test]
+    fn a_reorder_undoes_to_the_exact_keys() {
+        let mut p = Project::new("t");
+        for (i, name) in ["1", "2", "3"].iter().enumerate() {
+            p.add_page(Page { id: PageId::from_u128(i as u128 + 1), ..Page::new(name, PAGE_STEP * (i as u64 + 1)) });
+        }
+        let before = p.clone();
+        let order = vec![PageId::from_u128(3), PageId::from_u128(1), PageId::from_u128(2)];
+        let undo = p.apply(Command::ReorderPages(order.clone())).unwrap();
+        assert_eq!(p.pages_in_order().iter().map(|pg| pg.id).collect::<Vec<_>>(), order);
+        assert_eq!(p.pages[&PageId::from_u128(1)].order, PAGE_STEP, "unmoved pages keep their keys");
+        p.apply(undo).unwrap();
+        assert_eq!(p, before);
+        let unknown: BTreeMap<PageId, u64> = [(PageId::from_u128(9), 1)].into();
+        assert_eq!(p.apply(Command::SetPageKeys(unknown)).unwrap_err(), ModelError::NoPage(PageId::from_u128(9)));
+    }
 }

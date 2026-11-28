@@ -150,6 +150,10 @@ fn names_in(dir: &Path) -> Result<Vec<String>> {
 
 /// The project's files, by path inside the folder: the `.json` files at the top and in
 /// `pages/` and `symbols/` (not hidden ones like the journal).
+/// Top-level files of earlier formats that a save of this format replaces, and so removes:
+/// format 1's `parts.json` (now `products.json`).
+pub const RETIRED: [&str; 1] = ["parts.json"];
+
 pub fn project_files(dir: &Path) -> Result<Vec<String>> {
     let mut out = Vec::new();
     for sub in std::iter::once("").chain(SUBDIRS) {
@@ -190,7 +194,10 @@ pub(crate) fn commit(dir: &Path, files: &[(String, Vec<u8>)]) -> Result<()> {
     let keep: std::collections::BTreeSet<&str> = files.iter().map(|(n, _)| n.as_str()).collect();
     let delete: Vec<String> = project_files(dir)?
         .into_iter()
-        .filter(|n| SUBDIRS.iter().any(|s| n.starts_with(&format!("{s}/"))) && !keep.contains(n.as_str()))
+        .filter(|n| {
+            (SUBDIRS.iter().any(|s| n.starts_with(&format!("{s}/"))) || RETIRED.contains(&n.as_str()))
+                && !keep.contains(n.as_str())
+        })
         .collect();
     // Unchanged files needn't move: fewer steps, and the same revision either way.
     let mut replace = Vec::new();

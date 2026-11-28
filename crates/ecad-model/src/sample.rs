@@ -36,6 +36,7 @@ pub fn start_circuit() -> Result<Project> {
     for (dev, tag, desc, sym, fun, (x, y), rotation) in devices {
         let device = p.add_device(Device::new(DeviceId::from_u128(dev), tag, desc))?;
         p.place(Function {
+            terminals: Default::default(),
             id: FunctionId::from_u128(fun),
             device,
             symbol: SymbolId::new(sym),
@@ -77,14 +78,9 @@ pub fn start_circuit() -> Result<Project> {
 /// A small made-up catalogue for the samples (not real order numbers).
 pub fn catalogue() -> Vec<Part> {
     let part = |number: &str, description: &str| Part {
-        number: number.into(),
         manufacturer: "Example".into(),
         description: description.into(),
-        code: String::new(),
-        contacts: Vec::new(),
-        width: None,
-        height: None,
-        depth: None,
+        ..Part::new(number)
     };
     vec![
         part("EX-CT-24DC", "Contactor 3 kW, 24 V DC coil, 1 NO auxiliary"),
@@ -115,6 +111,7 @@ pub fn with_contacts() -> Result<Project> {
         let symbol = SymbolId::new(symbol);
         let designations = p.next_designations(k1, &symbol);
         p.place(Function {
+            terminals: Default::default(),
             id,
             device: k1,
             symbol,
@@ -145,6 +142,7 @@ pub fn with_potentials() -> Result<Project> {
             p.add_device(Device::new(device, tag, ""))?;
         }
         p.place(Function {
+            terminals: Default::default(),
             id: fid(f),
             device,
             symbol: SymbolId::new(sym),
@@ -196,20 +194,16 @@ pub fn with_terminals() -> Result<Project> {
     let mut p = with_potentials()?;
     let strip = DeviceId::from_u128(0x10a);
     p.apply(Command::AddPart(Part {
-        number: "EX-TB-4".into(),
         manufacturer: "Example".into(),
         description: "Feed-through terminal 4 mm²".into(),
-        code: String::new(),
-        contacts: Vec::new(),
-        width: None,
-        height: None,
-        depth: None,
+        ..Part::new("EX-TB-4")
     }))?;
     p.add_device(Device { parts: vec![PartRef::new("EX-TB-4", 1)], ..Device::new(strip, "-X2", "Field connections") })?;
     let symbol = SymbolId::new("iec.terminal");
     for (id, y) in [(X2_1, 56.0), (X2_2, 26.0)] {
         let designations = p.next_designations(strip, &symbol);
         p.place(Function {
+            terminals: Default::default(),
             id,
             device: strip,
             symbol: symbol.clone(),
@@ -289,6 +283,7 @@ pub fn with_plc() -> Result<Project> {
         let designations = p.next_designations(dev, &symbol);
         let properties = p.new_drawing_properties(&symbol);
         p.place(Function {
+            terminals: Default::default(),
             id: f,
             device: dev,
             symbol,
@@ -371,6 +366,7 @@ pub fn with_power() -> Result<Project> {
         let symbol = SymbolId::new(sym);
         let designations = p.next_designations(dev, &symbol);
         p.place(Function {
+            terminals: Default::default(),
             id: fid(f),
             device: dev,
             symbol,
@@ -491,7 +487,7 @@ pub fn library_overview() -> Result<Project> {
             name: n.to_string(),
             description: title.into(),
             subtitle: String::new(),
-            order: n,
+            order: n.into(),
         }))?;
         Ok(id)
     };
@@ -521,6 +517,7 @@ pub fn library_overview() -> Result<Project> {
             p.add_device(Device::new(device, &tag, ""))?;
             let designations = p.next_designations(device, &id);
             p.place(Function {
+                terminals: Default::default(),
                 id: FunctionId::from_u128(next_id),
                 device,
                 symbol: id.clone(),

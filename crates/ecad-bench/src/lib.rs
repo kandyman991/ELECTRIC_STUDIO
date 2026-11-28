@@ -141,7 +141,7 @@ fn copy_commands(base: &Project, k: usize) -> Result<Vec<Command>> {
         let mut page = page.clone();
         page.id = page_id(page.id);
         page.name = format!("{}.{}", k + 1, page.name);
-        page.order += k32 * pages_per_copy;
+        page.order += u64::from(k32 * pages_per_copy) * ecad_model::PAGE_STEP;
         out.push(Command::AddPage(page));
     }
     for d in base.devices.values() {
@@ -155,6 +155,9 @@ fn copy_commands(base: &Project, k: usize) -> Result<Vec<Command>> {
         f.id = FunctionId(remap(k, f.id.0));
         f.device = device_id(f.device);
         f.page = page_id(f.page);
+        // New terminals for the copy, with the same designations.
+        f.designations = base.designations_of(&f);
+        f.terminals.clear();
         if let Some(a) = f.properties.get_mut(ADDRESS) {
             *a = shift_address(a, 2 * k32);
         }
