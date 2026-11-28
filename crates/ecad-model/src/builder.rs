@@ -217,7 +217,14 @@ impl Builder {
     ) -> Result<ConnectionId> {
         let id = ConnectionId::from_u128(self.id());
         let (from, to) = (self.pin(a.0, a.1)?, self.pin(b.0, b.1)?);
-        self.apply(Command::Connect(Connection { bend: None, id, from, to, wire_number: number.map(str::to_owned), spec }))?;
+        self.apply(Command::Connect(Connection {
+            bend: None,
+            id,
+            from,
+            to,
+            wire_number: number.map(str::to_owned),
+            spec,
+        }))?;
         Ok(id)
     }
 

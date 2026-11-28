@@ -395,9 +395,26 @@ pub fn compare(before: &Project, after: &Project, progress: &dyn Progress) -> Re
         }
     }
     let pids: BTreeSet<_> = before.pages.keys().chain(after.pages.keys()).copied().collect();
+    let global_drawing_change = before.sheet != after.sheet || before.name != after.name || before.info != after.info;
     for id in pids {
-        if before.pages.get(&id) != after.pages.get(&id) {
+        if global_drawing_change
+            || before.pages.get(&id) != after.pages.get(&id)
+            || before.panels.get(&id) != after.panels.get(&id)
+        {
             pages.insert(id);
+        }
+    }
+    for (id, item) in before.panel_items.iter().chain(&after.panel_items) {
+        if before.panel_items.get(id) != after.panel_items.get(id) {
+            pages.insert(item.page);
+            if let ecad_model::PanelItemKind::Device { device } = item.kind {
+                changed_devices.insert(device);
+            }
+        }
+    }
+    for (id, location) in before.boxes.iter().chain(&after.boxes) {
+        if before.boxes.get(id) != after.boxes.get(id) {
+            pages.insert(location.page);
         }
     }
     let mut names: Vec<String> = pages
@@ -413,10 +430,14 @@ pub fn compare(before: &Project, after: &Project, progress: &dyn Progress) -> Re
         ("bridges", before.bridges != after.bridges),
         ("numbering (reserved, retired, policies)", before.numbering != after.numbering),
         ("products", before.parts != after.parts),
+        ("symbol definitions", before.symbols != after.symbols),
+        ("sheet definition", before.sheet != after.sheet),
+        ("project title and metadata", before.name != after.name || before.info != after.info),
+        ("location boxes", before.boxes != after.boxes),
         ("safety classification", before.safety_related != after.safety_related),
         ("automation scope", before.automation != after.automation),
         ("naming", before.naming != after.naming),
-        ("panel layout", before.panel_items != after.panel_items),
+        ("panel layout", before.panels != after.panels || before.panel_items != after.panel_items),
         ("underlays", before.underlays != after.underlays),
     ] {
         if differs {

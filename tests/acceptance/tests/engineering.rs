@@ -806,8 +806,11 @@ fn forty_operations_apply_in_one_transaction_and_undo_restores_engineering_bytes
     assert_eq!(files(dir), original_files);
     assert_eq!(state::committed(dir).unwrap().generation, applied.generation + 1);
     assert_eq!(state::committed(dir).unwrap().content, cs.base.content);
-    assert!(change::records(dir).unwrap().iter().any(|r| {
-        r.kind == RecordKind::Edits && r.steps.iter().any(|step| step.starts_with("Undo:"))
-    }));
+    assert!(
+        change::records(dir)
+            .unwrap()
+            .iter()
+            .any(|r| { r.kind == RecordKind::Edits && r.steps.iter().any(|step| step.starts_with("Undo:")) })
+    );
     assert!(state::verify(dir, &Quiet).unwrap().clean());
 }

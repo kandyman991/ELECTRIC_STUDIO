@@ -35,9 +35,7 @@ fn operations(command: &Command, target: &Project, out: &mut Vec<Value>) {
         }
         Command::Mirror { id, to } => record("mirror_drawing_exact", json!({ "id": id, "to": to })),
         Command::SetWireBend { id, bend } => record("set_wire_bend_exact", json!({ "id": id, "bend": bend })),
-        Command::SetWireNumber { id, number } => {
-            record("set_wire_number_exact", json!({ "id": id, "number": number }))
-        }
+        Command::SetWireNumber { id, number } => record("set_wire_number_exact", json!({ "id": id, "number": number })),
         Command::SetWireSpec { id, spec } => record("set_wire_spec_exact", json!({ "id": id, "spec": spec })),
         Command::AddCable(cable) => record("add_cable_exact", json!(cable)),
         Command::AddBox(location) => record("add_location_box", json!(location)),
@@ -118,8 +116,8 @@ fn full_conveyor_registry_and_assistant_build_match_the_reference_byte_for_byte(
         let name = op["op"].as_str().unwrap();
         let def = registry::find(name).unwrap();
         assert!(def.mcp);
-        let lowered = registry::lower(&replay, name, &op["args"])
-            .unwrap_or_else(|e| panic!("step {index} {name}: {e}; {op}"));
+        let lowered =
+            registry::lower(&replay, name, &op["args"]).unwrap_or_else(|e| panic!("step {index} {name}: {e}; {op}"));
         replay.apply(Command::Batch(lowered.commands)).unwrap();
     }
     assert_eq!(replay, target, "registry replay must preserve the fixture's complete model");
@@ -160,7 +158,16 @@ fn full_conveyor_registry_and_assistant_build_match_the_reference_byte_for_byte(
     assert_eq!(files(dir), original_files);
     assert_eq!(state::committed(dir).unwrap(), before);
     assert!(change::approvals(dir).unwrap().is_empty());
-    assert!(change::issue_cli_approval(dir, &id, &proposal.hash(), change::Confirmations { safety: true, global: true }, change::Actor::person()).is_err());
+    assert!(
+        change::issue_cli_approval(
+            dir,
+            &id,
+            &proposal.hash(),
+            change::Confirmations { safety: true, global: true },
+            change::Actor::person()
+        )
+        .is_err()
+    );
     assert_eq!(files(dir), original_files);
 
     let mut s = Session::open(dir).unwrap();

@@ -88,17 +88,17 @@ impl Builder {
             return Ok(());
         }
         self.apply(Command::AddPart(Part {
-                id: ProductId::for_number(number),
-                number: number.into(),
-                manufacturer: MAKER.into(),
-                description: description.into(),
-                code: String::new(),
-                contacts: names(contacts),
-                width: size.map(|s| s.0),
-                height: size.map(|s| s.1),
-                depth: size.map(|s| s.2),
-            }))
-            .map(drop)
+            id: ProductId::for_number(number),
+            number: number.into(),
+            manufacturer: MAKER.into(),
+            description: description.into(),
+            code: String::new(),
+            contacts: names(contacts),
+            width: size.map(|s| s.0),
+            height: size.map(|s| s.1),
+            depth: size.map(|s| s.2),
+        }))
+        .map(drop)
     }
 
     /// Products for a device: (number, quantity, description), all from [`MAKER`].
