@@ -137,7 +137,7 @@ pub fn reference_project() -> Result<Project> {
             },
         ],
     };
-    let mut b = Builder { p, page: PageId::from_u128(0), next: 0x1000 };
+    let mut b = Builder { p, page: PageId::from_u128(0), next: 0x1000, trace: None };
     power_distribution(&mut b)?;
     power_branches(&mut b)?;
     spiral_motor(&mut b)?;
