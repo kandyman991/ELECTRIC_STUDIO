@@ -426,7 +426,7 @@ fn device_details(p: &Project, tag: &str) -> Result<Value, String> {
                 "page": page_name(p, f.page),
                 "x": f.position.x,
                 "y": f.position.y,
-                "properties": f.properties,
+                "properties": p.properties_of(f),
                 "points": points_of(p, f),
             })
         })

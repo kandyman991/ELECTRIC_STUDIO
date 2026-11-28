@@ -251,7 +251,9 @@ pub fn check(project: &Project) -> Vec<Check> {
         }
     }
     for f in project.functions.values() {
-        if matches!(project.role(f.id), Ok(Role::PlcChannel { .. })) && f.property(ecad_model::ADDRESS).is_empty() {
+        if matches!(project.role(f.id), Ok(Role::PlcChannel { .. }))
+            && project.property(f, ecad_model::ADDRESS).is_empty()
+        {
             let n = project.drawing_number(f.id).unwrap_or_default();
             let tag = project.label_of(f).to_owned();
             out.at_function("plc-no-address", f.id, format!("{tag}:{n} has no PLC address"));

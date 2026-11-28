@@ -1363,10 +1363,10 @@ impl Editor {
         let Some(Selected::Function(f)) = self.selection else { return Ok(()) };
         let func = self.project.function(f)?;
         let value = value.trim();
-        if func.property(key) == value {
+        if self.project.property(func, key) == value {
             return Ok(());
         }
-        let mut properties = func.properties.clone();
+        let mut properties = self.project.properties_of(func);
         properties.insert(key.to_owned(), value.to_owned());
         let n = self.project.drawing_number(f).unwrap_or_default();
         let label = format!("Set {key} of {}:{n}", self.tag_of(f));

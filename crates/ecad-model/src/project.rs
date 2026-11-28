@@ -230,7 +230,47 @@ pub struct TerminalEntry {
     pub point: String,
     /// The printed designation, an editable property: `A1`, `13`, a strip terminal's `3`.
     pub designation: String,
+    /// A PLC channel's typed data, on the channel's terminal (D2): a PLC channel is a terminal
+    /// of the card, with its address as a typed property.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<ChannelData>,
 }
+
+/// What a PLC channel is: its kind, its address as written, its symbol and comment.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelData {
+    pub kind: crate::IoKind,
+    /// The address as entered (`%I0.3`, `i0.3`); [`crate::plc_address`] reads it canonically.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub address: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub symbol: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub comment: String,
+}
+
+impl ChannelData {
+    fn get(&self, key: &str) -> Option<&str> {
+        match key {
+            ADDRESS => Some(&self.address),
+            SYMBOL => Some(&self.symbol),
+            COMMENT => Some(&self.comment),
+            _ => None,
+        }
+    }
+
+    fn set(&mut self, key: &str, value: String) {
+        match key {
+            ADDRESS => self.address = value,
+            SYMBOL => self.symbol = value,
+            COMMENT => self.comment = value,
+            _ => {}
+        }
+    }
+}
+
+/// The property keys kept as a PLC channel's typed data, on its terminal.
+pub const CHANNEL_KEYS: [&str; 3] = [ADDRESS, SYMBOL, COMMENT];
 
 fn check_node(n: NodeEntry) -> Result<NodeEntry> {
     let n = NodeEntry { name: n.name.trim().to_owned(), scope: n.scope.trim().to_owned(), ..n };
@@ -286,10 +326,6 @@ pub const COMMENT: &str = "comment";
 
 impl Function {
     /// A property's value, or `""`.
-    pub fn property(&self, key: &str) -> &str {
-        self.properties.get(key).map_or("", String::as_str)
-    }
-
     /// A symbol-local point in page coordinates.
     pub fn to_page(&self, local: Point) -> Point {
         let local = if self.mirrored { Point::new(-local.x, local.y) } else { local };
@@ -1142,6 +1178,34 @@ impl Project {
         f.terminals.get(point).and_then(|t| self.terminals.get(t)).map_or(point, |t| t.designation.as_str())
     }
 
+    /// A PLC channel drawing's typed data: on the terminal of its first point.
+    pub fn channel_of(&self, f: &Function) -> Option<&ChannelData> {
+        f.terminals.values().filter_map(|t| self.terminals.get(t)).find_map(|t| t.channel.as_ref())
+    }
+
+    /// A drawing's property: a PLC channel's address, symbol and comment from its terminal,
+    /// anything else from the drawing.
+    pub fn property<'a>(&'a self, f: &'a Function, key: &str) -> &'a str {
+        if let Some(value) = self.channel_of(f).and_then(|c| c.get(key)) {
+            return value;
+        }
+        f.properties.get(key).map_or("", String::as_str)
+    }
+
+    /// A drawing's properties as one map: its own, and a channel's typed data.
+    pub fn properties_of(&self, f: &Function) -> BTreeMap<String, String> {
+        let mut out = f.properties.clone();
+        if let Some(c) = self.channel_of(f) {
+            for key in CHANNEL_KEYS {
+                let v = c.get(key).unwrap_or("");
+                if !v.is_empty() {
+                    out.insert(key.to_owned(), v.to_owned());
+                }
+            }
+        }
+        out
+    }
+
     /// The designations a drawing shows that differ from its symbol's point names.
     pub fn designations_of(&self, f: &Function) -> BTreeMap<String, String> {
         f.terminals
@@ -1175,7 +1239,25 @@ impl Project {
                     None => {
                         let designation = f.designations.get(&cp.name).cloned().unwrap_or_else(|| cp.name.clone());
                         let (group, point) = crate::connectivity::default_group(f.id, id, &cp.name, numbered);
-                        new_entries.push(TerminalEntry { id, device: f.device, group, point, designation });
+                        // A channel's typed data goes on the terminal of its first point.
+                        let channel = match sym.role {
+                            Role::PlcChannel { kind }
+                                if new_entries.is_empty() && cp.name == sym.connection_points[0].name =>
+                            {
+                                let mut c = ChannelData {
+                                    kind,
+                                    address: String::new(),
+                                    symbol: String::new(),
+                                    comment: String::new(),
+                                };
+                                for key in CHANNEL_KEYS {
+                                    c.set(key, f.properties.get(key).cloned().unwrap_or_default());
+                                }
+                                Some(c)
+                            }
+                            _ => None,
+                        };
+                        new_entries.push(TerminalEntry { id, device: f.device, group, point, designation, channel });
                     }
                 }
                 f.terminals.insert(cp.name.clone(), id);
@@ -1186,6 +1268,11 @@ impl Project {
             self.terminals.insert(t.id, t);
         }
         f.designations.clear();
+        if matches!(sym.role, Role::PlcChannel { .. }) {
+            for key in CHANNEL_KEYS {
+                f.properties.remove(key);
+            }
+        }
         self.functions.insert(f.id, f);
         Ok(created)
     }
@@ -1195,6 +1282,15 @@ impl Project {
     fn detach_terminals(&mut self, id: FunctionId) -> Result<Function> {
         let mut f = self.functions.remove(&id).ok_or(ModelError::NoFunction(id))?;
         f.designations = self.designations_of(&f);
+        // A channel's data back on the drawing, so placing it again restores it.
+        if let Some(c) = self.channel_of(&f) {
+            for key in CHANNEL_KEYS {
+                let value = c.get(key).unwrap_or("").to_owned();
+                if !value.is_empty() {
+                    f.properties.insert(key.to_owned(), value);
+                }
+            }
+        }
         for t in f.terminals.values() {
             let shown = self.functions.values().any(|g| g.terminals.values().any(|u| u == t));
             if !shown {
@@ -1257,9 +1353,9 @@ impl Project {
                     page: f.page,
                     channel: self.drawing_number(f.id)?,
                     kind,
-                    address: f.property(ADDRESS).to_owned(),
-                    symbol: f.property(SYMBOL).to_owned(),
-                    comment: f.property(COMMENT).to_owned(),
+                    address: self.property(f, ADDRESS).to_owned(),
+                    symbol: self.property(f, SYMBOL).to_owned(),
+                    comment: self.property(f, COMMENT).to_owned(),
                     location: self.location(f.page, f.position).ok()?,
                 })
             })
@@ -1280,7 +1376,7 @@ impl Project {
             IoKind::AnalogOut => ("QW", true),
         };
         let used = self.functions.values().filter_map(|f| {
-            let addr = f.property(ADDRESS).strip_prefix(prefix)?;
+            let addr = self.property(f, ADDRESS).strip_prefix(prefix)?;
             if analog {
                 addr.parse::<u32>().ok().map(|w| (w, 0))
             } else {
@@ -1796,17 +1892,29 @@ impl Project {
                 Ok(Command::SetDeviceParts { id, parts: old })
             }
             Command::SetProperties { id, properties } => {
-                let properties = properties
+                let mut properties: BTreeMap<String, String> = properties
                     .into_iter()
                     .map(|(k, v)| (k, v.trim().to_owned()))
                     .filter(|(_, v)| !v.is_empty())
                     .collect();
-                let f = self.functions.get_mut(&id).ok_or(ModelError::NoFunction(id))?;
-                let old = std::mem::replace(&mut f.properties, properties);
-                if let Err(e) = self.check_plc(id) {
-                    if let Some(f) = self.functions.get_mut(&id) {
-                        f.properties = old;
+                let before = self.clone_drawing_state(id)?;
+                let old = self.properties_of(&before.0);
+                // A channel's address, symbol and comment go to its terminal, typed.
+                let channel = self
+                    .function(id)?
+                    .terminals
+                    .values()
+                    .copied()
+                    .find(|t| self.terminals.get(t).is_some_and(|t| t.channel.is_some()));
+                if let Some(t) = channel.and_then(|t| self.terminals.get_mut(&t)).and_then(|t| t.channel.as_mut()) {
+                    for key in CHANNEL_KEYS {
+                        t.set(key, properties.remove(key).unwrap_or_default());
                     }
+                }
+                let f = self.functions.get_mut(&id).ok_or(ModelError::NoFunction(id))?;
+                f.properties = properties;
+                if let Err(e) = self.check_plc(id) {
+                    self.restore_drawing_state(id, before);
                     return Err(e);
                 }
                 Ok(Command::SetProperties { id, properties: old })
@@ -1900,7 +2008,7 @@ impl Project {
             return Ok(());
         }
         for (key, is_address) in [(ADDRESS, true), (SYMBOL, false)] {
-            let value = func.property(key);
+            let value = self.property(func, key);
             if value.is_empty() {
                 continue;
             }
@@ -1909,9 +2017,9 @@ impl Project {
                     && matches!(self.role(g.id), Ok(Role::PlcChannel { .. }))
                     && if is_address {
                         // `%I0.0` and `I00.0` are the same input.
-                        crate::plc_address::same(g.property(key), value)
+                        crate::plc_address::same(self.property(g, key), value)
                     } else {
-                        g.property(key) == value
+                        self.property(g, key) == value
                     }
             });
             if let Some(g) = other {

@@ -1312,9 +1312,9 @@ impl Session {
                         Role::PlcChannel { kind } => Some(PlcInfo {
                             kind: kind.short().into(),
                             channel: project.drawing_number(f.id).unwrap_or_default(),
-                            address: f.property(ecad_model::ADDRESS).to_owned(),
-                            symbol: f.property(ecad_model::SYMBOL).to_owned(),
-                            comment: f.property(ecad_model::COMMENT).to_owned(),
+                            address: project.property(f, ecad_model::ADDRESS).to_owned(),
+                            symbol: project.property(f, ecad_model::SYMBOL).to_owned(),
+                            comment: project.property(f, ecad_model::COMMENT).to_owned(),
                         }),
                         _ => None,
                     },
@@ -2105,7 +2105,8 @@ mod tests {
         assert_eq!(s.editor().undo_label(), Some("Import TIA Portal tags"));
         let symbols = |s: &Session| {
             let p = s.editor().project();
-            let mut v: Vec<String> = p.functions.values().map(|f| f.property(ecad_model::SYMBOL).to_owned()).collect();
+            let mut v: Vec<String> =
+                p.functions.values().map(|f| p.property(f, ecad_model::SYMBOL).to_owned()).collect();
             v.retain(|x| !x.is_empty());
             v.sort();
             v
@@ -2118,10 +2119,14 @@ mod tests {
         // Exporting again, from a project whose channels have no addresses: the table is
         // replaced and the reasons shown.
         let mut bare = ecad_model::sample::with_plc().unwrap();
-        let ids: Vec<_> =
-            bare.functions.values().filter(|f| !f.property(ecad_model::ADDRESS).is_empty()).map(|f| f.id).collect();
+        let ids: Vec<_> = bare
+            .functions
+            .values()
+            .filter(|f| !bare.property(f, ecad_model::ADDRESS).is_empty())
+            .map(|f| f.id)
+            .collect();
         for id in ids {
-            let mut properties = bare.function(id).unwrap().properties.clone();
+            let mut properties = bare.properties_of(bare.function(id).unwrap());
             properties.remove(ecad_model::ADDRESS);
             bare.apply(ecad_model::Command::SetProperties { id, properties }).unwrap();
         }

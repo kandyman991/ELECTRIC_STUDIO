@@ -91,7 +91,7 @@ mod project_tests {
         let channels = p.plc_channels_of(kf1);
         assert_eq!(channels[0].address, "I0.0");
         let other = &channels[1];
-        let mut properties = p.function(other.function).unwrap().properties.clone();
+        let mut properties = p.properties_of(p.function(other.function).unwrap());
         properties.insert(ADDRESS.into(), "%i00.0".into());
         let e = p.apply(Command::SetProperties { id: other.function, properties }).unwrap_err();
         assert!(matches!(e, ModelError::DuplicateAddress(..)), "{e}");

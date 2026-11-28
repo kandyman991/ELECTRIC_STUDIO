@@ -861,6 +861,17 @@ mod tests {
                 if !designations.is_empty() {
                     f["designations"] = designations.into();
                 }
+                // A channel's typed data back as the drawing's properties.
+                for (_, id) in map.as_object().unwrap() {
+                    let t = terminals.iter().find(|t| serde_json::to_value(t.id).unwrap() == *id).unwrap();
+                    if let Some(c) = &t.channel {
+                        for (k, v) in [("address", &c.address), ("symbol", &c.symbol), ("comment", &c.comment)] {
+                            if !v.is_empty() {
+                                f["properties"][k] = v.clone().into();
+                            }
+                        }
+                    }
+                }
             }
             std::fs::write(&path, serde_json::to_string_pretty(&page).unwrap()).unwrap();
         }

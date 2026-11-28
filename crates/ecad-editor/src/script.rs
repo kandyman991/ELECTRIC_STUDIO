@@ -167,7 +167,7 @@ impl Editor {
             let list: Vec<&str> = channels.iter().map(|c| c.channel.as_str()).collect();
             format!("{card} has no channel `{channel}` (channels: {})", list.join(", "))
         })?;
-        let mut properties = self.project.function(c.function).map_err(|e| e.to_string())?.properties.clone();
+        let mut properties = self.project.properties_of(self.project.function(c.function).map_err(|e| e.to_string())?);
         for (key, value) in [(ADDRESS, address), (SYMBOL, symbol), (COMMENT, comment)] {
             match value {
                 Some("") => {

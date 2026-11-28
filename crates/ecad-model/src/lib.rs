@@ -603,7 +603,7 @@ mod tests {
 
         // Bits wrap at 8: after I0.7 comes I1.0.
         let set = |p: &mut Project, f, key: &str, value: &str| {
-            let mut properties = p.function(f).unwrap().properties.clone();
+            let mut properties = p.properties_of(p.function(f).unwrap());
             properties.insert(key.into(), value.into());
             p.apply(Command::SetProperties { id: f, properties })
         };
@@ -619,13 +619,13 @@ mod tests {
             set(&mut p, sample::KF1_DI0, SYMBOL, "Pump_On").unwrap_err(),
             ModelError::DuplicatePlcSymbol("Pump_On".into(), "-KF1:2".into())
         );
-        assert_eq!(p.function(sample::KF1_DI0).unwrap().property(ADDRESS), "I0.7");
+        assert_eq!(p.property(p.function(sample::KF1_DI0).unwrap(), ADDRESS), "I0.7");
 
         // Blank values are dropped, and the change undoes.
         let undo = set(&mut p, sample::KF1_DI0, COMMENT, "  ").unwrap();
-        assert_eq!(p.function(sample::KF1_DI0).unwrap().property(COMMENT), "");
+        assert_eq!(p.property(p.function(sample::KF1_DI0).unwrap(), COMMENT), "");
         p.apply(undo).unwrap();
-        assert_eq!(p.function(sample::KF1_DI0).unwrap().property(COMMENT), "Guard door closed");
+        assert_eq!(p.property(p.function(sample::KF1_DI0).unwrap(), COMMENT), "Guard door closed");
 
         // Channel numbers are unique on the card.
         let one: std::collections::BTreeMap<String, String> = [("1".into(), "1".into())].into();

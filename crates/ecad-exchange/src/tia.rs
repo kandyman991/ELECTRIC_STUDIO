@@ -418,7 +418,7 @@ pub fn import(project: &Project, tags: &[Tag]) -> Result<Import> {
         }
         // The export's own made-up name coming back isn't a symbol.
         let made_up_back = made_up.get(&c.channel.function) == Some(&tag.name);
-        let old = project.function(c.channel.function)?.properties.clone();
+        let old = project.properties_of(project.function(c.channel.function)?);
         let mut new = old.clone();
         if !made_up_back {
             new.insert(SYMBOL.into(), tag.name.clone());
@@ -466,14 +466,28 @@ mod tests {
     /// Set a channel's properties, past the model's checks (as a hand-edited or older project
     /// file could have them).
     fn force(p: &mut Project, f: FunctionId, props: &[(&str, &str)]) {
-        let func: &mut Function = p.functions.get_mut(&f).unwrap();
+        // A channel's address, symbol and comment are on its terminal (M10).
+        let terminals: Vec<_> = p.function(f).unwrap().terminals.values().copied().collect();
+        let channel = terminals.iter().find_map(|t| p.terminals.get(t).and_then(|t| t.channel.as_ref()).map(|_| *t));
         for (k, v) in props {
-            func.properties.insert((*k).into(), (*v).into());
+            match (channel, *k) {
+                (Some(t), "address") => {
+                    p.terminals.get_mut(&t).unwrap().channel.as_mut().unwrap().address = (*v).into()
+                }
+                (Some(t), "symbol") => p.terminals.get_mut(&t).unwrap().channel.as_mut().unwrap().symbol = (*v).into(),
+                (Some(t), "comment") => {
+                    p.terminals.get_mut(&t).unwrap().channel.as_mut().unwrap().comment = (*v).into()
+                }
+                _ => {
+                    let func: &mut Function = p.functions.get_mut(&f).unwrap();
+                    func.properties.insert((*k).into(), (*v).into());
+                }
+            }
         }
     }
 
     fn set(p: &mut Project, f: FunctionId, props: &[(&str, &str)]) {
-        let mut properties = p.function(f).unwrap().properties.clone();
+        let mut properties = p.properties_of(p.function(f).unwrap());
         for (k, v) in props {
             if v.is_empty() {
                 properties.remove(*k);
@@ -639,7 +653,7 @@ mod tests {
         let mut table = tags.clone();
         table.iter_mut().find(|t| t.name == format!("{base}_2")).unwrap().name = renamed.clone();
         p.apply(import_of(&p, &table)).unwrap();
-        assert_eq!(p.function(a.function).unwrap().property(SYMBOL), renamed);
+        assert_eq!(p.property(p.function(a.function).unwrap(), SYMBOL), renamed);
     }
 
     #[test]

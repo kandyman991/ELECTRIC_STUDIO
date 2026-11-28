@@ -314,7 +314,7 @@ pub fn with_plc() -> Result<Project> {
     let props =
         |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect::<Vec<_>>();
     let mut set = |f: FunctionId, pairs: &[(&str, &str)]| {
-        let mut properties: std::collections::BTreeMap<String, String> = p.function(f)?.properties.clone();
+        let mut properties: std::collections::BTreeMap<String, String> = p.properties_of(p.function(f)?);
         properties.extend(props(pairs));
         p.apply(Command::SetProperties { id: f, properties }).map(drop)
     };

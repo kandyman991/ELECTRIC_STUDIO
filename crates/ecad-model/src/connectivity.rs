@@ -312,13 +312,13 @@ impl Project {
                 let kind = match sym.role {
                     Role::Terminal => TerminalKind::Strip,
                     Role::PlcChannel { kind } => {
-                        let text = f.property(ADDRESS).to_owned();
+                        let text = self.property(f, ADDRESS).to_owned();
                         TerminalKind::PlcChannel(PlcChannel {
                             kind,
                             address: crate::plc_address::canonical(&text),
                             address_text: text,
-                            symbol: f.property(SYMBOL).to_owned(),
-                            comment: f.property(COMMENT).to_owned(),
+                            symbol: self.property(f, SYMBOL).to_owned(),
+                            comment: self.property(f, COMMENT).to_owned(),
                         })
                     }
                     _ => TerminalKind::Device,
@@ -709,6 +709,7 @@ mod tests {
             group: GroupId(Uuid::from_u128(0x7f)),
             point: String::new(),
             designation: "X9".into(),
+            channel: None,
         };
         let undo = p.apply(Command::AddTerminal(t.clone())).unwrap();
         let c = p.connectivity();
@@ -977,7 +978,7 @@ mod tests {
     #[test]
     fn plc_channels_are_card_terminals_with_typed_data() {
         let mut p = sample::with_plc().unwrap();
-        let mut props = p.function(sample::KF1_DI0).unwrap().properties.clone();
+        let mut props = p.properties_of(p.function(sample::KF1_DI0).unwrap());
         props.insert(ADDRESS.into(), "%i0.0".into());
         p.apply(Command::SetProperties { id: sample::KF1_DI0, properties: props }).unwrap();
         let c = p.connectivity();

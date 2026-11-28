@@ -512,3 +512,19 @@ fn renumbering_a_terminal_group_changes_its_designation_not_its_ids_or_wires() {
     assert_eq!(loaded.terminals, p.terminals);
     assert_eq!(wire_ends(&loaded), ends);
 }
+
+#[test]
+fn plc_channel_data_is_typed_on_the_channel_terminal_and_persists() {
+    let p = conveyor().unwrap();
+    let channels: Vec<&ecad_model::TerminalEntry> = p.terminals.values().filter(|t| t.channel.is_some()).collect();
+    assert_eq!(channels.len(), 13, "one per channel drawing");
+    for t in &channels {
+        let c = t.channel.as_ref().unwrap();
+        let drawing = p.functions.values().find(|f| f.terminals.values().any(|x| *x == t.id)).unwrap();
+        let role = p.role(drawing.id).unwrap();
+        assert!(matches!(role, ecad_model::Role::PlcChannel { kind } if kind == c.kind), "typed kind");
+        assert!(!c.address.is_empty() && drawing.properties.get(ecad_model::ADDRESS).is_none(), "on the terminal only");
+    }
+    let loaded = save_and_load(&p);
+    assert_eq!(loaded.terminals, p.terminals, "terminals.json keeps the channel data");
+}
