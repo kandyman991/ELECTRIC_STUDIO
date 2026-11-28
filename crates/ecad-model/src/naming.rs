@@ -172,7 +172,9 @@ impl Project {
     }
 
     pub fn wire_number(&self, id: ConnectionId) -> Option<&str> {
-        self.connections.get(&id).and_then(|c| c.wire_number.as_deref())
+        self.connections
+            .get(&id)
+            .and_then(|c| c.wire_number.as_deref())
             .or_else(|| self.undrawn.get(&id).and_then(|w| w.wire_number.as_deref()))
     }
 
@@ -208,9 +210,8 @@ impl Project {
         let mut points: Vec<ConnectionRef> = sides.iter().flat_map(|p| p.points.iter().cloned()).collect();
         points.extend([from.clone(), to.clone()]);
         let name = name.or_else(|| self.plc_number_of(&points));
-        let existing = sides.iter().find_map(|p| {
-            p.connections.iter().find_map(|c| self.wire_number(*c).map(str::to_owned))
-        });
+        let existing =
+            sides.iter().find_map(|p| p.connections.iter().find_map(|c| self.wire_number(*c).map(str::to_owned)));
         let number = name.or(existing).unwrap_or_else(|| self.next_wire_number(page));
         let renumber = sides
             .iter()
@@ -257,7 +258,9 @@ impl Project {
             }
         }
         let mut groups: Vec<(Option<String>, Vec<ConnectionId>)> = match self.naming.wire_numbering {
-            WireNumbering::PerWire => self.connections.keys().chain(self.undrawn.keys()).map(|c| (None, vec![*c])).collect(),
+            WireNumbering::PerWire => {
+                self.connections.keys().chain(self.undrawn.keys()).map(|c| (None, vec![*c])).collect()
+            }
             WireNumbering::PerPotential => self
                 .potentials()
                 .into_iter()

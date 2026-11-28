@@ -1431,8 +1431,9 @@ impl Project {
             .functions_of(card)
             .filter_map(|f| {
                 let Role::PlcChannel { kind } = self.role(f.id).ok()? else { return None };
-                let channel = f.terminals.values().find(|t| self.terminals.get(t).is_some_and(|t| t.channel.is_some()))?;
-                if !seen.insert(*channel) {
+                let channel =
+                    f.terminals.values().copied().find(|t| self.terminals.get(t).is_some_and(|t| t.channel.is_some()))?;
+                if !seen.insert(channel) {
                     return None;
                 }
                 Some(ChannelRef {
@@ -2182,7 +2183,8 @@ impl Project {
         let Some(channel) = &terminal.channel else { return Ok(()) };
         for other in self.terminals.values().filter(|t| t.id != terminal.id) {
             let Some(c) = &other.channel else { continue };
-            let by = || format!("{}:{}", self.device(other.device).map(|d| d.tag.as_str()).unwrap_or(""), other.designation);
+            let by =
+                || format!("{}:{}", self.device(other.device).map(|d| d.tag.as_str()).unwrap_or(""), other.designation);
             if !channel.address.is_empty() && crate::plc_address::same(&channel.address, &c.address) {
                 return Err(ModelError::DuplicateAddress(channel.address.clone(), by()));
             }

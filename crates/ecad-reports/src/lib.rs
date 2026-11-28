@@ -488,10 +488,23 @@ pub fn cable_list(project: &Project) -> Vec<CableRow> {
         let mut cores: Vec<(&str, String, String, String)> = project
             .connections
             .values()
-            .filter_map(|c| c.spec.cable.as_ref().filter(|k| k.cable == cable.id)
-                .map(|k| (k.core.as_str(), c.wire_number.clone().unwrap_or_default(), end(&c.from), end(&c.to))))
-            .chain(project.undrawn.values().filter_map(|w| w.spec.cable.as_ref().filter(|k| k.cable == cable.id)
-                .map(|k| (k.core.as_str(), w.wire_number.clone().unwrap_or_default(), undrawn_end(&w.from), undrawn_end(&w.to)))))
+            .filter_map(|c| {
+                c.spec
+                    .cable
+                    .as_ref()
+                    .filter(|k| k.cable == cable.id)
+                    .map(|k| (k.core.as_str(), c.wire_number.clone().unwrap_or_default(), end(&c.from), end(&c.to)))
+            })
+            .chain(project.undrawn.values().filter_map(|w| {
+                w.spec.cable.as_ref().filter(|k| k.cable == cable.id).map(|k| {
+                    (
+                        k.core.as_str(),
+                        w.wire_number.clone().unwrap_or_default(),
+                        undrawn_end(&w.from),
+                        undrawn_end(&w.to),
+                    )
+                })
+            }))
             .collect();
         cores.sort_by(|a, b| natural(a.0, b.0));
         let row = |core: &str, wire: String, from: String, to: String| CableRow {

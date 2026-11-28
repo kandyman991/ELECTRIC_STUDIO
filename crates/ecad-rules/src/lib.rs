@@ -138,9 +138,13 @@ impl Out<'_> {
             (from.page, project.location(from.page, from.position).unwrap_or_default())
         } else if let Some(w) = project.undrawn.get(&c) {
             let connectivity = project.connectivity();
-            let page = [w.from, w.to].iter().find_map(|e| {
-                connectivity.drawings(*e).first().and_then(|r| project.function(r.function).ok()).map(|f| f.page)
-            }).or_else(|| project.pages_in_order().first().map(|p| p.id)).unwrap_or_else(|| PageId::from_u128(0));
+            let page = [w.from, w.to]
+                .iter()
+                .find_map(|e| {
+                    connectivity.drawings(*e).first().and_then(|r| project.function(r.function).ok()).map(|f| f.page)
+                })
+                .or_else(|| project.pages_in_order().first().map(|p| p.id))
+                .unwrap_or_else(|| PageId::from_u128(0));
             (page, String::new())
         } else {
             return;
@@ -274,12 +278,18 @@ pub fn check(project: &Project) -> Vec<Check> {
     contacts_on_parts(&mut out);
     panels(&mut out);
     for cable in project.cables.values() {
-        let wires: Vec<ConnectionId> = project.connections.values()
+        let wires: Vec<ConnectionId> = project
+            .connections
+            .values()
             .filter(|c| c.spec.cable.as_ref().is_some_and(|k| k.cable == cable.id))
             .map(|c| c.id)
-            .chain(project.undrawn.values()
-                .filter(|w| w.spec.cable.as_ref().is_some_and(|k| k.cable == cable.id))
-                .map(|w| w.id))
+            .chain(
+                project
+                    .undrawn
+                    .values()
+                    .filter(|w| w.spec.cable.as_ref().is_some_and(|k| k.cable == cable.id))
+                    .map(|w| w.id),
+            )
             .collect();
         if cable.cores > 0
             && wires.len() > cable.cores as usize
@@ -319,11 +329,8 @@ fn wire_numbers(out: &mut Out) {
     let mut owner: BTreeMap<&str, (usize, ConnectionId)> = BTreeMap::new();
     let mut reported = BTreeSet::new();
     for (i, p) in potentials.iter().enumerate() {
-        let mut numbers: Vec<(&str, ConnectionId)> = p
-            .connections
-            .iter()
-            .filter_map(|c| project.wire_number(*c).map(|n| (n, *c)))
-            .collect();
+        let mut numbers: Vec<(&str, ConnectionId)> =
+            p.connections.iter().filter_map(|c| project.wire_number(*c).map(|n| (n, *c))).collect();
         numbers.sort();
         let distinct: BTreeSet<&str> = numbers.iter().map(|(n, _)| *n).collect();
         if project.naming.wire_numbering == ecad_model::WireNumbering::PerPotential && distinct.len() > 1 {
@@ -396,7 +403,11 @@ fn undrawn_wires(out: &mut Out) {
             if d.is_empty() { tag } else { format!("{tag}:{d}") }
         };
         let name = w.wire_number.clone().unwrap_or_else(|| "A wire".into());
-        out.at_connection("wire-not-drawn", w.id, format!("{name} from {} to {} is not drawn yet", end(&w.from), end(&w.to)));
+        out.at_connection(
+            "wire-not-drawn",
+            w.id,
+            format!("{name} from {} to {} is not drawn yet", end(&w.from), end(&w.to)),
+        );
         if w.wire_number.is_none() {
             out.at_connection("wire-unnumbered", w.id, format!("Wire {} – {} has no number", end(&w.from), end(&w.to)));
         }

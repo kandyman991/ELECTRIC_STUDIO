@@ -615,7 +615,10 @@ pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>
             return Err(model(&path)(ModelError::DuplicateId(d.id.0)));
         }
         if !legacy && d.parts.iter().any(|r| r.product.is_none()) {
-            return Err(ProjectError::Canonical { path: path.clone(), reason: "product reference has no canonical id".into() });
+            return Err(ProjectError::Canonical {
+                path: path.clone(),
+                reason: "product reference has no canonical id".into(),
+            });
         }
     }
     let devices: Vec<Device> = records.into_iter().map(DeviceFile::into_device).collect();
