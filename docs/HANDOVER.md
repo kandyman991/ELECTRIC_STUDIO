@@ -11,15 +11,17 @@ merged PR.
 - **Review policy:** milestone-based. Implementation slices are merged once CI is green. Independent
   review happens when a milestone is ready for formal acceptance, or when a significant
   architectural issue needs a decision.
-- **Current milestone:** AI0, engineering interface. The S0 acceptance decision below takes
-  effect when the corrective PR passes all required checks on its final head and merges.
+- **Current milestone:** M8, machine structure (authorized; implementation not started).
+  AI0 formally accepted on 28 Nov 2026 after the independent corrective PR #50 merged.
   - M10 format 2 canonical connectivity (M10a #37, M10b #38, M10c #40, M10b′ and M10d #41)
     formally accepted on 28 Nov 2026; corrective PR #42 merged at `6e223ec`.
     R1–R8 and R7.1/R7.2/R8.1 closed; [final acceptance evidence](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/42#issuecomment-7236646425).
   - M7a (PR #33) and M7b (PR #34) merged; corrective PR #35 merged at `e258a59`.
   - M7 formally accepted on 27 Nov 2026 with R5 (controlled Legion wall-clock and peak RSS)
     explicitly deferred by the owner, not passed. All six exact-head CI jobs passed at `90d6dfb`.
-  - **AI0:** implemented in PR #48 (merged at `fea0ae4`), ready for independent milestone review; see "AI0 plan and state". Not accepted; the next milestone is not authorized.
+  - **AI0:** formally accepted on 28 Nov 2026; corrective PR #50 merged at `8e51bd9`,
+    all six exact-head checks passed at `cb69a20`. [Acceptance evidence](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/50#issuecomment-7241059749).
+  - **Save scalability:** #51 tracks the explained save overhead and workflow-history profiling before production release.
   - **Outstanding pre-release gate:** qualified D41 Legion benchmark ([#39](https://github.com/kandyman991/ELECTRIC_STUDIO/issues/39)) when access returns;
     retain recorded conditions and cold/warm timing and RSS evidence before first production release.
 - **On hold:** PR #32 (component library, draft), reused in M9 after reconciliation (D13).
@@ -112,8 +114,8 @@ Acceptance criteria:
 
 ### Independent AI0 review — corrective PR #50
 
-The cumulative source review found authority, safety and persistence defects; AI0 remains
-**not accepted** until corrective-head validation and formal closure.
+The cumulative independent review corrected authority, safety and persistence defects.
+**AI0 accepted** after all six exact-head jobs passed at `cb69a20` and PR #50 merged at `8e51bd9`.
 
 - Rejecting a CLI-approved proposal revokes all issued approvals atomically; rejected proposals
   cannot be applied, including legacy records with an issued approval.
@@ -163,8 +165,16 @@ The test requires no pre-approval writes, refuses CLI approval and missing confi
 then checks one atomic app apply, byte-exact canonical and graphical files against the
 original conveyor, a consumed approval and audit record, one undo and byte-exact saved
 restoration with a later revision. Separate forty-operation and -F3 regressions remain.
-These are implemented acceptance tests; final exact-head CI is required to establish their
-outcomes. AI0 acceptance takes effect only upon verified closure and merge of PR #50.
+All five new regression tests, including the full conveyor, forty-operation transaction,
+-F3 safety impact, nested input refusal and S0 page-identifier stability, passed on both
+Ubuntu and Windows at `cb69a20`. All six exact-head jobs passed:
+[CI](https://github.com/kandyman991/ELECTRIC_STUDIO/actions/runs/46156405495),
+[Windows build](https://github.com/kandyman991/ELECTRIC_STUDIO/actions/runs/46156405504).
+Final benchmark: deterministic counts match; save 31,067,896 instructions (+5.2% versus
+the AI0 baseline), 11,580 heap allocation blocks; other instruction workloads decreased
+3.7–9.1%. Hosted timing is unqualified. The explained save cost is tracked in #51;
+#39 remains a mandatory pre-release gate. [Formal acceptance record](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/50#issuecomment-7241059749).
+AI0 formally accepted; M8 authorized. No production release or safety certification implied.
 
 Known limitations and review points (AI0):
 

@@ -2,7 +2,8 @@
 
 **Status: architecture approved and merged (PR #31, 27 Nov 2026), all decisions D1–D43
 resolved. M7 accepted with owner-approved deferred Legion validation (27 Nov 2026); M10
-formally accepted (28 Nov 2026); S0 accepted on verified merge of its corrective PR; AI0 implemented (PR #48), ready for independent milestone review.** Pairs with
+formally accepted (28 Nov 2026); S0 accepted on verified merge of its corrective PR;
+AI0 formally accepted (28 Nov 2026, PR #50); M8 authorized.** Pairs with
 [PLATFORM-ARCHITECTURE.md](PLATFORM-ARCHITECTURE.md).
 
 ## Where things stand
@@ -13,7 +14,8 @@ formally accepted (28 Nov 2026); S0 accepted on verified merge of its corrective
 | M7 model foundations | M7a (PR #33, derived connectivity, netlist, content hash) merged; M7b (conveyor acceptance project, benchmark harness) complete; PR #35 merged after all six exact-head CI jobs passed; **accepted with R5 deferred to the first production release** |
 | M10 format 2 | Implemented: M10a (#37), M10b (#38), M10c (#40), M10b′ and M10d (#41); review findings R1–R8 corrected in #42 (canonical `bridges.json`, fail-closed format 2, undrawn coverage); **Accepted**: #42 merged at `6e223ec`; [final corrective acceptance](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/42#issuecomment-7236646425) |
 | S0 stable numbering | Implemented: S0a (#44), S0b (#45), S0c (#46); **accepted on verified corrective merge** (see HANDOVER.md) |
-| AI0 engineering interface | Implemented: AI0a (#48, merged at `fea0ae4`, all six exact-head CI jobs passed at `3bb80dc`); evidence in HANDOVER.md; **ready for independent milestone review** (not yet accepted) |
+| AI0 engineering interface | **Accepted:** corrective PR #50 merged at `8e51bd9` after all six exact-head checks passed at `cb69a20`; full conveyor registry/MCP build, atomic forty-operation transaction, byte-exact undo and -F3 safety tests pass on Linux and Windows. [Acceptance evidence](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/50#issuecomment-7241059749). Save profiling #51 and qualified Legion #39 remain pre-release follow-ups. |
+| M8 machine structure | **Authorized**; implementation not started |
 | Components library (PR #32) | Draft, **on hold** (D13). Its compatible parts are reused in M9 |
 
 The earlier proposals in GAPS.md (library, annotations, generated pages, symbols, layouts,
