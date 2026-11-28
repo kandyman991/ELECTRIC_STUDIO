@@ -1357,6 +1357,35 @@ mod tests {
     }
 
     #[test]
+    fn locked_apply_recovers_a_published_journal_and_reports_actual_outcome() {
+        let (a, b) = two_revisions();
+        let mut saw_recovered = false;
+        for n in 0..500 {
+            let dir = tempfile::tempdir().unwrap();
+            save(&a, dir.path()).unwrap();
+            let lock = store::Lock::take(dir.path()).unwrap();
+            let record = ("changes/test.json".into(), b"{}".to_vec());
+            store::FAIL_AT.with(|f| f.set(Some(n)));
+            let result = save_locked(&b, dir.path(), state::Extras { workflow: vec![record.clone()] });
+            let injected = store::FAIL_AT.with(|f| f.replace(None)).is_none();
+            drop(lock);
+            let back = load(dir.path()).unwrap();
+            if result.is_ok() {
+                assert_eq!(back, b);
+                assert_eq!(state::read_workflow(dir.path(), &record.0).unwrap(), record.1);
+                saw_recovered |= injected;
+                if !injected {
+                    break;
+                }
+            } else {
+                assert_eq!(back, a);
+                assert!(!dir.path().join(&record.0).exists());
+            }
+        }
+        assert!(saw_recovered);
+    }
+
+    #[test]
     fn a_failure_while_recovering_is_recovered_next_time() {
         let (a, b) = two_revisions();
         let dir = tempfile::tempdir().unwrap();
