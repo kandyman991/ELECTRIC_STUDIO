@@ -253,7 +253,10 @@ pub(crate) fn commit(dir: &Path, files: &[(String, Vec<u8>)]) -> Result<()> {
     let journal = Journal { replace, delete };
     let text =
         serde_json::to_vec_pretty(&journal).map_err(|source| ProjectError::Json { path: dir.join(JOURNAL), source })?;
-    let tmp = dir.join(format!("{JOURNAL}.tmp"));
+    let tmp_name = format!("{JOURNAL}.tmp");
+    let tmp = dir.join(&tmp_name);
+    crate::state::check_on_disk(dir, &tmp_name)
+        .map_err(|reason| ProjectError::Canonical { path: tmp.clone(), reason })?;
     write_synced(&tmp, &text)?;
     // The save happens here.
     rename(&tmp, &dir.join(JOURNAL))?;
@@ -281,7 +284,10 @@ pub(crate) fn commit_partial(dir: &Path, files: &[(String, Vec<u8>)]) -> Result<
     let journal = Journal { replace, delete: Vec::new() };
     let text =
         serde_json::to_vec_pretty(&journal).map_err(|source| ProjectError::Json { path: dir.join(JOURNAL), source })?;
-    let tmp = dir.join(format!("{JOURNAL}.tmp"));
+    let tmp_name = format!("{JOURNAL}.tmp");
+    let tmp = dir.join(&tmp_name);
+    crate::state::check_on_disk(dir, &tmp_name)
+        .map_err(|reason| ProjectError::Canonical { path: tmp.clone(), reason })?;
     write_synced(&tmp, &text)?;
     rename(&tmp, &dir.join(JOURNAL))?;
     sync_dir(dir);
