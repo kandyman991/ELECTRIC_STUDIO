@@ -340,12 +340,14 @@ pub fn compare(before: &Project, after: &Project, progress: &dyn Progress) -> Re
         .copied()
         .collect();
     let mut pages: BTreeSet<ecad_model::PageId> = BTreeSet::new();
+    let mut changed_wires = BTreeSet::new();
     for id in wids {
         let (a, b) = (before.connections.get(&id), after.connections.get(&id));
         let (ua, ub) = (before.undrawn.get(&id), after.undrawn.get(&id));
         if a == b && ua == ub {
             continue;
         }
+        changed_wires.insert(id);
         for (p, c) in [(before, a), (after, b)] {
             if let Some(c) = c
                 && let Ok(f) = p.function(c.from.function)
@@ -448,10 +450,18 @@ pub fn compare(before: &Project, after: &Project, progress: &dyn Progress) -> Re
         };
         // Signal nets: a named supply potential (L+, M) reaches every device it feeds, which
         // says nothing about the safety function; those are left out (a limitation, noted).
-        for net in p.netlist().nets.into_iter().filter(|n| n.names.is_empty()) {
+        for net in p.netlist().nets {
             let on: BTreeSet<_> = net.endpoints.iter().filter_map(device_of).collect();
             if on.iter().any(|d| marked.contains(d)) {
-                reached.extend(on);
+                // Wiring changes on a safety-related net require confirmation even on
+                // named supply nets. Excluding them is only appropriate for unrelated
+                // device edits, not changes to the conductors themselves.
+                for wire in net.wires.iter().filter(|w| changed_wires.contains(w)) {
+                    i.safety_indirect.push(format!("wire {} (on a safety-related potential)", wire.0));
+                }
+                if net.names.is_empty() {
+                    reached.extend(on);
+                }
             }
         }
     }
@@ -479,9 +489,24 @@ pub fn compare(before: &Project, after: &Project, progress: &dyn Progress) -> Re
             continue;
         }
         let carries = |p: &Project| {
+            let safety_wires: BTreeSet<_> = p
+                .netlist()
+                .nets
+                .into_iter()
+                .filter(|net| {
+                    net.endpoints.iter().any(|e| match e {
+                        ecad_model::Endpoint::Terminal(t) => {
+                            p.terminals.get(t).is_some_and(|t| marked.contains(&t.device))
+                        }
+                        ecad_model::Endpoint::Node(_) => false,
+                    })
+                })
+                .flat_map(|net| net.wires)
+                .collect();
             p.connections.values().any(|w| {
-                w.spec.cable.as_ref().is_some_and(|k| k.cable == c.id)
-                    && [&w.from, &w.to].iter().any(|r| p.function(r.function).is_ok_and(|f| marked.contains(&f.device)))
+                safety_wires.contains(&w.id) && w.spec.cable.as_ref().is_some_and(|k| k.cable == c.id)
+            }) || p.undrawn.values().any(|w| {
+                safety_wires.contains(&w.id) && w.spec.cable.as_ref().is_some_and(|k| k.cable == c.id)
             })
         };
         if carries(before) || carries(after) {
@@ -835,11 +860,23 @@ pub fn issue_cli_approval(
 
 /// Reject a proposal (the app's review panel).
 pub fn reject(dir: &Path, id: &str, by: Actor) -> Result<(), String> {
+    if !matches!(by, Actor::Person { .. }) {
+        return Err("only a person rejects, in the app".into());
+    }
     let _lock = ecad_project::store::Lock::take(dir).map_err(project_err)?;
     ecad_project::store::recover(dir).map_err(project_err)?;
     let cs = read_proposal(dir, id)?;
+    let (all, records) = (approvals(dir)?, records(dir)?);
+    if !matches!(status(&all, &records, id), Status::Pending | Status::Approved) {
+        return Err("this proposal is already applied or rejected".into());
+    }
     let record = ChangeRecord::new(by, RecordKind::Rejection, &cs.title, "rejected").for_proposal(&cs);
-    state::commit_workflow_locked(dir, vec![record.file()]).map_err(project_err)?;
+    let mut workflow = vec![record.file()];
+    for mut approval in all.into_iter().filter(|a| a.proposal == id && a.state == ApprovalState::Issued) {
+        approval.state = ApprovalState::Revoked { reason: "proposal rejected".into(), at: now() };
+        workflow.push(approval_file(&approval));
+    }
+    state::commit_workflow_locked(dir, workflow).map_err(project_err)?;
     Ok(())
 }
 
@@ -875,6 +912,9 @@ pub fn apply_approved(dir: &Path, id: &str, expect: &Revision, actor: Actor) -> 
     }
     let hash = cs.hash();
     let all = approvals(dir)?;
+    if status(&all, &records(dir)?, id) == Status::Rejected {
+        return Err(refuse("the proposal was rejected"));
+    }
     let mine: Vec<&Approval> = all.iter().filter(|a| a.proposal == cs.id).collect();
     // An issued approval first: a revoked or used one beside it (an earlier approval of the
     // same proposal) doesn't stand in its way; with none issued, the used or revoked one
