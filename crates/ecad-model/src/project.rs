@@ -1431,20 +1431,31 @@ impl Project {
         }
         // Only discard a whole unused bridge component. An unshown intermediate point may
         // still carry current between surviving endpoints, including points outside this drawing.
-        let mut removable: std::collections::BTreeSet<_> = f.terminals.values().copied().filter(|t| {
-            !self.functions.values().any(|g| g.terminals.values().any(|u| u == t))
-                && !self.wire_uses(crate::Endpoint::Terminal(*t))
-        }).collect();
+        let mut removable: std::collections::BTreeSet<_> = f
+            .terminals
+            .values()
+            .copied()
+            .filter(|t| {
+                !self.functions.values().any(|g| g.terminals.values().any(|u| u == t))
+                    && !self.wire_uses(crate::Endpoint::Terminal(*t))
+            })
+            .collect();
         loop {
             let before = removable.len();
             for b in &self.bridges {
                 match (removable.contains(&b.a), removable.contains(&b.b)) {
-                    (true, false) => { removable.remove(&b.a); }
-                    (false, true) => { removable.remove(&b.b); }
+                    (true, false) => {
+                        removable.remove(&b.a);
+                    }
+                    (false, true) => {
+                        removable.remove(&b.b);
+                    }
                     _ => {}
                 }
             }
-            if removable.len() == before { break; }
+            if removable.len() == before {
+                break;
+            }
         }
         self.bridges.retain(|b| !removable.contains(&b.a) && !removable.contains(&b.b));
         for t in removable {

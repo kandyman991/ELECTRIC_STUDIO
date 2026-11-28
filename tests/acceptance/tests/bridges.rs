@@ -123,8 +123,10 @@ fn bridges_are_explicit_engineering_operations_with_exact_undo() {
     // Removing a depicted bridge is refused, but the explicit, non-depicted cross bridge
     // can be removed, saved and reloaded, undone and redone.
     let before = p.clone();
-    assert_eq!(p.apply(Command::RemoveBridge(Bridge::new(t["3"], t["4"]))).unwrap_err(),
-        ecad_model::ModelError::BridgeDepicted);
+    assert_eq!(
+        p.apply(Command::RemoveBridge(Bridge::new(t["3"], t["4"]))).unwrap_err(),
+        ecad_model::ModelError::BridgeDepicted
+    );
     assert_eq!(p, before);
     h.execute(&mut p, "unbridge", Command::RemoveBridge(cross)).unwrap();
     assert_eq!(p, original);
@@ -378,7 +380,6 @@ fn undrawn_plc_channels_and_strip_terminals_stay_typed_and_reported() {
     assert_eq!(undrawn.iter().map(|r| r.bridge_points.as_str()).collect::<Vec<_>>(), ["1|2", "3|4"]);
 }
 
-
 #[test]
 fn detach_retains_intermediate_bridge_points_and_external_canonical_endpoints() {
     let mut p = conveyor().unwrap();
@@ -394,10 +395,11 @@ fn detach_retains_intermediate_bridge_points_and_external_canonical_endpoints() 
     let m = m_node(&p);
     undrawn_wire(&mut p, t["1"], m);
     let before = p.clone();
-    let same_net = |p: &Project| p.netlist().nets.iter().any(|n| {
-        n.endpoints.contains(&Endpoint::Terminal(t["1"]))
-            && n.endpoints.contains(&Endpoint::Terminal(extra.id))
-    });
+    let same_net = |p: &Project| {
+        p.netlist().nets.iter().any(|n| {
+            n.endpoints.contains(&Endpoint::Terminal(t["1"])) && n.endpoints.contains(&Endpoint::Terminal(extra.id))
+        })
+    };
     let undo = p.apply(Command::Unplace(f)).unwrap();
     assert!(same_net(&p));
     assert!(p.terminals.contains_key(&t["2"]), "unwired intermediate point survives");
@@ -410,10 +412,15 @@ fn detach_retains_intermediate_bridge_points_and_external_canonical_endpoints() 
     p.apply(redo).unwrap();
     assert_eq!(p, detached);
     p = before.clone();
-    let device = ecad_model::Device { id: ecad_model::DeviceId::new(), tag: "-X90".into(), ..p.device(p.function(f).unwrap().device).unwrap().clone() };
+    let device = ecad_model::Device {
+        id: ecad_model::DeviceId::new(),
+        tag: "-X90".into(),
+        ..p.device(p.function(f).unwrap().device).unwrap().clone()
+    };
     p.apply(Command::AddDevice(device.clone())).unwrap();
     let before = p.clone();
-    let cmd = Command::Reassign { id: f, device: device.id, designations: Default::default(), terminals: Default::default() };
+    let cmd =
+        Command::Reassign { id: f, device: device.id, designations: Default::default(), terminals: Default::default() };
     let bad = Command::AddBridge(Bridge::new(t["1"], TerminalId(ConnectionId::new().0)));
     assert!(p.apply(Command::Batch(vec![cmd.clone(), bad])).is_err());
     assert_eq!(p, before);
@@ -440,7 +447,6 @@ fn save_refuses_a_bridge_inconsistent_with_its_drawing() {
     assert_eq!(ecad_project::load(tmp.path()).unwrap(), before);
 }
 
-
 #[test]
 fn terminal_report_uses_actual_nonadjacent_bridges_and_distinct_potentials() {
     let mut p = conveyor().unwrap();
@@ -450,8 +456,24 @@ fn terminal_report_uses_actual_nonadjacent_bridges_and_distinct_potentials() {
     let plus = Endpoint::Node(p.node_by_name(NodeKind::Potential, "L+", ecad_model::PROJECT_SCOPE).unwrap().id);
     let b1 = drawing_of(&p, "-B1", "BN");
     let b2 = drawing_of(&p, "-B2", "BU");
-    let b1 = Endpoint::Terminal(*p.function(b1).unwrap().terminals.iter().find(|(pt, _)| p.designation(p.function(b1).unwrap(), pt) == "BN").unwrap().1);
-    let b2 = Endpoint::Terminal(*p.function(b2).unwrap().terminals.iter().find(|(pt, _)| p.designation(p.function(b2).unwrap(), pt) == "BU").unwrap().1);
+    let b1 = Endpoint::Terminal(
+        *p.function(b1)
+            .unwrap()
+            .terminals
+            .iter()
+            .find(|(pt, _)| p.designation(p.function(b1).unwrap(), pt) == "BN")
+            .unwrap()
+            .1,
+    );
+    let b2 = Endpoint::Terminal(
+        *p.function(b2)
+            .unwrap()
+            .terminals
+            .iter()
+            .find(|(pt, _)| p.designation(p.function(b2).unwrap(), pt) == "BU")
+            .unwrap()
+            .1,
+    );
     // Drop the original drawings and wires before explicitly rewiring the undrawn group.
     // Keep every point alive by attaching wires, then change which points are bridged.
     for (name, end) in [("1", plus), ("2", m), ("3", b1), ("4", b2)] {
@@ -467,8 +489,14 @@ fn terminal_report_uses_actual_nonadjacent_bridges_and_distinct_potentials() {
     let rows = ecad_reports::terminal_diagram(&p);
     let rows: Vec<_> = rows.iter().filter(|r| r.strip == "-X3" && r.terminal == "1").collect();
     assert_eq!(rows.len(), 2);
-    assert_eq!((rows[0].bridge_points.as_str(), rows[0].inside.as_str(), rows[0].outside.as_str(), rows[0].potential.as_str()), ("1|3", "L+", "-B1:BN", "L+"));
-    assert_eq!((rows[1].bridge_points.as_str(), rows[1].inside.as_str(), rows[1].outside.as_str(), rows[1].potential.as_str()), ("2|4", "M", "-B2:BU", "M"));
+    assert_eq!(
+        (rows[0].bridge_points.as_str(), rows[0].inside.as_str(), rows[0].outside.as_str(), rows[0].potential.as_str()),
+        ("1|3", "L+", "-B1:BN", "L+")
+    );
+    assert_eq!(
+        (rows[1].bridge_points.as_str(), rows[1].inside.as_str(), rows[1].outside.as_str(), rows[1].potential.as_str()),
+        ("2|4", "M", "-B2:BU", "M")
+    );
     assert_eq!(ecad_reports::terminal_diagram(&save_and_load(&p)), ecad_reports::terminal_diagram(&p));
 }
 
@@ -482,15 +510,23 @@ fn reports_include_all_representations_and_undrawn_wires_once_per_terminal() {
     p.apply(Command::Place(again)).unwrap();
     let m = m_node(&p);
     undrawn_wire(&mut p, t["1"], m);
-    let extra = ecad_model::TerminalEntry { id: TerminalId(ConnectionId::new().0), point: "extra".into(), ..p.terminals[&t["1"]].clone() };
+    let extra = ecad_model::TerminalEntry {
+        id: TerminalId(ConnectionId::new().0),
+        point: "extra".into(),
+        ..p.terminals[&t["1"]].clone()
+    };
     p.apply(Command::AddTerminal(extra.clone())).unwrap();
     p.apply(Command::AddBridge(Bridge::new(t["2"], extra.id))).unwrap();
     undrawn_wire(&mut p, extra.id, m);
     // Move one physical wire to the repeated representation, using its same number and id.
     let mut w = p.connections.values().find(|w| w.from.function == f || w.to.function == f).unwrap().clone();
     p.apply(Command::Disconnect(w.id)).unwrap();
-    if w.from.function == f { w.from.function = again_id; }
-    if w.to.function == f { w.to.function = again_id; }
+    if w.from.function == f {
+        w.from.function = again_id;
+    }
+    if w.to.function == f {
+        w.to.function = again_id;
+    }
     p.apply(Command::Connect(w)).unwrap();
     let rows = ecad_reports::terminal_diagram(&p);
     let rows: Vec<_> = rows.iter().filter(|r| r.strip == "-X3" && r.terminal == "1").collect();
@@ -510,10 +546,19 @@ fn reports_include_all_representations_and_undrawn_wires_once_per_terminal() {
     let again = repeat(&p, channel.function, 30.0);
     let again_id = again.id;
     p.apply(Command::Place(again)).unwrap();
-    let mut w = p.connections.values().find(|w| w.from.function == channel.function || w.to.function == channel.function).unwrap().clone();
+    let mut w = p
+        .connections
+        .values()
+        .find(|w| w.from.function == channel.function || w.to.function == channel.function)
+        .unwrap()
+        .clone();
     p.apply(Command::Disconnect(w.id)).unwrap();
-    if w.from.function == channel.function { w.from.function = again_id; }
-    if w.to.function == channel.function { w.to.function = again_id; }
+    if w.from.function == channel.function {
+        w.from.function = again_id;
+    }
+    if w.to.function == channel.function {
+        w.to.function = again_id;
+    }
     p.apply(Command::Connect(w)).unwrap();
     undrawn_wire(&mut p, id, m);
     let rows = ecad_reports::plc_io_list(&p);

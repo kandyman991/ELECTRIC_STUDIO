@@ -337,7 +337,8 @@ pub fn terminal_diagram(project: &Project) -> Vec<TerminalRow> {
         let full = ids.iter().flat_map(|id| c.drawings(Endpoint::Terminal(*id))).find_map(|r| {
             let f = project.function(r.function).ok()?;
             let sym = project.symbol(&f.symbol).ok()?;
-            let ordered: Vec<_> = sym.connection_points.iter().filter_map(|cp| f.terminals.get(&cp.name).copied()).collect();
+            let ordered: Vec<_> =
+                sym.connection_points.iter().filter_map(|cp| f.terminals.get(&cp.name).copied()).collect();
             (ordered.len() == ids.len() && ids.iter().all(|id| ordered.contains(id))).then_some(ordered)
         });
         let known_sides = full.is_some();
@@ -348,7 +349,9 @@ pub fn terminal_diagram(project: &Project) -> Vec<TerminalRow> {
         }
         let mut remaining: BTreeSet<_> = ids.iter().copied().collect();
         for first in &ids {
-            if !remaining.contains(first) { continue; }
+            if !remaining.contains(first) {
+                continue;
+            }
             let mut connected = BTreeSet::from([*first]);
             let mut pending = vec![*first];
             while let Some(t) = pending.pop() {
@@ -363,18 +366,21 @@ pub fn terminal_diagram(project: &Project) -> Vec<TerminalRow> {
             let component: Vec<_> = ids.iter().copied().filter(|id| connected.contains(id)).collect();
             remaining.retain(|id| !connected.contains(id));
             let explicit_points = ids.len() > 2 || !known_sides || component.len() != ids.len();
-            let bridge_points = if explicit_points {
-                component.iter().map(point).collect::<Vec<_>>().join("|")
-            } else {
-                String::new()
-            };
+            let bridge_points =
+                if explicit_points { component.iter().map(point).collect::<Vec<_>>().join("|") } else { String::new() };
             for pair in component.chunks(2) {
                 let key = |i: usize| pair.get(i).map(point).unwrap_or("").to_owned();
-                let reached = |i: usize| pair.get(i).and_then(|id| far.get(id)).map(|ends| ends.join("; ")).unwrap_or_default();
-                let mut locations: BTreeSet<_> = pair.iter().flat_map(|id| c.drawings(Endpoint::Terminal(*id)))
-                    .filter_map(|r| project.function_location(r.function).ok()).collect();
+                let reached =
+                    |i: usize| pair.get(i).and_then(|id| far.get(id)).map(|ends| ends.join("; ")).unwrap_or_default();
+                let mut locations: BTreeSet<_> = pair
+                    .iter()
+                    .flat_map(|id| c.drawings(Endpoint::Terminal(*id)))
+                    .filter_map(|r| project.function_location(r.function).ok())
+                    .collect();
                 let undrawn = pair.iter().any(|id| c.drawings(Endpoint::Terminal(*id)).is_empty());
-                if undrawn { locations.insert("not drawn".into()); }
+                if undrawn {
+                    locations.insert("not drawn".into());
+                }
                 rows.push(TerminalRow {
                     strip: tag.clone(),
                     terminal: number.clone(),
@@ -395,10 +401,7 @@ pub fn terminal_diagram(project: &Project) -> Vec<TerminalRow> {
 /// Direct wire destinations indexed by canonical terminal identity. For drawn connections
 /// retain the established display of the opposite drawing point (including node point labels).
 /// Undrawn ends have no such drawing label. Multiple representations never multiply wire rows.
-fn terminal_wire_ends(
-    project: &Project,
-    c: &ecad_model::Connectivity,
-) -> BTreeMap<TerminalId, Vec<String>> {
+fn terminal_wire_ends(project: &Project, c: &ecad_model::Connectivity) -> BTreeMap<TerminalId, Vec<String>> {
     let mut out: BTreeMap<TerminalId, Vec<String>> = BTreeMap::new();
     let describe = |end: &Endpoint, drawing: Option<&ecad_model::ConnectionRef>| {
         let (tag, p) = drawing.and_then(|r| project.describe(r).ok()).unwrap_or_else(|| project.describe_end(end));
@@ -471,8 +474,11 @@ pub fn plc_io_list(project: &Project) -> Vec<PlcIoRow> {
     for t in project.terminals.values() {
         let Some(channel) = &t.channel else { continue };
         let Ok(device) = project.device(t.device) else { continue };
-        let locations: BTreeSet<_> = c.drawings(Endpoint::Terminal(t.id)).iter()
-            .filter_map(|r| project.function_location(r.function).ok()).collect();
+        let locations: BTreeSet<_> = c
+            .drawings(Endpoint::Terminal(t.id))
+            .iter()
+            .filter_map(|r| project.function_location(r.function).ok())
+            .collect();
         rows.push(PlcIoRow {
             card: device.tag.clone(),
             channel: t.designation.clone(),
@@ -481,10 +487,16 @@ pub fn plc_io_list(project: &Project) -> Vec<PlcIoRow> {
             symbol: channel.symbol.clone(),
             comment: channel.comment.clone(),
             wired_to: far.get(&t.id).map(|ends| ends.join("; ")).unwrap_or_default(),
-            location: if locations.is_empty() { "not drawn".into() } else { locations.into_iter().collect::<Vec<_>>().join("; ") },
+            location: if locations.is_empty() {
+                "not drawn".into()
+            } else {
+                locations.into_iter().collect::<Vec<_>>().join("; ")
+            },
         });
     }
-    rows.sort_by(|a, b| a.card.cmp(&b.card).then_with(|| natural(&a.channel, &b.channel)).then(a.address.cmp(&b.address)));
+    rows.sort_by(|a, b| {
+        a.card.cmp(&b.card).then_with(|| natural(&a.channel, &b.channel)).then(a.address.cmp(&b.address))
+    });
     rows
 }
 
