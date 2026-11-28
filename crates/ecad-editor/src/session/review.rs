@@ -382,8 +382,24 @@ impl Session {
                 self.committed_at = self.editor.revision();
                 Ok(format!("Applied “{}” ({}) as one step; undo reverts it", cs.title, cs.actor.label()))
             }
+            Err(e @ ecad_project::ProjectError::CommitUncertain(_)) => {
+                // Do not undo or retry an operation whose durable outcome is unknown.
+                // Force the recovery path before another save or proposal apply.
+                self.reconcile = Some(Reconcile {
+                    info: ReconcileInfo {
+                        summary: e.to_string(),
+                        impact: None,
+                        affected: Vec::new(),
+                        incomplete: true,
+                        unloadable: Some("reopen and recover the project".into()),
+                    },
+                    verification: Verification::default(),
+                    fingerprint: None,
+                });
+                Err(e.to_string())
+            }
             Err(e) => {
-                // Not committed: the editor goes back to where it was.
+                // No committed journal: restore the editor's previous state.
                 let _ = self.editor.undo();
                 Err(format!("not saved, so not applied: {e}"))
             }
