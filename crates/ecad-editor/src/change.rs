@@ -876,7 +876,17 @@ pub fn apply_approved(dir: &Path, id: &str, expect: &Revision, actor: Actor) -> 
     let hash = cs.hash();
     let all = approvals(dir)?;
     let mine: Vec<&Approval> = all.iter().filter(|a| a.proposal == cs.id).collect();
-    let Some(approval) = mine.iter().find(|a| a.interface == Interface::Cli && a.hash == hash).copied() else {
+    // An issued approval first: a revoked or used one beside it (an earlier approval of the
+    // same proposal) doesn't stand in its way; with none issued, the used or revoked one
+    // says why.
+    let rank = |a: &Approval| match a.state {
+        ApprovalState::Issued => 0,
+        ApprovalState::Consumed { .. } => 1,
+        ApprovalState::Revoked { .. } => 2,
+    };
+    let candidate =
+        mine.iter().filter(|a| a.interface == Interface::Cli && a.hash == hash).min_by_key(|a| rank(a)).copied();
+    let Some(approval) = candidate else {
         let why = if mine.iter().any(|a| a.hash != hash) {
             "the proposal was modified after it was approved"
         } else if mine.iter().any(|a| a.interface != Interface::Cli) {

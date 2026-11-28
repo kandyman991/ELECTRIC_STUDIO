@@ -19,7 +19,7 @@ merged PR.
   - M7a (PR #33) and M7b (PR #34) merged; corrective PR #35 merged at `e258a59`.
   - M7 formally accepted on 27 Nov 2026 with R5 (controlled Legion wall-clock and peak RSS)
     explicitly deferred by the owner, not passed. All six exact-head CI jobs passed at `90d6dfb`.
-  - **Next:** AI0 implementation under the engineering-interface contract in the roadmap.
+  - **AI0:** implemented in PR #48 (merged at `fea0ae4`), ready for independent milestone review; see "AI0 plan and state". Not accepted; the next milestone is not authorized.
   - **Outstanding pre-release gate:** qualified D41 Legion benchmark ([#39](https://github.com/kandyman991/ELECTRIC_STUDIO/issues/39)) when access returns;
     retain recorded conditions and cold/warm timing and RSS evidence before first production release.
 - **On hold:** PR #32 (component library, draft), reused in M9 after reconciliation (D13).
@@ -75,6 +75,71 @@ cargo test --workspace
 ## M7 acceptance closure (PR #35)
 
 M7 accepted with the owner-approved R5 exception. R1–R4 validated: multi-level terminal report identity and completeness, strict benchmark comparison, prepared-fixture disk-cold open, allocation counting with DHAT, and controlled benchmark provenance. [Validation evidence and allocation reference](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/35#issuecomment-7226987361); [owner decision](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/35#issuecomment-7228169838). The qualified Legion run has not been performed and is mandatory before first production release. Track check/render scaling as a dedicated profiling follow-up, not a sandbox-timing acceptance gate.
+
+## AI0 plan and state
+
+AI0 (engineering interface, D16–D19, D31, D32, D34, D42, D43). The pilot came first: S0 device
+renumbering on the conveyor through the official MCP client, approved in a desktop session.
+It was proven end to end locally before the remaining operations moved to the registry. Pilot
+and contract were merged as one slice once all of its exact-head checks passed.
+
+| Slice | Scope | Tested head | CI (6 jobs) | Merge |
+| --- | --- | --- | --- | --- |
+| AI0a ([#48](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/48)) | Registry, change sets, authority, committed state, records, release validation, progress and cancellation, pilot, adversarial tests, docs | `3bb80dc` | fmt+clippy, test ubuntu, test windows, benchmarks, MCP official client (with the pilot step), build: all success | `fea0ae4` |
+| AI0b ([#49](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/49)) | Evidence and limitations. Fix found by CI on its first head (`5ecd314`, test ubuntu failed): `ecad apply` could pick a revoked earlier approval of the same proposal over an issued one, depending on file order. It now prefers the issued approval. The regression test places revoked approvals on both sides of the issued one, and fails without the fix | see the PR's final head | all six jobs on the final head (see the PR) | — |
+
+Acceptance criteria:
+
+| Criterion | Evidence |
+| --- | --- |
+| **Pilot:** an official-client proposal of S0 device renumbering is approved in the desktop app, shown with old/new tags, applied as one transaction; one undo restores | `crates/ecad-mcp/tests/client/check.py` (MCP Python SDK 2.3.0): prepares `renumber_devices`, previews and lists it, and asserts no engineering file changed. The CI step `pilot.rs` `the_official_client_s_proposal_is_approved_in_the_desktop_session` then reviews it in a `Session` (affected devices with old/new tags, e.g. -K7→-K2 and -S0→-S1, safety-direct -S1), approves and applies it (one commit, approval consumed, record by the assistant and the person), and checks that one undo gives the original project. The in-process test runs the same on every test run |
+| Pilot through the CLI under its authority rules | `crates/ecad-cli/tests/authority.rs`: `ecad renumber --apply` is refused (global). Then `ecad prepare` → the app's *Approve for the CLI* → `ecad apply <id> --expect <revision>` applies it, and a replay is refused. Automation scope and read-only classes are also covered |
+| One typed registry for editor, CLI and MCP; MCP tools generated from it; inventory of entry points including scripts | `ecad_editor::registry` (`DEFS`, `schema`, `lower`). MCP `tools.rs` generates the query and `prepare_*` tools from it; the CLI's `run`, `prepare` and `operations` use it. Inventory: docs/ARCHITECTURE.md "Entry points" |
+| Consequential edits through the shared policy; actor identity assigned by trusted host code | `change::prepare`, `apply_approved` and `automate`, and the session's review. `Actor::person()`, `Actor::cli(args)`, the MCP assistant (from `initialize`), `External`. A proposal from an assistant can't carry a person actor; `pilot.rs` and `engineering.rs` check the recorded actors |
+| Change sets: prepare, impact preview (objects, pages, checks, direct and indirect safety) | `change::preview` / `compare`. Tests: `engineering.rs` `a_multi_operation_change_set…` (pages, numbering), `pilot.rs` (old/new tags, safety direct and indirect), `ecad-editor` unit tests |
+| App-only approval bound to hash, base, committed revision and scope; transactional apply | `session/review.rs` `try_apply`. `engineering.rs`: `stale_and_modified_proposals_are_refused` and `cli_approvals_are_bound_to_hash_revision_scope_and_used_once` (an assistant's proposal is app only, a narrower scope is refused, confirmations are required) |
+| Engineering content distinct from committed revision, also when content returns to an earlier value | `Revision{project, generation, content}`. `stale_and_modified_proposals_are_refused` restores the earlier content: content equal, revision different, proposal stale |
+| MCP `--write` removed; AI/MCP only query, prepare and preview | `main.rs` exits 2 on `--write` (`check.py` asserts it); the old edit names return an error; `tests/mcp.rs` |
+| CLI classes; `ecad apply --expect`; approval consumed atomically; actor, scope and result persisted | `authority.rs`. `engineering.rs` concurrent apply: four threads, exactly one applies, the approval is Consumed, there is one ChangeSet record (actor, scope, base, result, impact), and losers change nothing. `ecad-project` `an_interrupted_commit_with_workflow_files_is_one_generation_or_the_other` |
+| Last committed contents retained; manifest committed with the files, verified at open, preview, apply and save | `ecad_project::state` (`commit`, `verify`, `committed_files`). `engineering.rs` `outside_changes_between_preview_and_apply…` (session apply, save and CLI apply refused) and `missing_damaged_unexpected_and_unsafe_files` |
+| Path safety; reconciliation of missing, damaged, unexpected and outside-changed files | `state.rs` `unsafe_paths_are_refused`. `engineering.rs`: restore quarantines and deletes nothing; accept records External and revokes approvals; damaged objects make the comparison incomplete and need an acknowledgement; unexpected files are ignored and kept |
+| Compatibility path for existing projects | `engineering.rs` `a_project_saved_before_ai0_opens_and_is_adopted`: an MCP server and the session adopt the folder as generation 1; engineering files byte for byte, a format 1 folder stays format 1. `migration.rs` still passes |
+| Persistent change records | `changes/<at>-<id>.json` for ChangeSet, Edits (with undo/redo steps), Automation, Reconciliation, Rejection, Refusal and Approval; `rejection_and_the_app_s_own_edits_are_recorded` |
+| Shared release validation | `ecad_rules::release::validate` (check errors, unresolved products, safety classification), used by `ecad check/export --release`, MCP `release_check` and the app; `release_validation_is_one_policy_for_every_path` |
+| Progress and cancellation for long operations | `ecad_editor::task`; cancellable `verify` and `compare`; the session's Verify task with Cancel. `long_operations_report_progress_and_cancel…` (nothing changed) |
+| Validation through desktop session, CLI and official MCP client; interrupted saves | All of the above. Interrupted saves: `ecad-project` failure injection at every store and object step, plus `an_interrupted_apply_leaves_the_folder_consistent` (locked folder, staged leftovers) |
+| S0 retrofit regressions retained | `tests/acceptance/tests/retrofit.rs` and `numbering.rs` unchanged in substance (`.ecad/` excluded when counting changed files) and passing |
+
+Known limitations and review points (AI0):
+
+- **Trust boundary (D31).** Enforcement is at application level. A program with folder access
+  can write anything; that is detected at the next open, preview, apply or save. Actors are
+  recorded as asserted: MCP's client name is a claim, and there is no enterprise
+  authentication. Agents that control the desktop app itself are outside the boundary.
+- **Indirect safety impact** covers devices on *unnamed* potentials with a safety-related
+  terminal, and cables carrying one. Named supply potentials (L+, M) are excluded: otherwise
+  every device would be indirectly safety-related. Finer rules need M8's section safety
+  marking.
+- **Records for some refusals.** A refusal because the folder changed outside Electric Studio
+  can't be committed into that folder. It is reported, and the reconciliation that follows is
+  recorded. Refusals for lock contention aren't recorded either, because nothing was read or
+  changed.
+- **Concurrency.** The lock is not blocking: a second concurrent apply gets "another program
+  is saving" and can retry.
+- **Approvals for the CLI** are recorded when issued; the app's own approvals when used (one
+  transaction with the change).
+- **Retained objects** hold the last commit only. History is S1's baselines.
+- **Performance.** cachegrind, conveyor, against the S0 baseline:
+  - save: 13.0M → 29.5M instructions (+127%). One SHA-256 verification pass over the folder
+    per save, plus writing the manifest and objects. Mitigated: the content digest comes from
+    the rendered files, byte-identical files keep their manifest hash, and objects are checked
+    when read.
+  - open: +9% (the M10/S0 figures, unchanged by AI0); other workloads within ±4%.
+  - allocation blocks: save 5 226 → 9 088 (+74%: manifest, hashes, reading files to compare), others unchanged.
+  - Smoke content hashes changed because the model now carries the `safety_related` and
+    `automation` fields (and the conveyor marks -S0 and -K3).
+  - Wall clock in the sandbox is noise; qualified timing remains #39.
+- **Imports are not offered to assistants.** They run in the app or as CLI automation.
 
 ## S0 plan and state
 
