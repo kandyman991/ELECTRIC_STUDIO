@@ -644,20 +644,25 @@ pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>
         for f in &file.functions {
             if !legacy {
                 let sym = project.symbol(&f.symbol).map_err(model(&path))?;
-                let valid = f.designations.is_empty() && if project.node_kind_of(&f.symbol).is_some() {
-                    f.terminals.is_empty()
-                } else {
-                    f.terminals.len() == sym.connection_points.len()
-                        && sym.connection_points.iter().all(|cp| {
-                            f.terminals.get(&cp.name).is_some_and(|t| project.terminals.contains_key(t))
-                        })
-                };
+                let valid = f.designations.is_empty()
+                    && if project.node_kind_of(&f.symbol).is_some() {
+                        f.terminals.is_empty()
+                    } else {
+                        f.terminals.len() == sym.connection_points.len()
+                            && sym
+                                .connection_points
+                                .iter()
+                                .all(|cp| f.terminals.get(&cp.name).is_some_and(|t| project.terminals.contains_key(t)))
+                    };
                 if !valid {
                     return Err(model(&path)(ModelError::InvalidTerminalBindings(f.id)));
                 }
             }
             if f.page != id {
-                return Err(ProjectError::Canonical { path: path.clone(), reason: "drawing belongs to another page".into() });
+                return Err(ProjectError::Canonical {
+                    path: path.clone(),
+                    reason: "drawing belongs to another page".into(),
+                });
             }
             project.apply(Command::Place(f.clone())).map_err(model(&path))?;
         }
@@ -686,7 +691,10 @@ pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>
             project.apply(Command::SetUnderlay { page: id, underlay: Some(Box::new(u)) }).map_err(model(&underlay))?;
         }
         if (!legacy && !file.connections.is_empty()) || (legacy && !file.wires.is_empty()) {
-            return Err(ProjectError::Canonical { path, reason: "mixed legacy connections and canonical wire graphics".into() });
+            return Err(ProjectError::Canonical {
+                path,
+                reason: "mixed legacy connections and canonical wire graphics".into(),
+            });
         }
         pages.push((id, path, file.connections, file.wires));
     }
@@ -713,7 +721,10 @@ pub fn load_with_findings(dir: &Path) -> Result<(Project, Vec<ConversionFinding>
             if project.function(g.from.function).map_err(model(&path))?.page != page_id
                 || project.function(g.to.function).map_err(model(&path))?.page != page_id
             {
-                return Err(ProjectError::Canonical { path: path.clone(), reason: "wire graphics belong to another page".into() });
+                return Err(ProjectError::Canonical {
+                    path: path.clone(),
+                    reason: "wire graphics belong to another page".into(),
+                });
             }
             let w = wires.remove(&g.wire).ok_or_else(|| model(&path)(ModelError::NoConnection(g.wire)))?;
             let c = Connection {

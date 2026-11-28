@@ -1332,9 +1332,12 @@ impl Project {
             }
         }
         if let Role::PlcChannel { kind } = sym.role {
-            let channels: Vec<_> = f.terminals.values().filter_map(|id| {
-                self.terminals.get(id).or_else(|| new_entries.iter().find(|t| t.id == *id))
-            }).filter_map(|t| t.channel.as_ref()).collect();
+            let channels: Vec<_> = f
+                .terminals
+                .values()
+                .filter_map(|id| self.terminals.get(id).or_else(|| new_entries.iter().find(|t| t.id == *id)))
+                .filter_map(|t| t.channel.as_ref())
+                .collect();
             if channels.len() != 1 || channels[0].kind != kind {
                 return Err(ModelError::InvalidTerminalBindings(f.id));
             }
@@ -1616,11 +1619,14 @@ impl Project {
                     }
                 }
                 self.detach_terminals(id)?;
-                undo.insert(0, Command::RestoreDrawing {
-                    id,
-                    drawing: Some(Box::new(drawing)),
-                    terminals: terminals.into_iter().map(|t| (t.id, Some(t))).collect(),
-                });
+                undo.insert(
+                    0,
+                    Command::RestoreDrawing {
+                        id,
+                        drawing: Some(Box::new(drawing)),
+                        terminals: terminals.into_iter().map(|t| (t.id, Some(t))).collect(),
+                    },
+                );
                 Ok(Command::Batch(undo))
             }
             Command::Move { id, to } => {
@@ -1771,22 +1777,27 @@ impl Project {
                 moved.properties = self.properties_of(&original);
                 moved.terminals = terminals;
                 for (point, t) in &original.terminals {
-                    moved.terminals.entry(point.clone()).or_insert_with(|| {
-                        TerminalId(Uuid::new_v5(&t.0, device.0.as_bytes()))
-                    });
+                    moved
+                        .terminals
+                        .entry(point.clone())
+                        .or_insert_with(|| TerminalId(Uuid::new_v5(&t.0, device.0.as_bytes())));
                 }
                 self.check_owner(&moved)?;
                 // Snapshot both the old and destination entries, including pre-existing undrawn
                 // terminals. Undo and error rollback must not reconstruct their metadata.
                 let mut snapshot: BTreeMap<_, _> = old_entries.into_iter().map(|t| (t.id, Some(t))).collect();
                 for cp in &self.symbol(&moved.symbol)?.connection_points {
-                    let t = moved.terminals.get(&cp.name).copied()
+                    let t = moved
+                        .terminals
+                        .get(&cp.name)
+                        .copied()
                         .unwrap_or_else(|| crate::connectivity::default_terminal(id, &cp.name));
                     snapshot.entry(t).or_insert_with(|| self.terminals.get(&t).cloned());
                 }
                 self.detach_terminals(id)?;
                 let inverse = Command::RestoreDrawing { id, drawing: Some(Box::new(original)), terminals: snapshot };
-                let placed = self.attach_terminals(moved)
+                let placed = self
+                    .attach_terminals(moved)
                     .and_then(|_| self.check_terminal(id))
                     .and_then(|()| self.check_plc(id));
                 if let Err(e) = placed {
