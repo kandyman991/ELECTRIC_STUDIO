@@ -86,7 +86,7 @@ and contract were merged as one slice once all of its exact-head checks passed.
 | Slice | Scope | Tested head | CI (6 jobs) | Merge |
 | --- | --- | --- | --- | --- |
 | AI0a ([#48](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/48)) | Registry, change sets, authority, committed state, records, release validation, progress and cancellation, pilot, adversarial tests, docs | `3bb80dc` | fmt+clippy, test ubuntu, test windows, benchmarks, MCP official client (with the pilot step), build: all success | `fea0ae4` |
-| AI0b ([#49](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/49)) | Evidence and limitations (docs only) | its head | docs-only checks | — |
+| AI0b ([#49](https://github.com/kandyman991/ELECTRIC_STUDIO/pull/49)) | Evidence and limitations. Fix found by CI on its first head (`5ecd314`, test ubuntu failed): `ecad apply` could pick a revoked earlier approval of the same proposal over an issued one, depending on file order. It now prefers the issued approval. The regression test places revoked approvals on both sides of the issued one, and fails without the fix | see the PR's final head | all six jobs on the final head (see the PR) | — |
 
 Acceptance criteria:
 

@@ -202,6 +202,14 @@ fn cli_approvals_are_bound_to_hash_revision_scope_and_used_once() {
     let mut revoked = narrow.clone();
     revoked.state = ApprovalState::Revoked { reason: "test".into(), at: change::now() };
     state::commit_workflow(dir, vec![change::approval_file(&revoked)]).unwrap();
+    // Revoked approvals of the same proposal on either side of the good one, whatever order
+    // they are read in, don't stand in its way.
+    for id in ["00000000-0000-0000-0000-000000000000", "ffffffff-ffff-ffff-ffff-ffffffffffff"] {
+        let mut r = revoked.clone();
+        r.id = id.into();
+        r.scope = cs.scope.clone();
+        state::commit_workflow(dir, vec![change::approval_file(&r)]).unwrap();
+    }
     let good = change::issue_cli_approval(
         dir,
         &cs.id,
