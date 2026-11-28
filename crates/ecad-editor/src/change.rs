@@ -443,19 +443,18 @@ pub fn compare(before: &Project, after: &Project, progress: &dyn Progress) -> Re
         before.safety_related.iter().chain(&after.safety_related).copied().collect();
     // Devices sharing a net with a safety-related device's terminal, before or after.
     let mut reached: BTreeSet<ecad_model::DeviceId> = BTreeSet::new();
+    let mut safety_wires = BTreeSet::new();
     for p in [before, after] {
         let device_of = |e: &ecad_model::Endpoint| match e {
             ecad_model::Endpoint::Terminal(t) => p.terminals.get(t).map(|t| t.device),
             ecad_model::Endpoint::Node(_) => None,
         };
-        // Signal nets: a named supply potential (L+, M) reaches every device it feeds, which
-        // says nothing about the safety function; those are left out (a limitation, noted).
         for net in p.netlist().nets {
             let on: BTreeSet<_> = net.endpoints.iter().filter_map(device_of).collect();
             if on.iter().any(|d| marked.contains(d)) {
-                // Wiring changes on a safety-related net require confirmation even on
-                // named supply nets. Excluding them is only appropriate for unrelated
-                // device edits, not changes to the conductors themselves.
+                safety_wires.extend(net.wires.iter().copied());
+                // Supply nets are excluded only for unrelated device edits, not
+                // changes to the conductors themselves.
                 for wire in net.wires.iter().filter(|w| changed_wires.contains(w)) {
                     i.safety_indirect.push(format!("wire {} (on a safety-related potential)", wire.0));
                 }
@@ -489,20 +488,6 @@ pub fn compare(before: &Project, after: &Project, progress: &dyn Progress) -> Re
             continue;
         }
         let carries = |p: &Project| {
-            let safety_wires: BTreeSet<_> = p
-                .netlist()
-                .nets
-                .into_iter()
-                .filter(|net| {
-                    net.endpoints.iter().any(|e| match e {
-                        ecad_model::Endpoint::Terminal(t) => {
-                            p.terminals.get(t).is_some_and(|t| marked.contains(&t.device))
-                        }
-                        ecad_model::Endpoint::Node(_) => false,
-                    })
-                })
-                .flat_map(|net| net.wires)
-                .collect();
             p.connections.values().any(|w| {
                 safety_wires.contains(&w.id) && w.spec.cable.as_ref().is_some_and(|k| k.cable == c.id)
             }) || p.undrawn.values().any(|w| {
